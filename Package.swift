@@ -46,6 +46,8 @@ let package = Package(
             name: "DebugCLI",
             dependencies: ["Core", "AXFacade", "SpaceAdapter", "SnapshotEngine", "RestoreEngine"]
         ),
+        // 票 10 新增（唯一例外场景）：占位菜单骨架的结构测试（spec §8.2），票 19 接线后可扩三态图标测试
+        .testTarget(name: "MenubarKitTests", dependencies: ["MenubarKit"]),
         .testTarget(name: "CoreTests", dependencies: ["Core"]),
         .testTarget(name: "SnapshotEngineTests", dependencies: ["SnapshotEngine", "Core"]),
         .testTarget(name: "RestoreEngineTests", dependencies: ["RestoreEngine", "Core"]),
