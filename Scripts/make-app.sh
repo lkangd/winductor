@@ -59,7 +59,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> 检查签名证书「$IDENTITY」"
-if ! security find-identity -v -p codesigning | grep -q "\"$IDENTITY\""; then
+# 注意：不要用 security find-identity 做硬门禁——证书助理自签证书有时不会被它枚举，
+# 但 codesign 完全能用。这里只查证书本体存在性；签名失败才是权威判据。
+if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
     cat >&2 <<MSG
 错误：登录钥匙串里没有名为「$IDENTITY」的可用的代码签名证书。
 
@@ -79,7 +81,14 @@ MSG
 fi
 
 echo "==> codesign --sign \"$IDENTITY\" --force"
-codesign --sign "$IDENTITY" --force "$APP_DIR"
+if ! codesign --sign "$IDENTITY" --force "$APP_DIR"; then
+    cat >&2 <<MSG
+错误：证书「$IDENTITY」存在但不可用于签名（通常 = 没有配对私钥，或密钥不在登录钥匙串）。
+若你有含私钥的 .p12 备份：钥匙串访问导入后重试；否则按 docs/signing.md 重建证书。
+若用别的证书：CODESIGN_IDENTITY=证书名 Scripts/make-app.sh
+MSG
+    exit 1
+fi
 codesign --verify --verbose=1 "$APP_DIR"
 
 echo "==> 完成：$APP_DIR"
