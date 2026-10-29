@@ -42,11 +42,13 @@ public enum StructuredLog {
 }
 
 /// 日志文件 sink：单文件追加、目录延迟创建；轮转策略留给票 10/19 接线时定。
+/// 线程安全：NSLock 串行化写入与目录创建标志。
 public final class FileLogSink: LogWriting {
+    private let lock = NSLock()
     private let fileURL: URL
     private let directory: URL
-    private let queue = DispatchQueue(label: "com.lkd.window-restore.logsink")
-    private var directoryEnsured = false
+    // lock 保护；编译器看不见锁保护，用 nonisolated(unsafe) 标注（Swift 5.10+）
+    nonisolated(unsafe) private var directoryEnsured = false
 
     public init(directory: URL, fileName: String) {
         self.directory = directory
@@ -54,21 +56,21 @@ public final class FileLogSink: LogWriting {
     }
 
     public func write(_ line: String) {
-        queue.sync {
-            if !directoryEnsured {
-                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                directoryEnsured = true
-            }
-            let stamped = "\(Self.timestampFormatter.string(from: Date())) \(line)\n"
-            if let data = stamped.data(using: .utf8) {
-                if let handle = try? FileHandle(forWritingTo: fileURL) {
-                    defer { try? handle.close() }
-                    _ = try? handle.seekToEnd()
-                    try? handle.write(contentsOf: data)
-                } else {
-                    // 首次写入：文件不存在则建
-                    try? data.write(to: fileURL)
-                }
+        lock.lock()
+        defer { lock.unlock() }
+        if !directoryEnsured {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            directoryEnsured = true
+        }
+        let stamped = "\(Self.timestampFormatter.string(from: Date())) \(line)\n"
+        if let data = stamped.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: fileURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                // 首次写入：文件不存在则建
+                try? data.write(to: fileURL)
             }
         }
     }
