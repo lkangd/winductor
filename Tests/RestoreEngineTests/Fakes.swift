@@ -9,9 +9,10 @@ import XCTest
 // Fakes — 票 14 测试注入桩（照 SnapshotEngineTests/Fakes 口径）。
 // 单测全部经注入 fake 驱动（票面要求）；AX/SLS 活体路径留给票 17/19/20（本进程树无辅助功能授权）。
 
-/// 桥接移窗 + Space 查询 fake：move 成功形态改写 byWindow（模拟归属真实变更，供幂等复跑用）
+/// 桥接移窗 + Space 查询 fake：move 成功形态改写 byWindow（模拟归属真实变更，供幂等复跑用）；
+/// entries 可变（票 16 撤销两段式：全屏 Space 随恢复/Esc 创建销毁，需按阶段推进）
 final class FakeBridge: SpaceBridge, @unchecked Sendable {
-    let entries: [SpaceEntry]
+    var entries: [SpaceEntry]
     var byWindow: [UInt32: Int64]
     var bridgeAvailable: Bool
     /// 非 bridge 层（L3/L4）可用性注入；缺省 = 可用（票 15 降级阶梯）
