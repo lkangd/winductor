@@ -367,6 +367,112 @@ public final class TriggerChain: @unchecked Sendable {
             degradedLayerNames: degradedNames, failureDetail: why))
     }
 
+    // MARK: - 手动「立即恢复」（A6：跳过方向判定直接恢复，与自动触发共用管线）
+
+    /// 手动重试入口（菜单「立即恢复」的管线级形态，03 #8；DebugCLI restore-now 为命令级形态）。
+    /// - explicit 非空：不查快照目录，直接恢复该快照（restore-now <snapshot路径>）。
+    /// - explicit 为空：按当前屏幕集合选快照——精确一致优先；否则取重叠最多的快照 best-effort
+    ///   （部分拓扑 A5 场景的手动出口，spec §6.2/03 #8）。无候选返回 nil。
+    /// 返回完成通知（与自动触发同结构）；无快照/忙时返回 nil。
+    @discardableResult
+    public func restoreNow(snapshot explicit: Snapshot? = nil) -> RestoreNotice? {
+        if let explicit {
+            let key = SnapshotStore.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
+            guard let notice = performRestore(trigger: .manual, snapshot: explicit, key: key) else { return nil }
+            deliver(notice)
+            return notice
+        }
+        let current = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
+        stateLock.lock()
+        guard phase != .restoring else {
+            stateLock.unlock()
+            log?.write(chainLine(step: "ignored", detail: "restore-in-progress"))
+            return nil
+        }
+        stateLock.unlock()
+        let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
+        let chosen: (snapshot: Snapshot, key: String)?
+        if let snapshot = matchSnapshot(for: current, key: key) {
+            log?.write(chainLine(step: "topology-match", result: "exact", detail: "key=\(key) trigger=manual"))
+            chosen = (snapshot, key)
+        } else if let bestEffort = bestEffortSnapshot(for: current) {
+            // 部分拓扑（A5）的手动出口：重叠最多的超集快照 best-effort（引擎对缺失屏条目 skip）
+            log?.write(chainLine(step: "topology-match", result: "best-effort",
+                                 detail: "key=\(bestEffort.key) trigger=manual"))
+            chosen = bestEffort
+        } else {
+            log?.write(chainLine(step: "topology-match", result: "no-snapshot", detail: "key=\(key) trigger=manual"))
+            chosen = nil
+        }
+        guard let selected = chosen,
+              let notice = performRestore(trigger: .manual, snapshot: selected.snapshot, key: selected.key) else {
+            return nil
+        }
+        deliver(notice)
+        return notice
+    }
+
+    /// 部分拓扑的 best-effort 快照选取：与当前集合重叠最多者优先；并列取屏幕更少，再字典序拓扑键。
+    /// 候选 = 快照目录里 live-/history- 文件反拆出的拓扑键（键即 UUID 集合）。
+    private func bestEffortSnapshot(for current: Set<String>) -> (snapshot: Snapshot, key: String)? {
+        guard !current.isEmpty else { return nil }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: store.directory, includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        var candidates: [(key: String, uuids: [String])] = []
+        for file in files where file.pathExtension == "json" {
+            let name = file.deletingPathExtension().lastPathComponent
+            let key: String?
+            if name.hasPrefix("live-") {
+                key = String(name.dropFirst("live-".count))
+            } else if name.hasPrefix("history-") {
+                // history-<slot>-<拓扑键>：去掉前缀与 slot 段
+                let rest = name.dropFirst("history-".count)
+                guard let dash = rest.firstIndex(of: "-") else { continue }
+                key = String(rest[rest.index(after: dash)...])
+            } else { continue }
+            guard let k = key, let uuids = Self.uuids(inTopologyKey: k) else { continue }
+            candidates.append((k, uuids))
+        }
+        // 重叠最多 → 屏幕更少 → 键字典序
+        let ranked = candidates.sorted { a, b in
+            let overlapA = a.uuids.filter { current.contains($0) }.count
+            let overlapB = b.uuids.filter { current.contains($0) }.count
+            if overlapA != overlapB { return overlapA > overlapB }
+            if a.uuids.count != b.uuids.count { return a.uuids.count < b.uuids.count }
+            return a.key < b.key
+        }
+        for candidate in ranked {
+            if candidate.uuids.filter({ current.contains($0) }).isEmpty { break }  // 后面重叠只会更少
+            if let snapshot = store.loadLive(topologyKey: candidate.key) {
+                return (snapshot, candidate.key)
+            }
+        }
+        return nil
+    }
+
+    /// 拓扑键反拆 UUID 集合：键 = 36 字符 UUID 段（段内含连字符）以 "-" 连接，段长恒定可无歧义反拆
+    ///（SnapshotStore 文件头注释冻结的格式）
+    static func uuids(inTopologyKey key: String) -> [String]? {
+        let segments = (key.count + 1) / 37
+        guard segments >= 1, key.count == segments * 37 - 1 else { return nil }
+        var uuids: [String] = []
+        var index = key.startIndex
+        for i in 0..<segments {
+            if i > 0 {
+                guard key[index] == "-" else { return nil }
+                index = key.index(after: index)
+            }
+            guard let end = key.index(index, offsetBy: 36, limitedBy: key.endIndex) else {
+                return nil
+            }
+            uuids.append(String(key[index..<end]))
+            index = end
+        }
+        return uuids
+    }
+
     // MARK: - 通知与日志
 
     /// 通知投递（票 19 接系统通知）；每条通知都落 notify 日志行，链路到此收束

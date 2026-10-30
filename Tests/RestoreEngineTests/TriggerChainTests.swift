@@ -489,4 +489,88 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(spy.all.count, 3, "全部行原样转发内层 sink")
         XCTAssertNil(DegradeCollectingLog.degradeLayer(in: "[restore] L1 wid=1"))
     }
+
+    // MARK: - 周期 5：手动「立即恢复」（A6，跳过方向判定，与自动触发共用管线）
+
+    func testRestoreNowManualSkipsDirectionJudgment() throws {
+        // 无屏幕事件、无变大方向判定：直接恢复当前拓扑匹配快照（spec §6.2/03 #8）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 2, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [])
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { notices.append($0) })
+
+        let notice = chain.restoreNow()
+
+        XCTAssertEqual(restorer.snapshots.count, 1)
+        XCTAssertEqual(restorer.snapshots.first.map { $0.topology.map(\.uuid).sorted() }, ["A-uuid", "B-uuid"])
+        XCTAssertEqual(notice, .completed(RestoreCompletionNotice(
+            trigger: .manual, okCount: 2, skipCount: 0, failCount: 0,
+            degradedLayerNames: [], failureDetail: nil)))
+        XCTAssertEqual(notices.items.first?.trigger, .manual)
+        let steps = triggerSteps(spy.all)
+        XCTAssertFalse(steps.contains("event"), "手动入口不经屏幕事件/方向判定")
+        XCTAssertFalse(steps.contains("debounce-settle"))
+        XCTAssertTrue(steps.contains("restore-start"), "与自动触发共用同一恢复管线")
+    }
+
+    func testRestoreNowOnPartialTopologyRestoresBestEffortSupersetSnapshot() throws {
+        // A6 部分拓扑形态：当前 {A,B}、只有 {A,B,C} 快照 → 选重叠最多的超集快照 best-effort 恢复
+        //（缺失屏条目由引擎 target-display-absent skip，即「单屏 best-effort」语义）
+        // UUID 用真实形态（36 字符含内连字符）：拓扑键反拆依赖段长恒定（SnapshotStore 冻结格式）
+        let aUUID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let bUUID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        let cUUID = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
+        let displayA36 = Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000), uuid: aUUID)
+        let displayB36 = Displays.Info(id: 2, bounds: CGRect(x: 2000, y: 0, width: 1000, height: 1000), uuid: bUUID)
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 2, fail: 0))
+        let store = try makeStore(topologies: [[aUUID, bUUID, cUUID]])
+        let box = DisplayBox([displayA36, displayB36])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        let notice = chain.restoreNow()
+
+        XCTAssertEqual(restorer.snapshots.first.map { $0.topology.map(\.uuid).sorted() },
+                       [aUUID, bUUID, cUUID].sorted(), "选超集快照 best-effort 单屏恢复")
+        XCTAssertEqual(notice?.title, "恢复完成")
+        XCTAssertEqual(spy.all.filter { $0.contains("step=topology-match") }.first?.contains("result=best-effort"),
+                       true, "非精确匹配在日志标注 best-effort")
+    }
+
+    func testTopologyKeyRoundTripParsesFixedWidthUUIDSegments() throws {
+        // 拓扑键反拆：36 字符段 + "-" 连接（SnapshotStore 冻结格式）无歧义还原 UUID 集合
+        let aUUID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let bUUID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        let key = SnapshotStore.topologyKey(forDisplayUUIDs: [aUUID, bUUID])
+        XCTAssertEqual(TriggerChain.uuids(inTopologyKey: key)?.sorted(), [aUUID, bUUID])
+        XCTAssertNil(TriggerChain.uuids(inTopologyKey: "short-fake-key"), "非冻结格式拒拆")
+    }
+
+    func testRestoreNowWithoutMatchingSnapshotReturnsNil() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report())
+        let store = try makeStore(topologies: [])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        XCTAssertNil(chain.restoreNow(), "无匹配快照不恢复")
+        XCTAssertTrue(restorer.snapshots.isEmpty)
+        XCTAssertEqual(spy.all.filter { $0.contains("step=topology-match") }.first?.contains("result=no-snapshot"),
+                       true)
+    }
 }

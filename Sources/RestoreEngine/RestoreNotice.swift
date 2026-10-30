@@ -93,6 +93,12 @@ public enum RestoreNotice: Equatable, Sendable {
         case .partialTopology(let notice): return notice.body
         }
     }
+
+    /// 完成通知的触发方式（部分拓扑提示无此字段）
+    public var trigger: RestoreTriggerKind? {
+        if case .completed(let notice) = self { return notice.trigger }
+        return nil
+    }
 }
 
 /// 降级层号 → 通知附注层名（§8.5 能力状态行同款词汇：Space 归属、最小化窗口归位）
