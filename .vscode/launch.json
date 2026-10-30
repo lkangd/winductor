@@ -1,0 +1,64 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Debug WindowLayoutRestorer",
+      "target": "WindowLayoutRestorer",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug WindowLayoutRestorer"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Release WindowLayoutRestorer",
+      "target": "WindowLayoutRestorer",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release WindowLayoutRestorer"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Debug VerifyCLI",
+      "target": "VerifyCLI",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug VerifyCLI"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Release VerifyCLI",
+      "target": "VerifyCLI",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release VerifyCLI"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Debug DebugCLI",
+      "target": "DebugCLI",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug DebugCLI"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
+      "name": "Release DebugCLI",
+      "target": "DebugCLI",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release DebugCLI"
+    }
+  ]
+}
