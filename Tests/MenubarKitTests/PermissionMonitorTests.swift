@@ -8,12 +8,14 @@ import XCTest
 final class PermissionMonitorTests: XCTestCase {
     private var accessibilityGranted = false
     private var screenCaptureGranted = false
+    private var windowTitles: [String?] = []
     private var statusChanges: [PermissionMonitor.Status] = []
 
     private func makeMonitor() -> PermissionMonitor {
         let monitor = PermissionMonitor(
             accessibilityProbe: { [unowned self] in self.accessibilityGranted },
-            screenCaptureProbe: { [unowned self] in self.screenCaptureGranted }
+            screenCaptureProbe: { [unowned self] in self.screenCaptureGranted },
+            titleSampler: { [unowned self] in self.windowTitles }
         )
         monitor.onStatusChange = { [unowned self] status in self.statusChanges.append(status) }
         return monitor
@@ -72,5 +74,66 @@ final class PermissionMonitorTests: XCTestCase {
         _ = monitor.checkNow()
         _ = monitor.checkNow()
         XCTAssertEqual(statusChanges.count, 1)
+    }
+
+    // MARK: §8.4 屏幕录制定期重确认（前后对比：之前可读 → 现在有窗口但标题全空）
+
+    /// 就绪运行中标题全空 → 降回未就绪 + 重确认信号 + 一次回调（§8.4 自动降级）
+    func testRuntimeTitleLossDemotesToReconfirmNotReady() {
+        accessibilityGranted = true
+        screenCaptureGranted = true
+        windowTitles = ["邮件", "终端"]
+        let monitor = makeMonitor()
+        XCTAssertTrue(monitor.checkNow().isReady)
+        statusChanges.removeAll()
+
+        windowTitles = [nil, nil]
+        let status = monitor.checkNow()
+        XCTAssertFalse(status.isReady)
+        XCTAssertTrue(status.screenCaptureNeedsReconfirm)
+        XCTAssertEqual(status.missing, [.screenCapture])
+        XCTAssertEqual(statusChanges, [status])
+    }
+
+    /// 首样本就全空不判降级（无「之前可读」基线；首启未授权由预检探针说话）
+    func testFirstSampleAllEmptyDoesNotLapse() {
+        accessibilityGranted = true
+        screenCaptureGranted = true
+        windowTitles = [nil, nil]
+        let status = makeMonitor().checkNow()
+        XCTAssertTrue(status.isReady)
+        XCTAssertFalse(status.screenCaptureNeedsReconfirm)
+    }
+
+    /// 标题重新可读且预检通过 → 重确认解除、恢复就绪
+    func testReconfirmClearsWhenTitlesReadableAndPreflightTrue() {
+        accessibilityGranted = true
+        screenCaptureGranted = true
+        windowTitles = ["邮件"]
+        let monitor = makeMonitor()
+        _ = monitor.checkNow()
+        windowTitles = [nil]
+        XCTAssertFalse(monitor.checkNow().isReady)
+
+        windowTitles = ["邮件"]
+        let status = monitor.checkNow()
+        XCTAssertTrue(status.isReady)
+        XCTAssertFalse(status.screenCaptureNeedsReconfirm)
+    }
+
+    /// TCC 收回后标题持续不可读：预检变 false 也不抹掉重确认信号（保持 §8.4 未就绪）
+    func testStaysReconfirmWhileTitlesUnreadableEvenIfPreflightFlipsFalse() {
+        accessibilityGranted = true
+        screenCaptureGranted = true
+        windowTitles = ["邮件"]
+        let monitor = makeMonitor()
+        _ = monitor.checkNow()
+        windowTitles = [nil]
+        _ = monitor.checkNow()
+
+        screenCaptureGranted = false
+        let status = monitor.checkNow()
+        XCTAssertFalse(status.isReady)
+        XCTAssertTrue(status.screenCaptureNeedsReconfirm)
     }
 }
