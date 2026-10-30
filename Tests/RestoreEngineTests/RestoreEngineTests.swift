@@ -230,8 +230,9 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.failCount, 0)
     }
 
-    func testMinimizedSnapshotEntryAndLiveMinimizedWindowAreSkipped() throws {
-        // L4 本票不碰（票 15）：快照 minimized 条目 skip；实况最小化窗口 skip
+    func testMinimizedLiveWindowRestoredViaL4AndSnapshotMinimizedEntryExpandedRestoredNormally() throws {
+        // 票 15 L4 归口更新：实况最小化窗口一律经 L4（直移回快照 Space 并保持最小化）；
+        // 快照 minimized 但实况已展开的条目走常规恢复（终态是否最小化尊重实况，不强行重新最小化）
         let snapshot = Snapshot(
             capturedAt: Date(),
             topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
@@ -264,11 +265,17 @@ extension RestorePipelineTests {
 
         let report = try engine.restore(snapshot: snapshot)
 
-        XCTAssertTrue(bridge.moves.isEmpty, "最小化条目/窗口一律不动")
-        XCTAssertTrue(geometry.calls.isEmpty)
-        XCTAssertTrue(log.all.contains { $0.contains("reason=live-minimized") })
-        XCTAssertTrue(log.all.contains { $0.contains("reason=minimized-entry-L4") })
-        XCTAssertEqual(report.skipCount, 2); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.failCount, 0)
+        // 101（实况最小化，快照 Doc 未最小化）→ L4：目标 A#1(id5) 已在 → 直移 true，零首尾动作
+        XCTAssertEqual(bridge.directMinimizedMoves.map(\.windowID), [101])
+        // 102 走常规桥接；101 不出现在常规桥接列表（已走 L4 直移）
+        XCTAssertEqual(bridge.moves.map(\.wids), [[102]])
+        XCTAssertTrue(geometry.calls.map(\.windowID).contains(101) == false, "最小化窗几何不触碰")
+
+        // 102（快照 Mini minimized=true，实况已展开）→ 常规恢复：几何照写（尊重实况展开态）
+        XCTAssertEqual(geometry.calls.map(\.windowID), [102])
+        XCTAssertEqual(report.okCount, 2, "101 L4 ok + 102 常规 ok")
+        XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(report.failCount, 0)
     }
 }
 
@@ -585,6 +592,74 @@ extension RestorePipelineTests {
         XCTAssertTrue(line.contains("result=skip") || line.contains("skip"), "实际：\(line)")
         XCTAssertEqual(report.okCount, 1, "只剩常规窗 101 ok")
         XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
+
+// MARK: L4 最小化恢复（票 15，A16）— 送回快照 Space 并保持最小化
+
+extension RestorePipelineTests {
+    /// A16 场景：双屏。快照 = com.t.m「Mail」→ B#2（minimized=true）；
+    /// 实况 = 101 Mail 最小化（isOnscreen=false，CG 契约），在原 Space A#1(id5)。
+    func makeMinimizedWorld() -> (snapshot: Snapshot, bridge: FakeBridge, geometry: FakeGeometry,
+                                  mini: FakeMinimize, log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                World.userSpace("B-uuid", index: 2),
+            ],
+            windows: [World.snapshotWindow(bundleID: "com.t.m", title: "Mail", sibling: 0,
+                                           display: "B-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4,
+                                           minimized: true)])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.m", title: "Mail",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.2, y: 0.2, w: 0.4, h: 0.3,
+                         onscreen: false),
+        ]
+        let bridge = FakeBridge(entries: [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 7),
+        ], byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        let mini = FakeMinimize()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [101]), geometry: geometry,
+            fullscreen: FakeFullScreen(), minimize: mini, fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, mini, log, engine)
+    }
+
+    func testMinimizedWindowSentBackToSnapshotSpaceAndStaysMinimizedViaDirectBridge() throws {
+        // A16：最小化窗直移可行（§6.5）→ 送回快照 Space 且保持最小化，零首尾 AXMinimized 动作
+        let world = makeMinimizedWorld()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.windowID), [101],
+                       "先试最小化状态直接桥接")
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.spaceID), [7],
+                       "目标 = 快照 Space B#2(id7)")
+        XCTAssertTrue(world.mini.calls.isEmpty, "直移成功不触碰 AXMinimized")
+        XCTAssertTrue(world.bridge.moves.isEmpty, "不走常规 moveWindowsToSpace")
+        XCTAssertTrue(world.geometry.calls.isEmpty, "最小化窗几何不触碰")
+        XCTAssertEqual(world.bridge.byWindow[101], 7, "归属实际变更到快照 Space")
+
+        let l4 = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] L4") && $0.contains("action=minimize") })
+        XCTAssertTrue(l4.contains("wid=101") && l4.contains("result=ok"), "实际：\(l4)")
+
+        XCTAssertEqual(report.okCount, 1)
+        XCTAssertEqual(report.skipCount, 0)
         XCTAssertEqual(report.failCount, 0)
     }
 }
