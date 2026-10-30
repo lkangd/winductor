@@ -353,3 +353,119 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.skipCount, 0)
     }
 }
+
+// MARK: A9/A10/A11 — 管线级匹配行为 + one-shot 幂等（§6.3）
+
+extension RestorePipelineTests {
+    func testTitleMismatchFallsBackToGeometryWithinThreshold() throws {
+        // A9：标题失配（浏览器切 tab）→ 二级几何兜底成功，动作照常落到该窗口
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1)],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Old Tab", sibling: 0,
+                                           display: "A-uuid", space: 1, x: 0.2, y: 0.3, w: 0.4, h: 0.4)])
+        let samples = [World.sample(wid: 101, bundleID: "com.t.a", title: "New Tab",
+                                    displayOrigin: aOrigin, displaySize: screenSize, x: 0.2, y: 0.3, w: 0.4, h: 0.4)]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5)], byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = singleDisplayEngine(snapshot: snapshot, samples: samples,
+                                         bridge: bridge, geometry: geometry, log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(geometry.calls.map(\.windowID), [101], "兜底配上的窗口应照常摆位")
+        XCTAssertEqual(report.matchedCount, 1)
+        XCTAssertEqual(report.okCount, 1)
+        XCTAssertTrue(log.all.contains { $0.contains("app=com.t.a") && $0.contains("action=position") })
+    }
+
+    func testTitleMismatchFarAwayStaysUntouched() throws {
+        // A10：标题失配且几何兜底失败（距离超阈）→ 保守跳过不动
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1)],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Old Tab", sibling: 0,
+                                           display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let samples = [World.sample(wid: 101, bundleID: "com.t.a", title: "New Tab",
+                                    displayOrigin: aOrigin, displaySize: screenSize, x: 0.9, y: 0.9, w: 0.4, h: 0.4)]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5)], byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = singleDisplayEngine(snapshot: snapshot, samples: samples,
+                                         bridge: bridge, geometry: geometry, log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertTrue(bridge.moves.isEmpty)
+        XCTAssertTrue(geometry.calls.isEmpty)
+        XCTAssertTrue(log.all.contains { $0.contains("reason=unmatched") })
+        XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.untouchedLiveCount, 1)
+    }
+
+    func testSameTitleWindowsAlignBySiblingOrder() throws {
+        // A11：同应用同标题双窗 → 存活侧按「先 y 后 x」排序，与快照 siblingIndex 对位
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 1,
+                                     display: "B-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        // 存活侧：111 在上方（y=0.1 → sibling 0），222 在下方（y=0.5 → sibling 1）
+        let samples = [
+            World.sample(wid: 222, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.5, w: 0.4, h: 0.4),
+            World.sample(wid: 111, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5),
+                                          World.entry("B-uuid", index: 1, id: 6)],
+                                byWindow: [111: 5, 222: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(), geometry: geometry,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        // sibling 0 → A#1(id5) 对 111；sibling 1 → B#1(id6) 对 222
+        let byWid = Dictionary(uniqueKeysWithValues: bridge.moves.map { ($0.wids[0], $0.spaceID) })
+        XCTAssertEqual(byWid[111], 5)
+        XCTAssertEqual(byWid[222], 6)
+        XCTAssertEqual(report.okCount, 2)
+        XCTAssertEqual(report.failCount, 0)
+    }
+
+    func testRerunAfterRestoreIsStableNoDrift() throws {
+        // one-shot 幂等（§6.3/§9.3）：恢复完成后再跑一轮 → 归属与几何不再漂移、计数不劣化
+        let world = makeWorld()
+        let engine = makeEngine(world)
+
+        let first = try engine.restore(snapshot: world.snapshot)
+        let stateAfterFirst = world.bridge.byWindow
+        let geometryAfterFirst = world.geometry.calls
+
+        let second = try engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.bridge.byWindow, stateAfterFirst, "复跑不改变 Space 归属")
+        XCTAssertEqual(world.geometry.calls.count, geometryAfterFirst.count * 2, "复跑重写同一批几何（值恒等）")
+        XCTAssertEqual(world.geometry.calls.suffix(geometryAfterFirst.count), geometryAfterFirst,
+                       "复跑写入的 pos/size 与首轮逐值相同")
+        XCTAssertEqual(first.okCount, second.okCount)
+        XCTAssertEqual(second.failCount, 0)
+        XCTAssertEqual(second.skipCount, first.skipCount)
+    }
+}
