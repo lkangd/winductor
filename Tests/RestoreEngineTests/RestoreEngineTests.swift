@@ -1,5 +1,6 @@
 @testable import Core
 import RestoreEngine
+import SpaceAdapter  // SpaceAdapterError.layerUnavailable：L2 层失效连坐分类（票 15）
 import SnapshotEngine
 import XCTest
 
@@ -230,8 +231,9 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.failCount, 0)
     }
 
-    func testMinimizedSnapshotEntryAndLiveMinimizedWindowAreSkipped() throws {
-        // L4 本票不碰（票 15）：快照 minimized 条目 skip；实况最小化窗口 skip
+    func testMinimizedLiveWindowRestoredViaL4AndSnapshotMinimizedEntryExpandedRestoredNormally() throws {
+        // 票 15 L4 归口更新：实况最小化窗口一律经 L4（直移回快照 Space 并保持最小化）；
+        // 快照 minimized 但实况已展开的条目走常规恢复（终态是否最小化尊重实况，不强行重新最小化）
         let snapshot = Snapshot(
             capturedAt: Date(),
             topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
@@ -264,11 +266,17 @@ extension RestorePipelineTests {
 
         let report = try engine.restore(snapshot: snapshot)
 
-        XCTAssertTrue(bridge.moves.isEmpty, "最小化条目/窗口一律不动")
-        XCTAssertTrue(geometry.calls.isEmpty)
-        XCTAssertTrue(log.all.contains { $0.contains("reason=live-minimized") })
-        XCTAssertTrue(log.all.contains { $0.contains("reason=minimized-entry-L4") })
-        XCTAssertEqual(report.skipCount, 2); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.failCount, 0)
+        // 101（实况最小化，快照 Doc 未最小化）→ L4：目标 A#1(id5) 已在 → 直移 true，零首尾动作
+        XCTAssertEqual(bridge.directMinimizedMoves.map(\.windowID), [101])
+        // 102 走常规桥接；101 不出现在常规桥接列表（已走 L4 直移）
+        XCTAssertEqual(bridge.moves.map(\.wids), [[102]])
+        XCTAssertTrue(geometry.calls.map(\.windowID).contains(101) == false, "最小化窗几何不触碰")
+
+        // 102（快照 Mini minimized=true，实况已展开）→ 常规恢复：几何照写（尊重实况展开态）
+        XCTAssertEqual(geometry.calls.map(\.windowID), [102])
+        XCTAssertEqual(report.okCount, 2, "101 L4 ok + 102 常规 ok")
+        XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(report.failCount, 0)
     }
 }
 
@@ -467,5 +475,359 @@ extension RestorePipelineTests {
         XCTAssertEqual(first.okCount, second.okCount)
         XCTAssertEqual(second.failCount, 0)
         XCTAssertEqual(second.skipCount, first.skipCount)
+    }
+}
+
+// MARK: L3 全屏最后（票 15，A17）— 快照 fullscreen Space（kind=fullscreen 携带 bundleID）恢复
+
+extension RestorePipelineTests {
+    /// A17 场景：双屏。快照 = A#1 user + B#1 user + B#2 fullscreen(com.t.fs)；
+    /// 实况 = 101(com.t.a Doc，被折腾到 B#1) + 202(com.t.fs Full，全屏应用窗现落在 A 整屏)。
+    /// 全屏应用不进 snapshot.windows（schema §7.3），由 fullscreen Space 携带 bundleID 表示。
+    func makeFullscreenWorld(fsWindowLive: Bool = true) -> (snapshot: Snapshot, bridge: FakeBridge,
+                                                            geometry: FakeGeometry, fs: FakeFullScreen,
+                                                            log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                SnapshotSpace(displayUUID: "B-uuid", index: 2, kind: .fullscreen,
+                              fullscreenAppBundleID: "com.t.fs"),
+            ],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                           display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        var samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        if fsWindowLive {
+            samples.append(World.sample(wid: 202, bundleID: "com.t.fs", title: "Full",
+                                        displayOrigin: aOrigin, displaySize: screenSize,
+                                        x: 0.0, y: 0.0, w: 1.0, h: 1.0))
+        }
+        var byWindow: [UInt32: Int64] = [101: 6]
+        if fsWindowLive { byWindow[202] = 5 }
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: byWindow)
+        let geometry = FakeGeometry()
+        let fs = FakeFullScreen()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(), geometry: geometry,
+            fullscreen: fs, minimize: FakeMinimize(), fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, fs, log, engine)
+    }
+
+    func testFullscreenAppRestoredLastOntoSnapshotDisplayAndGeometryUntouched() throws {
+        // A17：全屏应用恢复至快照屏 type=4 Space，且发生在该屏其余落位之后；全屏窗几何不再触碰
+        let world = makeFullscreenWorld()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        // 目标屏就位：L2 先归位 101 → A#1(id5)，L3 预移位 202 → B 屏既有 Space(B#1 id6)（05 #4）
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101], [202]], "L2 常规窗在前，L3 预移位在后")
+        XCTAssertEqual(world.bridge.moves.map(\.spaceID), [5, 6])
+
+        // 全屏窗几何不触碰（票面验收：全屏恢复后窗口几何不再被触碰）
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101], "几何只动常规窗")
+
+        // AXFullScreen=true 恰一次、对 202（进入后台可完成，§5.2/§8.6）
+        XCTAssertEqual(world.fs.calls.map(\.windowID), [202])
+        XCTAssertEqual(world.fs.calls.map(\.value), [true])
+
+        // 顺序铁律（§6.8 全屏最后）：L1 几何（101）必须先于 L3 全屏（202）
+        let l1Idx = try XCTUnwrap(world.log.all.firstIndex {
+            $0.contains("[restore] L1") && $0.contains("wid=101") && $0.contains("result=ok") })
+        let l3Idx = try XCTUnwrap(world.log.all.firstIndex {
+            $0.contains("[restore] L3") && $0.contains("action=fullscreen") && $0.contains("result=ok") })
+        XCTAssertLessThan(l1Idx, l3Idx, "全屏必须在该屏其余落位完成之后")
+
+        // 计数：常规窗 1 ok + 全屏 Space 1 ok；无跳过无失败
+        XCTAssertEqual(report.okCount, 2)
+        XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
+
+extension RestorePipelineTests {
+    func testFullscreenLayerDegradedSkipsFullscreenButRestoresTheRest() throws {
+        // A20 同构（FORCE_DEGRADED=fullscreen 走同一 isLayerAvailable 判定路径）：
+        // L3 降级只降该层 —— 全屏应用不动，L2/L1 照常
+        let world = makeFullscreenWorld()
+        world.bridge.layerAvailability[.fullscreen] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty, "L3 降级不写全屏")
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]], "常规窗 L2 照常")
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101], "L1 照常")
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(202), "降级层不动全屏应用窗")
+
+        // 降级 skip 行：无具体窗口可归（未选窗），用与 planEntries 同源的 plain skip 行格式
+        let skipLine = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] skip") && $0.contains("app=com.t.fs") })
+        XCTAssertTrue(skipLine.contains("reason=fullscreen-layer-unavailable"), "实际：\(skipLine)")
+
+        XCTAssertEqual(report.okCount, 1)
+        XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.failCount, 0, "降级 skip 不计失败")
+    }
+
+    func testFullscreenSkipsAsAppNotRunningWhenAppHasNoLiveWindow() throws {
+        // 全屏应用已退出（§6.4a 不启动）→ 该 fullscreen Space 跳过，不产生任何动作
+        let world = makeFullscreenWorld(fsWindowLive: false)
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty)
+        XCTAssertTrue(world.bridge.moves.flatMap(\.wids).contains(202) == false)
+        let line = try XCTUnwrap(world.log.all.first {
+            $0.contains("app=com.t.fs") && $0.contains("reason=app-not-running") })
+        XCTAssertTrue(line.contains("result=skip") || line.contains("skip"), "实际：\(line)")
+        XCTAssertEqual(report.okCount, 1, "只剩常规窗 101 ok")
+        XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
+
+// MARK: L4 最小化恢复（票 15，A16）— 送回快照 Space 并保持最小化
+
+extension RestorePipelineTests {
+    /// A16 场景：双屏。快照 = com.t.m「Mail」→ B#2（minimized=true）；
+    /// 实况 = 101 Mail 最小化（isOnscreen=false，CG 契约），在原 Space A#1(id5)。
+    func makeMinimizedWorld() -> (snapshot: Snapshot, bridge: FakeBridge, geometry: FakeGeometry,
+                                  mini: FakeMinimize, log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                World.userSpace("B-uuid", index: 2),
+            ],
+            windows: [World.snapshotWindow(bundleID: "com.t.m", title: "Mail", sibling: 0,
+                                           display: "B-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4,
+                                           minimized: true)])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.m", title: "Mail",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.2, y: 0.2, w: 0.4, h: 0.3,
+                         onscreen: false),
+        ]
+        let bridge = FakeBridge(entries: [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 7),
+        ], byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        let mini = FakeMinimize()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [101]), geometry: geometry,
+            fullscreen: FakeFullScreen(), minimize: mini, fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, mini, log, engine)
+    }
+
+    func testMinimizedWindowSentBackToSnapshotSpaceAndStaysMinimizedViaDirectBridge() throws {
+        // A16：最小化窗直移可行（§6.5）→ 送回快照 Space 且保持最小化，零首尾 AXMinimized 动作
+        let world = makeMinimizedWorld()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.windowID), [101],
+                       "先试最小化状态直接桥接")
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.spaceID), [7],
+                       "目标 = 快照 Space B#2(id7)")
+        XCTAssertTrue(world.mini.calls.isEmpty, "直移成功不触碰 AXMinimized")
+        XCTAssertTrue(world.bridge.moves.isEmpty, "不走常规 moveWindowsToSpace")
+        XCTAssertTrue(world.geometry.calls.isEmpty, "最小化窗几何不触碰")
+        XCTAssertEqual(world.bridge.byWindow[101], 7, "归属实际变更到快照 Space")
+
+        let l4 = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] L4") && $0.contains("action=minimize") })
+        XCTAssertTrue(l4.contains("wid=101") && l4.contains("result=ok"), "实际：\(l4)")
+
+        XCTAssertEqual(report.okCount, 1)
+        XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
+
+extension RestorePipelineTests {
+    func testMinimizedWindowFallsBackToUnminimizeBridgeReminimizeWhenDirectBridgeFails() throws {
+        // §6.5 回退：直移不可行 → 取消最小化（落回原 Space）→ 桥接 → 重新最小化，语义不变
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.windowID), [101, 101])
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "取消最小化 → 重新最小化")
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]])
+        XCTAssertEqual(world.bridge.moves.map(\.spaceID), [7], "取消后桥接移至快照 Space")
+        XCTAssertEqual(report.okCount, 1); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.skipCount, 0)
+    }
+
+    func testMinimizedWindowCountsFailWhenFallbackBridgeIsSilentNoOp() throws {
+        // 回退桥接 no-op（perform 后归属未变更）→ 计失败（同 L2 口径）；仍尽力重最小化保持终态
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveReturnsFalse = true
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "终态仍恢复最小化")
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0)
+        XCTAssertTrue(world.log.all.contains {
+            $0.contains("[restore] L4") && $0.contains("result=fail") })
+    }
+
+    func testMinimizedWindowSkipsWhenBridgeLayerUnavailableInFallback() throws {
+        // L2 层失效连坐（探针未过 / 运行时 no-op 已标死）：重最小化后原地保持，按 skip 不判本窗失败
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveError = SpaceAdapterError.layerUnavailable(.bridge)
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "终态原地保持最小化")
+        XCTAssertEqual(report.skipCount, 1); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.okCount, 0)
+        XCTAssertTrue(world.log.all.contains {
+            $0.contains("[restore] L4") && $0.contains("result=skip") })
+    }
+
+    func testMinimizedWindowCountsFailWhenBridgeMoveErrorsUnexpectedly() throws {
+        // 非层失效类桥接错误（如 bridgedOpFailed）→ 计失败
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveError = FakeAXPermissionError()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.skipCount, 0)
+        XCTAssertTrue(world.log.all.contains { $0.contains("[restore] detail wid=101") })
+    }
+
+    func testMinimizedWindowCountsFailWhenUnminimizeWriteFails() throws {
+        // 取消最小化 AX 写失败 → 计失败，窗口保持最小化原地
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.mini.error = FakeAXPermissionError()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false], "取消最小化失败后不再重最小化")
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.skipCount, 0)
+    }
+}
+
+// MARK: 降级阶梯逐层独立（票 15，A20/A21 同构：FORCE_DEGRADED 走同一 isLayerAvailable 判定路径）
+
+extension RestorePipelineTests {
+    /// 混合场景：A#1 user + B#1/#2 user + B#3 fullscreen(com.t.fs)；
+    /// 实况 = 101 Doc 在 B#1（常规）、202 fs 在 A 整屏（全屏应用）、301 Mail 最小化在 A#1。
+    func makeMixedWorld() -> (snapshot: Snapshot, bridge: FakeBridge, geometry: FakeGeometry,
+                              fs: FakeFullScreen, mini: FakeMinimize, log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                World.userSpace("B-uuid", index: 2),
+                SnapshotSpace(displayUUID: "B-uuid", index: 3, kind: .fullscreen,
+                              fullscreenAppBundleID: "com.t.fs"),
+            ],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.m", title: "Mail", sibling: 0,
+                                     display: "B-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4,
+                                     minimized: true),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.fs", title: "Full",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.0, y: 0.0, w: 1.0, h: 1.0),
+            World.sample(wid: 301, bundleID: "com.t.m", title: "Mail",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.2, y: 0.2, w: 0.4, h: 0.3,
+                         onscreen: false),
+        ]
+        let bridge = FakeBridge(entries: [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 8),
+        ], byWindow: [101: 6, 202: 5, 301: 5])
+        let geometry = FakeGeometry()
+        let fs = FakeFullScreen()
+        let mini = FakeMinimize()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [301]), geometry: geometry,
+            fullscreen: fs, minimize: mini, fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, fs, mini, log, engine)
+    }
+
+    func testMinimizedLayerUnavailableLeavesWindowUntouchedAsSkipWhileOthersProceed() throws {
+        // A21 同构：FORCE_DEGRADED=minimized → L4 降级：最小化窗原地保持最小化不动、不报失败（skip）
+        let world = makeMixedWorld()
+        world.bridge.layerAvailability[.minimized] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        // L4 失效路径：零动作（无直移、无 AXMinimized 写、无几何、无桥接）
+        XCTAssertTrue(world.bridge.directMinimizedMoves.isEmpty)
+        XCTAssertTrue(world.mini.calls.isEmpty)
+        XCTAssertFalse(world.geometry.calls.map(\.windowID).contains(301))
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(301))
+
+        let skip = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] L4") && $0.contains("action=minimize") && $0.contains("result=skip") })
+        XCTAssertTrue(skip.contains("wid=301"), "实际：\(skip)")
+
+        // 其余层照常：101 L2+L1、202 L3 全屏
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101], [202]])
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101])
+        XCTAssertEqual(world.fs.calls.map(\.windowID), [202])
+
+        XCTAssertEqual(report.okCount, 2, "101 常规 + L3 全屏")
+        XCTAssertEqual(report.skipCount, 1, "L4 降级 skip")
+        XCTAssertEqual(report.failCount, 0, "L4 降级不报失败")
+    }
+
+    func testFullscreenLayerDegradedKeepsMinimizedLayerWorking() throws {
+        // FORCE_DEGRADED=fullscreen 语义：L3 降级全屏应用不动，L4 最小化恢复照常
+        let world = makeMixedWorld()
+        world.bridge.layerAvailability[.fullscreen] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty, "L3 降级不写全屏")
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(202), "全屏应用窗不预移位")
+
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.windowID), [301], "L4 照常")
+        XCTAssertTrue(world.mini.calls.isEmpty, "直移成功无首尾动作")
+        XCTAssertEqual(world.bridge.byWindow[301], 8, "送回快照 Space B#2(id8)")
+
+        // L2/L1 照常
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]])
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101])
+
+        XCTAssertEqual(report.okCount, 2, "101 常规 + 301 L4")
+        XCTAssertEqual(report.skipCount, 1, "L3 降级 skip")
+        XCTAssertEqual(report.failCount, 0)
     }
 }
