@@ -469,3 +469,83 @@ extension RestorePipelineTests {
         XCTAssertEqual(second.skipCount, first.skipCount)
     }
 }
+
+// MARK: L3 全屏最后（票 15，A17）— 快照 fullscreen Space（kind=fullscreen 携带 bundleID）恢复
+
+extension RestorePipelineTests {
+    /// A17 场景：双屏。快照 = A#1 user + B#1 user + B#2 fullscreen(com.t.fs)；
+    /// 实况 = 101(com.t.a Doc，被折腾到 B#1) + 202(com.t.fs Full，全屏应用窗现落在 A 整屏)。
+    /// 全屏应用不进 snapshot.windows（schema §7.3），由 fullscreen Space 携带 bundleID 表示。
+    func makeFullscreenWorld(fsWindowLive: Bool = true) -> (snapshot: Snapshot, bridge: FakeBridge,
+                                                            geometry: FakeGeometry, fs: FakeFullScreen,
+                                                            log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                SnapshotSpace(displayUUID: "B-uuid", index: 2, kind: .fullscreen,
+                              fullscreenAppBundleID: "com.t.fs"),
+            ],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                           display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        var samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        if fsWindowLive {
+            samples.append(World.sample(wid: 202, bundleID: "com.t.fs", title: "Full",
+                                        displayOrigin: aOrigin, displaySize: screenSize,
+                                        x: 0.0, y: 0.0, w: 1.0, h: 1.0))
+        }
+        var byWindow: [UInt32: Int64] = [101: 6]
+        if fsWindowLive { byWindow[202] = 5 }
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: byWindow)
+        let geometry = FakeGeometry()
+        let fs = FakeFullScreen()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(), geometry: geometry,
+            fullscreen: fs, minimize: FakeMinimize(), fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, fs, log, engine)
+    }
+
+    func testFullscreenAppRestoredLastOntoSnapshotDisplayAndGeometryUntouched() throws {
+        // A17：全屏应用恢复至快照屏 type=4 Space，且发生在该屏其余落位之后；全屏窗几何不再触碰
+        let world = makeFullscreenWorld()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        // 目标屏就位：L2 先归位 101 → A#1(id5)，L3 预移位 202 → B 屏既有 Space(B#1 id6)（05 #4）
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101], [202]], "L2 常规窗在前，L3 预移位在后")
+        XCTAssertEqual(world.bridge.moves.map(\.spaceID), [5, 6])
+
+        // 全屏窗几何不触碰（票面验收：全屏恢复后窗口几何不再被触碰）
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101], "几何只动常规窗")
+
+        // AXFullScreen=true 恰一次、对 202（进入后台可完成，§5.2/§8.6）
+        XCTAssertEqual(world.fs.calls.map(\.windowID), [202])
+        XCTAssertEqual(world.fs.calls.map(\.value), [true])
+
+        // 顺序铁律（§6.8 全屏最后）：L1 几何（101）必须先于 L3 全屏（202）
+        let l1Idx = try XCTUnwrap(world.log.all.firstIndex {
+            $0.contains("[restore] L1") && $0.contains("wid=101") && $0.contains("result=ok") })
+        let l3Idx = try XCTUnwrap(world.log.all.firstIndex {
+            $0.contains("[restore] L3") && $0.contains("action=fullscreen") && $0.contains("result=ok") })
+        XCTAssertLessThan(l1Idx, l3Idx, "全屏必须在该屏其余落位完成之后")
+
+        // 计数：常规窗 1 ok + 全屏 Space 1 ok；无跳过无失败
+        XCTAssertEqual(report.okCount, 2)
+        XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}

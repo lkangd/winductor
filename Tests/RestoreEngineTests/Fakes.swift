@@ -2,6 +2,7 @@
 import CoreGraphics
 import Foundation
 import RestoreEngine
+import SpaceAdapter  // SpaceLayer：降级阶梯层枚举（票 15 L3/L4 判定用）
 import SnapshotEngine
 import XCTest
 
@@ -13,9 +14,16 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     let entries: [SpaceEntry]
     var byWindow: [UInt32: Int64]
     var bridgeAvailable: Bool
+    /// 非 bridge 层（L3/L4）可用性注入；缺省 = 可用（票 15 降级阶梯）
+    var layerAvailability: [SpaceLayer: Bool] = [:]
     /// 置非 nil = moveWindowsToSpace 抛该错误（异常路径注入）
     var moveError: Error?
+    /// 置 true = moveWindowsToSpace 返回 false 且不改 byWindow（模拟 perform 后归属未变更 no-op）
+    var moveReturnsFalse = false
+    /// 置 true = tryMoveMinimized 返回 false（模拟最小化窗直移不可行，走 §6.5 回退路径）
+    var minimizedDirectMoveFails = false
     private(set) var moves: [(wids: [UInt32], spaceID: Int64)] = []
+    private(set) var directMinimizedMoves: [(windowID: UInt32, spaceID: Int64)] = []
 
     init(entries: [SpaceEntry], byWindow: [UInt32: Int64], bridgeAvailable: Bool = true) {
         self.entries = entries
@@ -25,13 +33,29 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
 
     func managedSpaces() throws -> [SpaceEntry] { entries }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
-    func isBridgeAvailable() -> Bool { bridgeAvailable }
+
+    /// 降级阶梯层可用性（spec §6.1/§10.2；bridge 沿用 bridgeAvailable 注入口）
+    func isLayerAvailable(_ layer: SpaceLayer) -> Bool {
+        if layer == .bridge { return bridgeAvailable }
+        return layerAvailability[layer] ?? true
+    }
 
     @discardableResult
     func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {
         moves.append((wids, spaceID))
         if let moveError { throw moveError }
+        if moveReturnsFalse { return false }
         for w in wids { byWindow[w] = spaceID }
+        return true
+    }
+
+    /// L4 最小化窗直移尝试（票 15）：成功改写 byWindow；已在目标 Space 快速返回 true
+    @discardableResult
+    func tryMoveMinimized(windowID wid: UInt32, spaceID: Int64) throws -> Bool {
+        directMinimizedMoves.append((wid, spaceID))
+        if minimizedDirectMoveFails { return false }
+        if byWindow[wid] == spaceID { return true }
+        byWindow[wid] = spaceID
         return true
     }
 }
@@ -71,6 +95,28 @@ final class FakeEnumerator: WindowEnumerating, @unchecked Sendable {
     let samples: [CGWindowSample]
     init(_ samples: [CGWindowSample]) { self.samples = samples }
     func sample() -> [CGWindowSample] { samples }
+}
+
+/// L3 全屏写 fake（票 15）：记录 (wid, value) 调用序列；置 error 模拟 AX 写失败
+final class FakeFullScreen: WindowFullScreenWriting, @unchecked Sendable {
+    private(set) var calls: [(windowID: UInt32, value: Bool)] = []
+    var error: Error?
+
+    func setFullScreen(windowID wid: UInt32, _ fullScreen: Bool) throws {
+        calls.append((wid, fullScreen))
+        if let error { throw error }
+    }
+}
+
+/// L4 最小化写 fake（票 15）：记录 (wid, value) 调用序列；置 error 模拟 AX 写失败
+final class FakeMinimize: WindowMinimizeWriting, @unchecked Sendable {
+    private(set) var calls: [(windowID: UInt32, value: Bool)] = []
+    var error: Error?
+
+    func setMinimized(windowID wid: UInt32, _ minimized: Bool) throws {
+        calls.append((wid, minimized))
+        if let error { throw error }
+    }
 }
 
 /// AX 探测桩（回滚快照组装 / 实况 minimized 判定用）
