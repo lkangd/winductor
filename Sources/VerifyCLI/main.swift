@@ -3,19 +3,25 @@ import CoreGraphics
 import Darwin
 import Foundation
 import Core
+import SpaceAdapter
 
-// VerifyCLI — 验证器雏形（票 11，spec §9.1）。
+// VerifyCLI — 验证器（票 11 起步雏形，票 14 升级全量比对，spec §9.1）。
 // 用法：swift run VerifyCLI [--snapshot <file.json>]
 //   --snapshot <file.json>  指定快照文件；缺省 = 当前拓扑的现势快照（无则报错退出）
 // 从已授权终端运行（继承宿主 TCC；CLI 本身无需签名授权）。
 // 实时枚举：CGWindowListCopyWindowInfo(.optionAll) 全量窗口（含其他 Space/最小化）
-//   + _AXUIElementGetWindow 配对（照 05 spike 写法；票 13 将下沉到 AXFacade）。
-// 逐条输出 PASS / FAIL / SKIP 雏形报告（此阶段几何+标题比对，spec §9.1）。
+//   + _AXUIElementGetWindow 配对（照 05 spike 写法）。
+// 全量比对：预期 SKIP 集推导复用同一份 Core.ConservativeMatcher（app 恢复管线同源，08 #1）；
+//   逐条 PASS / FAIL / SKIP + 屏幕归属比对；Space 归属（L2）经 SpaceAdapter 查 SLS，
+//   本进程无授权/符号缺失时相关项按「无法核验」标注（不崩、不阻断）。
+//   判定口径与 RestoreEngine.VerifyComparer 单测对齐（VerifyCLI 目标依赖表未含 RestoreEngine，
+//   Package.swift 冻结；几何容差 1e-6 / reasons / skip reason 字符串须同步维护）。
 // 退出码：0 = 报告产出；2 = 用法/快照错误；3 = 授权未齐（明确提示，不崩溃）。
 
 private let usage = """
 usage: swift run VerifyCLI [--snapshot <file.json>]
   --snapshot <file.json>   指定快照文件；缺省 = 当前拓扑现势快照（无则报错退出）
+全量比对：逐条 PASS/FAIL/SKIP + 屏幕归属 + Space 归属（无法核验时标注不阻断，spec §9.1）
 exit codes: 0 报告产出 / 2 用法或快照错误 / 3 授权未齐
 """
 
@@ -141,6 +147,12 @@ private func ratio(_ rect: CGRect, in bounds: CGRect) -> (x: Double, y: Double, 
 
 // MARK: - 输出辅助
 
+/// 几何相等容差：与 RestoreEngine.VerifyComparer.geometryTolerance 同值（判定口径对齐，
+/// 见文件头注；RestoreEngine 单测钉死该值，两端须同步维护）
+private enum VerifyComparerConstants {
+    static let geometryTolerance = 1e-6
+}
+
 private func pad(_ s: String, _ n: Int) -> String {
     s.count >= n ? s : s + String(repeating: " ", count: n - s.count)
 }
@@ -221,7 +233,7 @@ func main() {
     let cgWindows = enumerateCGWindows()
     let axByWid = axWindowsByCGWindowID()
     var liveWindows: [LiveWindow] = []
-    var liveDisplayUUID: [String?] = []
+    var displayUUIDByWindowID: [UInt32: String] = [:]
     for record in cgWindows {
         guard let display = displayFor(window: record.bounds, displays: displays) else { continue }
         let r = ratio(record.bounds, in: display.bounds)
@@ -230,7 +242,9 @@ func main() {
         liveWindows.append(LiveWindow(cgWindowID: record.wid, bundleID: record.bundleID, title: title,
                                       x: r.x, y: r.y, w: r.w, h: r.h,
                                       minimized: ax?.minimized ?? false))
-        liveDisplayUUID.append(display.uuid)
+        if let uuid = display.uuid, !uuid.isEmpty {
+            displayUUIDByWindowID[record.wid] = uuid
+        }
     }
 
     // 保守匹配：与 app 共用同一份 Core 代码（spec §7.1 / 08 #1）
@@ -238,47 +252,83 @@ func main() {
     let matchBySnapshot = Dictionary(uniqueKeysWithValues: outcome.matches.map { ($0.snapshotIndex, $0) })
     let liveBundleIDs = Set(liveWindows.map(\.bundleID))
 
+    // Space 归属（L2）比对数据：经 SpaceAdapter 查 SLS（窗口 → SpaceEntry）。
+    // 本进程无授权 / SkyLight 符号缺失时查询抛错 → 空表 = 相关项「无法核验」，不崩（票面要求）。
+    let adapter = SpaceAdapter()
+    let spaceEntryByWindowID: [UInt32: SpaceEntry]
+    if let byWindow = try? adapter.spaceIDsByWindowID(),
+       let entries = try? adapter.managedSpaces() {
+        let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { first, _ in first })
+        spaceEntryByWindowID = byWindow.compactMapValues { entryBySpaceID[$0] }
+    } else {
+        spaceEntryByWindowID = [:]
+    }
+
     // 报告
     let dateFormatter = ISO8601DateFormatter()
-    print("== VerifyCLI 雏形报告（票 11，spec §9.1）==")
+    print("== VerifyCLI 全量比对报告（票 14，spec §9.1）==")
     print("快照: \(snapshotURL.path)")
     print("  version=\(snapshot.version) capturedAt=\(dateFormatter.string(from: snapshot.capturedAt)) "
         + "displays=\(snapshot.topology.count) spaces=\(snapshot.spaces.count) windows=\(snapshot.windows.count)")
     print("实时: 当前拓扑 key=\(topologyKey.prefix(24))… 屏=\(displays.count) "
         + "CG 窗口(layer0)=\(cgWindows.count) AX 配对=\(axByWid.count) 参与匹配=\(liveWindows.count)")
-    print("授权: 辅助功能=✓ 屏幕录制=✓")
+    print("授权: 辅助功能=✓ 屏幕录制=✓  Space 归属=\(spaceEntryByWindowID.isEmpty ? "无法核验（本进程无 SLS 授权）" : "\(spaceEntryByWindowID.count) 窗口可查")")
     print(String(repeating: "-", count: 72))
 
     var pass = 0, fail = 0, skip = 0
     for (s, snapshotWindow) in snapshot.windows.enumerated() {
-        if let match = matchBySnapshot[s] {
-            let live = liveWindows[match.liveIndex]
-            let deltas = [abs(snapshotWindow.x - live.x), abs(snapshotWindow.y - live.y),
-                          abs(snapshotWindow.w - live.w), abs(snapshotWindow.h - live.h)]
-            let delta = deltas.max() ?? 0
-            let titleNote = match.viaGeometryFallback ? "（兜底「\(snapshotWindow.title)」→「\(live.title)」）" : ""
-            // 雏形容差：同分辨率同旋转下比例坐标应逐位相等；1e-6 吸收浮点串化噪声（§9.3 终验时收紧为精确相等）
-            if delta <= 1e-6 {
-                pass += 1
-                var extra = ""
-                if snapshotWindow.minimized != live.minimized {
-                    extra = "  最小化 快照=\(snapshotWindow.minimized ? "是" : "否") 实际=\(live.minimized ? "是" : "否")"
-                }
-                if let sd = snapshot.topology.first(where: { $0.uuid == snapshotWindow.displayUUID })?.localizedName {
-                    extra += "  屏=\(sd)"
-                }
-                print("PASS  #\(s)  wid=\(live.cgWindowID)  app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」\(titleNote)  geoΔ=\(String(format: "%.6f", delta))\(extra)")
-            } else {
-                fail += 1
-                print("FAIL  #\(s)  wid=\(live.cgWindowID)  app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」\(titleNote)  geoΔ=\(String(format: "%.6f", delta))")
-                print("      期望=\(geoString(snapshotWindow)) 实际=(\(String(format: "%.4f", live.x)),\(String(format: "%.4f", live.y)),\(String(format: "%.4f", live.w)),\(String(format: "%.4f", live.h)))")
-            }
-        } else {
+        guard let match = matchBySnapshot[s] else {
+            // 预期 SKIP 推导：共享 Core.ConservativeMatcher 的未配对集合（app 恢复管线同源判定）
             skip += 1
             let reason = liveBundleIDs.contains(snapshotWindow.bundleID)
                 ? "unmatched（保守匹配不猜：同应用在跑但键/几何均未配上）"
                 : "app-not-running（快照有、当前未运行，不启动，spec §6.4a）"
             print("SKIP  #\(s)        app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」  原因=\(reason)")
+            continue
+        }
+        let live = liveWindows[match.liveIndex]
+        if snapshotWindow.minimized || live.minimized {
+            // L4 归票 15（引擎计划同因跳过）：快照 minimized 条目 / 实况最小化窗口 = 预期跳过
+            skip += 1
+            let reason = snapshotWindow.minimized
+                ? "minimized-entry-L4（最小化恢复归票 15，当前保守不动）"
+                : "live-minimized（实况最小化，保守不动，L4 归口票 15）"
+            print("SKIP  #\(s)  wid=\(live.cgWindowID)  app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」  原因=\(reason)")
+            continue
+        }
+        // 判定口径与 RestoreEngine.VerifyComparer 对齐（该文件单测钉死容差与 reason 字符串）
+        let delta = max(abs(snapshotWindow.x - live.x), abs(snapshotWindow.y - live.y),
+                        abs(snapshotWindow.w - live.w), abs(snapshotWindow.h - live.h))
+        var reasons: [String] = []
+        if delta > VerifyComparerConstants.geometryTolerance { reasons.append("geometry") }
+        let displayMatched = displayUUIDByWindowID[live.cgWindowID].map { $0 == snapshotWindow.displayUUID }
+        if let matched = displayMatched, !matched { reasons.append("display") }
+        let spaceEntry = spaceEntryByWindowID[live.cgWindowID]
+        let spaceMatched = spaceEntry.map { $0.index == snapshotWindow.spaceIndex }
+        if let matched = spaceMatched, !matched { reasons.append("space") }
+
+        let titleNote = match.viaGeometryFallback ? "（兜底「\(snapshotWindow.title)」→「\(live.title)」）" : ""
+        let screenName = snapshot.topology.first(where: { $0.uuid == snapshotWindow.displayUUID })?.localizedName
+        if reasons.isEmpty {
+            pass += 1
+            var extra = ""
+            if let screenName { extra += "  屏=\(screenName)\(displayMatched == nil ? "(无法核验)" : " ✓")" }
+            if spaceMatched != nil {
+                extra += "  Space=#\(snapshotWindow.spaceIndex) ✓"
+            } else {
+                extra += "  Space=无法核验（本进程无 SLS 授权）"
+            }
+            print("PASS  #\(s)  wid=\(live.cgWindowID)  app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」\(titleNote)  geoΔ=\(String(format: "%.6f", delta))\(extra)")
+        } else {
+            fail += 1
+            print("FAIL  #\(s)  wid=\(live.cgWindowID)  app=\(pad(snapshotWindow.bundleID, 24)) 标题=「\(snapshotWindow.title)」\(titleNote)  原因=\(reasons.joined(separator: ","))")
+            print("      期望=\(geoString(snapshotWindow)) 实际=(\(String(format: "%.4f", live.x)),\(String(format: "%.4f", live.y)),\(String(format: "%.4f", live.w)),\(String(format: "%.4f", live.h)))")
+            if let matched = displayMatched, !matched, let screenName {
+                print("      屏幕归属: 期望=\(screenName)(\(snapshotWindow.displayUUID)) 实际=\(displayUUIDByWindowID[live.cgWindowID] ?? "?")")
+            }
+            if let matched = spaceMatched, !matched {
+                print("      Space 归属: 期望=#\(snapshotWindow.spaceIndex) 实际=#\(spaceEntry?.index ?? -1)")
+            }
         }
     }
 

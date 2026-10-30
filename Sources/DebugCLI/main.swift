@@ -9,6 +9,7 @@ let registry: [String: ([String]) -> Int32] = [
     "list-spaces": ListSpaces.run,
     "move-window": MoveWindow.run,
     "probe": Probe.run,
+    "restore": Restore.run,
     "snapshot-now": SnapshotNow.run,
 ]
 
