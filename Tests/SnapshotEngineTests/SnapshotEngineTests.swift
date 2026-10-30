@@ -1,3 +1,4 @@
+import AppKit
 import Core
 import Foundation
 import XCTest
@@ -138,10 +139,47 @@ final class SnapshotEngineTests: XCTestCase {
         XCTAssertLessThan(avg, 250, "单次差分应毫秒级；250ms 为防 CI 抖动的宽松上限")
     }
 
+    // MARK: 加速器 — 应用启退/屏幕事件立即差分（注入通知中心，fake 驱动）
+
+    /// 注入的 fake 通知中心投递启退/屏幕事件 → 立即差分一次（不等 2s 轮询 timer）
+    func testAcceleratorNotificationsTriggerImmediateDifferential() throws {
+        let center = NotificationCenter()
+        let enumerator = FakeEnumerator(
+            [],
+            [sample(id: 1, bundleID: "com.a", title: "t1")],
+            [sample(id: 1, bundleID: "com.a", title: "t2")])
+        let engine = makeEngine(enumerator, notificationCenters: [center])
+        engine.start()
+        defer { engine.stop() }
+        XCTAssertEqual(enumerator.callCount, 1, "start 即差分一次建立基线")
+        center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        XCTAssertEqual(enumerator.callCount, 2, "应用启动加速器：立即差分一次（检出变化）")
+        center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        XCTAssertEqual(enumerator.callCount, 3, "屏幕事件加速器：立即差分一次（检出变化）")
+        center.post(name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        XCTAssertEqual(enumerator.callCount, 4, "应用退出加速器：立即差分一次（无变化）")
+        engine.writePendingNow()
+        XCTAssertEqual(try decodeLive().windows.map(\.title), ["t2"], "加速器检出的变化经防抖路径落盘")
+    }
+
+    /// stop 后加速器观察已注销：再投递不触发差分
+    func testStopRemovesAcceleratorObservers() {
+        let center = NotificationCenter()
+        let enumerator = FakeEnumerator([])
+        let engine = makeEngine(enumerator, notificationCenters: [center])
+        engine.start()
+        engine.stop()
+        let callsAfterStop = enumerator.callCount
+        center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        XCTAssertEqual(enumerator.callCount, callsAfterStop, "stop 后不再差分")
+    }
+
     // MARK: 工具
 
     private func makeEngine(_ enumerator: FakeEnumerator, ax: WindowAXProbing = FakeAXProber(),
-                            pollInterval: TimeInterval = 3600, debounceInterval: TimeInterval = 3600) -> SnapshotEngine {
+                            pollInterval: TimeInterval = 3600, debounceInterval: TimeInterval = 3600,
+                            notificationCenters: [NotificationCenter]? = nil) -> SnapshotEngine {
         let display = fakeDisplay("AAAA-1111-1111-1111-111111111111")
         return SnapshotEngine(
             store: SnapshotStore(directory: root, log: log),
@@ -153,7 +191,9 @@ final class SnapshotEngineTests: XCTestCase {
             ax: ax,
             displaysProvider: { [display] },
             pollInterval: pollInterval,
-            debounceInterval: debounceInterval)
+            pollTolerance: 0.5,
+            debounceInterval: debounceInterval,
+            notificationCenters: notificationCenters ?? [NotificationCenter()])
     }
 
     private func sample(id: UInt32, bundleID: String, title: String,

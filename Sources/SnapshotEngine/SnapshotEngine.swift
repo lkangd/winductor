@@ -34,13 +34,14 @@ public final class SnapshotEngine {
     private let pollInterval: TimeInterval
     private let pollTolerance: TimeInterval
     private let debounceInterval: TimeInterval
+    private let notificationCenters: [NotificationCenter]
     private let lock = NSLock()
     private var lastFingerprint: WindowFingerprint?
     private var debounceItem: DispatchWorkItem?
     private let debounceQueue = DispatchQueue(label: "wlr.snapshot-engine.debounce")
 
     private var pollTimer: DispatchSourceTimer?
-    private var observers: [NSObjectProtocol] = []
+    private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
 
     public init(store: SnapshotStore,
                 spaces: SpaceProviding?,
@@ -50,7 +51,12 @@ public final class SnapshotEngine {
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 pollInterval: TimeInterval = SnapshotEngineConstants.pollInterval,
                 pollTolerance: TimeInterval = SnapshotEngineConstants.pollTolerance,
-                debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce) {
+                debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
+                notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default]) {
+        // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
+        // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
+        // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
+        self.notificationCenters = notificationCenters
         self.store = store
         self.composer = SnapshotComposer(spaces: spaces, ax: ax)
         self.enumerator = enumerator
@@ -75,15 +81,17 @@ public final class SnapshotEngine {
         timer.resume()
         pollTimer = timer
 
-        let center = NSWorkspace.shared.notificationCenter
+        // queue: nil = 投递线程同步回调（pollNow 有锁保护，快速返回；测试免跑 loop）
         let names: [NSNotification.Name] = [
             NSWorkspace.didLaunchApplicationNotification,
             NSWorkspace.didTerminateApplicationNotification,
             NSApplication.didChangeScreenParametersNotification,  // 屏幕事件（插拔/分辨率/旋转）
         ]
-        observers = names.map { name in
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.pollNow()  // 加速器：立即差分一次
+        observers = notificationCenters.flatMap { center in
+            names.map { name in
+                (center, center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                    self?.pollNow()  // 加速器：立即差分一次
+                })
             }
         }
     }
@@ -91,8 +99,7 @@ public final class SnapshotEngine {
     public func stop() {
         pollTimer?.cancel()
         pollTimer = nil
-        let center = NSWorkspace.shared.notificationCenter
-        for observer in observers { center.removeObserver(observer) }
+        for (center, token) in observers { center.removeObserver(token) }
         observers = []
         lock.lock()
         debounceItem?.cancel()
