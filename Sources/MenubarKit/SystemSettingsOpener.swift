@@ -24,27 +24,38 @@ public enum SystemSettingsOpener {
 }
 
 // SelfRelauncher.swift — 立即重启（票 18，spec §8.3「✓ 两项授权已齐备。请重启应用使授权生效。【立即重启】」）。
-// 立即重启 = 干净退出自身 + `open` 自己（Bundle.main URL 重拉起）。授权生效需重启一次（spec §4.6，07 #8）。
+// 票 19 修票底双实例竞态：重启改为「先退后拉」——本进程先落一个独立存活的 shell 监视进程
+//（轮询本进程 PID 消失后才 `open -n` 强拉新实例），再干净退出。旧实例退净在前，新实例拉起在后。
+// 拉起监视进程失败时留在当前实例（避免应用无窗口可回地消失）。
 
 public enum SelfRelauncher {
-    /// 重拉起当前应用并干净退出。拉起失败时留在当前实例（避免应用无窗口可回地消失）。
-    public static func perform(openNewInstance: (URL) throws -> Void = SelfRelauncher.openNewInstanceViaOpenCommand,
+    /// 重拉起当前应用并干净退出。顺序：spawnWatcher（独立于本进程存活）→ terminate。
+    /// spawnWatcher 抛错 = 监视进程落空，留在当前实例不自杀。
+    public static func perform(spawnWatcher: (Int32, String) throws -> Void = SelfRelauncher.spawnRestartWatcher,
                                terminate: () -> Void = { NSApp.terminate(nil) }) {
         let bundleURL = Bundle.main.bundleURL
+        let selfPID = ProcessInfo.processInfo.processIdentifier
         do {
-            try openNewInstance(bundleURL)
+            try spawnWatcher(selfPID, bundleURL.path)
         } catch {
             return
         }
         terminate()
     }
 
-    /// `/usr/bin/open -n`：强制新实例——不带 -n 时 LaunchServices 会把 open 解析为
-    /// 「激活正在退出的旧实例」，重启变成自杀。
-    public static func openNewInstanceViaOpenCommand(_ url: URL) throws {
+    /// 重启监视进程参数：`/bin/sh -c 'while kill -0 <pid> 2>/dev/null; do sleep 0.1; done;
+    ///   /usr/bin/open -n <bundle 路径>'`——旧进程 PID 消失后才拉起，保证先退后拉。
+    public static func restartWatcherArguments(pid: Int32, bundlePath: String) -> [String] {
+        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; /usr/bin/open -n \(bundlePath)"
+        return ["-c", script]
+    }
+
+    /// 落一个独立于本进程存活的 shell 监视进程（detach 后本进程退出不影响它继续轮询）。
+    /// 注意：绝不能 waitUntilExit——脚本要等本进程退出才结束，等待即死锁。
+    public static func spawnRestartWatcher(_ pid: Int32, bundlePath: String) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-n", url.path]
-        try process.run()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = restartWatcherArguments(pid: pid, bundlePath: bundlePath)
+        try process.run()  // run() 返回即进程已 spawn；本进程随后 terminate，监视进程继续轮询
     }
 }

@@ -38,6 +38,8 @@ public final class NotReadyGateCoordinator {
     private var hasDecidedInitialGuide = false
     /// 菜单动作载体：状态行点击直达系统设置的屏幕与系统录音面板（强持有防释放）
     private let menuActionCarrier: MenuActionCarrier
+    /// 就绪态菜单构建闭包（票 19 全量菜单注入；缺省 = 票 18 占位骨架，未就绪恒占位骨架）
+    private let makeReadyMenu: () -> NSMenu
 
     /// 菜单动作载体（§8.4 状态行 target/action 需要 NSObject 目标）
     private final class MenuActionCarrier: NSObject {
@@ -50,11 +52,13 @@ public final class NotReadyGateCoordinator {
                 statusItem: StatusPresenting,
                 snapshotEngine: SnapshotEngine? = nil,
                 makeGuideWindow: @escaping () -> GuideWindowPresenting = { PermissionGuideWindow() },
-                openScreenCaptureSettings: @escaping () -> Void = { SystemSettingsOpener.open(.screenCapture) }) {
+                openScreenCaptureSettings: @escaping () -> Void = { SystemSettingsOpener.open(.screenCapture) },
+                makeReadyMenu: @escaping () -> NSMenu = { PlaceholderMenu.build() }) {
         self.monitor = monitor
         self.statusItem = statusItem
         self.snapshotEngine = snapshotEngine
         self.makeGuideWindow = makeGuideWindow
+        self.makeReadyMenu = makeReadyMenu
         self.menuActionCarrier = MenuActionCarrier(openScreenCaptureSettings)
     }
 
@@ -71,6 +75,12 @@ public final class NotReadyGateCoordinator {
     public func stop() {
         monitor.stop()
         snapshotEngine?.stop()
+    }
+
+    /// 强制重建菜单（票 19：恢复/撤销/屏幕拓扑变化等权限外事件后的刷新入口；
+    /// 就绪态走注入的 makeReadyMenu 全量菜单，未就绪保持占位骨架）
+    public func refreshMenuNow() {
+        refreshMenu(monitor.status)
     }
 
     // MARK: 状态应用（主线程；监视器定时路径已投递主线程）
@@ -91,9 +101,9 @@ public final class NotReadyGateCoordinator {
         }
     }
 
-    /// 重建菜单：重确认态顶部换 §8.4 引导块，否则保持占位骨架（全量菜单归票 19）
+    /// 重建菜单：就绪 → 注入的全量菜单（票 19）；未就绪 → 占位骨架，重确认态顶部换 §8.4 引导块
     private func refreshMenu(_ status: PermissionMonitor.Status) {
-        let menu = PlaceholderMenu.build()
+        let menu = status.isReady ? makeReadyMenu() : PlaceholderMenu.build()
         if status.screenCaptureNeedsReconfirm {
             ScreenCaptureReconfirmGuide.install(
                 into: menu,
