@@ -12,11 +12,10 @@ import SnapshotEngine
 //   --watch 挂起引擎 N 秒（照常 2s 轮询+1s 防抖+加速器），live mtime 变化时打印，
 //           退出前列 1+4 滚动文件——验收「动窗口后 mtime 可查 / 1+4 滚动」用
 
-func runSnapshotNow() -> Int32 {
+enum SnapshotNow {
+    // args 已由 main.swift 去除子命令名（票 13 注册表约定）
+    static func run(_ args: [String]) -> Int32 {
     var directory = SnapshotStore.defaultDirectory
-    // Array() 具体化：dropFirst() 返回的 ArraySlice 保留原索引（下标从 1 起），
-    // 直接用 firstIndex + count 比较会差一错位（尾部参数对被误判越界）
-    let args = Array(CommandLine.arguments.dropFirst())
     if let i = args.firstIndex(of: "--dir"), args.count > i + 1 {
         directory = URL(fileURLWithPath: args[args.index(after: i)])
     }
@@ -81,5 +80,6 @@ func runSnapshotNow() -> Int32 {
     } else {
         print("live=<未产出>（检查屏幕录制权限：未授权时 kCGWindowName/title 为 nil，但不阻止写盘）")
     }
-    return 0
+        return 0
+    }
 }
