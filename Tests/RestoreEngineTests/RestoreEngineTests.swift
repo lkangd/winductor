@@ -549,3 +549,42 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.failCount, 0)
     }
 }
+
+extension RestorePipelineTests {
+    func testFullscreenLayerDegradedSkipsFullscreenButRestoresTheRest() throws {
+        // A20 同构（FORCE_DEGRADED=fullscreen 走同一 isLayerAvailable 判定路径）：
+        // L3 降级只降该层 —— 全屏应用不动，L2/L1 照常
+        let world = makeFullscreenWorld()
+        world.bridge.layerAvailability[.fullscreen] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty, "L3 降级不写全屏")
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]], "常规窗 L2 照常")
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101], "L1 照常")
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(202), "降级层不动全屏应用窗")
+
+        // 降级 skip 行：无具体窗口可归（未选窗），用与 planEntries 同源的 plain skip 行格式
+        let skipLine = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] skip") && $0.contains("app=com.t.fs") })
+        XCTAssertTrue(skipLine.contains("reason=fullscreen-layer-unavailable"), "实际：\(skipLine)")
+
+        XCTAssertEqual(report.okCount, 1)
+        XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.failCount, 0, "降级 skip 不计失败")
+    }
+
+    func testFullscreenSkipsAsAppNotRunningWhenAppHasNoLiveWindow() throws {
+        // 全屏应用已退出（§6.4a 不启动）→ 该 fullscreen Space 跳过，不产生任何动作
+        let world = makeFullscreenWorld(fsWindowLive: false)
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty)
+        XCTAssertTrue(world.bridge.moves.flatMap(\.wids).contains(202) == false)
+        let line = try XCTUnwrap(world.log.all.first {
+            $0.contains("app=com.t.fs") && $0.contains("reason=app-not-running") })
+        XCTAssertTrue(line.contains("result=skip") || line.contains("skip"), "实际：\(line)")
+        XCTAssertEqual(report.okCount, 1, "只剩常规窗 101 ok")
+        XCTAssertEqual(report.skipCount, 1)
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
