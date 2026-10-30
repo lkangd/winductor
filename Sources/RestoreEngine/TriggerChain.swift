@@ -199,12 +199,23 @@ public final class TriggerChain: @unchecked Sendable {
         let current = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
         let baseline = settledUUIDs
 
-        // 防抖静默期结束：先落 debounce-settle 行（时间戳链第 2 环），再按集合变化分岔
+        // 防抖静默期结束：先落 debounce-settle 行（时间戳链第 2 环），再按集合变化分岔。
+        // resume=stability：稳定判据进行中来了新事件（插拔二段事件常见），
+        // 防抖重置后回到稳定性采样；已采样轮次仍有效（Space 列表语义未变，
+        // 恢复现场后下一轮凑满「连续两轮不变」即触发），不判零动作。
         let direction = current == baseline ? "unchanged" : (current.count < baseline.count ? "shrank" : "grew")
+        let resumingStability = (current == baseline && stabilizationTarget != nil)
         log?.write(chainLine(step: "debounce-settle", result: direction,
-                             detail: "baseline=\(baseline.count) current=\(current.count)"))
+                             detail: "baseline=\(baseline.count) current=\(current.count)"
+                                 + (resumingStability ? " resume=stability" : "")))
 
         if current == baseline {
+            if resumingStability {
+                phase = .stabilizing
+                stateLock.unlock()
+                sampleSpaceStability()
+                return
+            }
             // 无拓扑变化事件（睡眠唤醒/锁屏解锁/分辨率微调）→ 零动作（spec §6.2，A2/A3）
             phase = .idle
             stateLock.unlock()

@@ -557,6 +557,62 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertNil(TriggerChain.uuids(inTopologyKey: "short-fake-key"), "非冻结格式拒拆")
     }
 
+    // MARK: - 周期 6：稳定判据中的新事件（插拔二段事件）不中断链；恢复中事件忽略
+
+    func testEventDuringStabilizingResumesStabilityAfterDebounce() throws {
+        // 插回后 Space 尚在结算时常会再来一次屏幕事件：防抖重置后应回到稳定性采样继续链，
+        // 而不是被「集合不变→零动作」误杀（否则二段事件场景自动恢复失效）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()   // 事件 1：插回
+        scheduler.step()                  // 防抖 → settle grew → match → space r1 采样
+        chain.screenParametersChanged()   // 事件 2（稳定判据进行中，如分辨率重排）：防抖重置
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "二段事件后链继续，仍一次性恢复")
+        let steps = triggerSteps(spy.all)
+        XCTAssertEqual(steps,
+                       ["baseline", "event", "debounce-settle", "topology-match", "space-stable",
+                        "event", "debounce-settle", "space-stable", "restore-start", "restore-done", "notify"],
+                       "稳定判据中的新事件 → 回到 space-stable 继续（不落零动作分支）")
+        let settleResults = spy.all.filter { $0.contains("step=debounce-settle") }
+        XCTAssertTrue(settleResults[1].contains("resume=stability"), "第二次 settle 标注回到稳定性采样")
+        let stableLines = spy.all.filter { $0.contains("step=space-stable") }
+        XCTAssertTrue(stableLines[1].contains("result=stable"))
+    }
+
+    func testEventDuringRestoreIsIgnoredAndLogged() throws {
+        // 恢复进行中到达的屏幕事件：记 ignored 不打断一次性恢复（spec §6.3 放完即停）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+        restorer.onRestore = { chain.screenParametersChanged() }  // 恢复中同步注入事件
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "恢复不被打断")
+        XCTAssertEqual(triggerSteps(spy.all).filter { $0 == "ignored" }.count, 1, "恢复中事件忽略并落日志")
+    }
+
     func testRestoreNowWithoutMatchingSnapshotReturnsNil() throws {
         let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
         let scheduler = FakeTriggerScheduler(clock: clock)
