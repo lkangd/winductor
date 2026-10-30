@@ -44,7 +44,7 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
         if let failureDetail { return "恢复失败：\(failureDetail)" }
         var text = "恢复完成：\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
         if !degradedLayerNames.isEmpty {
-            text += "；本次 \(degradedLayerNames.joined(separator: "、")) 层失效（几何已恢复）"
+            text += "；本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）"
         }
         return text
     }

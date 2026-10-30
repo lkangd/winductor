@@ -389,4 +389,104 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertTrue(stableLines[1].contains("result=changed"), "两轮间变化 → 判据重计")
         XCTAssertTrue(stableLines[2].contains("result=stable"), "重计后连续两轮不变 → 触发")
     }
+
+    // MARK: - 周期 4：完成通知计数 + FORCE_DEGRADED 降级附注；失败通知；无重试幂等
+
+    func testCompletionNoticeCountsAndDegradeAnnotation() throws {
+        // 完成通知计数与 RestoreReport 一致；恢复期 [degrade] 行经共用 sink 汇总为附注
+        // （生产 FORCE_DEGRADED 路径：适配器把同款降级行写进同一个 collector，票 19 接线同构）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let collector = DegradeCollectingLog(inner: spy)
+        let restorer = FakeSnapshotRestorer(report: report(ok: 3, skip: 1, fail: 1))
+        restorer.onRestore = { collector.write(
+            "[degrade] layer=L2 reason=probe-miss detail=forced by LAYOUTFIXER_FORCE_DEGRADED=bridge") }
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: collector, degradeCollector: collector, onNotice: { notices.append($0) })
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(notices.items, [.completed(RestoreCompletionNotice(
+            trigger: .auto, okCount: 3, skipCount: 1, failCount: 1,
+            degradedLayerNames: ["Space 归属"], failureDetail: nil))])
+        XCTAssertEqual(notices.items.first?.body,
+                       "恢复完成：3 窗口归位、1 跳过、1 失败；本次 Space 归属层失效（几何已恢复）",
+                       "§8.5 措辞：计数 + 降级附注")
+        XCTAssertTrue(collector.drainDegradeLayers().isEmpty, "恢复后附注已汇总消费")
+    }
+
+    func testRestoreAbortFailureEmitsFailureNotice() throws {
+        // 管线中止（如回滚快照写失败）→ 失败通知（§6.3 结束发一条通知，失败详情进日志）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report())
+        restorer.error = RestoreEngineError.undoSnapshotWriteFailed("disk-full")
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { notices.append($0) })
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(notices.items.first?.title, "恢复失败")
+        XCTAssertEqual(notices.items.first?.body, "恢复失败：undoSnapshotWriteFailed(\"disk-full\")")
+        XCTAssertTrue(triggerSteps(spy.all).contains("restore-failed"))
+        XCTAssertEqual(scheduler.pendingCount, 0, "状态机回 idle，无重试残留")
+    }
+
+    func testNoRetryLoopIdempotentAfterCompletion() throws {
+        // 单轮后回 idle：同一拓扑再来屏幕事件（如分辨率微调）→ 零动作，不重复触发
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { notices.append($0) })
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.count, 1)
+
+        box.set([displayA, displayB])  // 同集合再来事件（睡眠唤醒等价形态）
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "无自动重试循环：单轮后不重复触发（幂等）")
+        XCTAssertEqual(notices.items.count, 1)
+        XCTAssertEqual(triggerResults(spy.all).last, "unchanged")
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    func testDegradeCollectorParsesLayerAndForwardsAllLines() throws {
+        // [degrade] 行解析：只抽 layer=L<n>；非降级行原样转发；drain 取后清空
+        let spy = LogSpy()
+        let collector = DegradeCollectingLog(inner: spy)
+        collector.write("[trigger] step=event at=x detail=y")
+        collector.write("[degrade] layer=L3 reason=probe-miss detail=forced")
+        collector.write("[degrade] layer=L12 reason=no-op detail=x")
+        XCTAssertEqual(collector.drainDegradeLayers(), [3, 12])
+        XCTAssertEqual(collector.drainDegradeLayers(), [], "取后清空")
+        XCTAssertEqual(spy.all.count, 3, "全部行原样转发内层 sink")
+        XCTAssertNil(DegradeCollectingLog.degradeLayer(in: "[restore] L1 wid=1"))
+    }
 }
