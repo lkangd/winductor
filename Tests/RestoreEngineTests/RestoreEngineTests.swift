@@ -1,5 +1,6 @@
 @testable import Core
 import RestoreEngine
+import SpaceAdapter  // SpaceAdapterError.layerUnavailable：L2 层失效连坐分类（票 15）
 import SnapshotEngine
 import XCTest
 
@@ -661,5 +662,68 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.okCount, 1)
         XCTAssertEqual(report.skipCount, 0)
         XCTAssertEqual(report.failCount, 0)
+    }
+}
+
+extension RestorePipelineTests {
+    func testMinimizedWindowFallsBackToUnminimizeBridgeReminimizeWhenDirectBridgeFails() throws {
+        // §6.5 回退：直移不可行 → 取消最小化（落回原 Space）→ 桥接 → 重新最小化，语义不变
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.windowID), [101, 101])
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "取消最小化 → 重新最小化")
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]])
+        XCTAssertEqual(world.bridge.moves.map(\.spaceID), [7], "取消后桥接移至快照 Space")
+        XCTAssertEqual(report.okCount, 1); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.skipCount, 0)
+    }
+
+    func testMinimizedWindowCountsFailWhenFallbackBridgeIsSilentNoOp() throws {
+        // 回退桥接 no-op（perform 后归属未变更）→ 计失败（同 L2 口径）；仍尽力重最小化保持终态
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveReturnsFalse = true
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "终态仍恢复最小化")
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0)
+        XCTAssertTrue(world.log.all.contains {
+            $0.contains("[restore] L4") && $0.contains("result=fail") })
+    }
+
+    func testMinimizedWindowSkipsWhenBridgeLayerUnavailableInFallback() throws {
+        // L2 层失效连坐（探针未过 / 运行时 no-op 已标死）：重最小化后原地保持，按 skip 不判本窗失败
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveError = SpaceAdapterError.layerUnavailable(.bridge)
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true], "终态原地保持最小化")
+        XCTAssertEqual(report.skipCount, 1); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.okCount, 0)
+        XCTAssertTrue(world.log.all.contains {
+            $0.contains("[restore] L4") && $0.contains("result=skip") })
+    }
+
+    func testMinimizedWindowCountsFailWhenBridgeMoveErrorsUnexpectedly() throws {
+        // 非层失效类桥接错误（如 bridgedOpFailed）→ 计失败
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.bridge.moveError = FakeAXPermissionError()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.skipCount, 0)
+        XCTAssertTrue(world.log.all.contains { $0.contains("[restore] detail wid=101") })
+    }
+
+    func testMinimizedWindowCountsFailWhenUnminimizeWriteFails() throws {
+        // 取消最小化 AX 写失败 → 计失败，窗口保持最小化原地
+        let world = makeMinimizedWorld()
+        world.bridge.minimizedDirectMoveFails = true
+        world.mini.error = FakeAXPermissionError()
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.mini.calls.map(\.value), [false], "取消最小化失败后不再重最小化")
+        XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.skipCount, 0)
     }
 }

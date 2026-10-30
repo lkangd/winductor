@@ -450,8 +450,13 @@ public final class RestoreEngine: @unchecked Sendable {
         do {
             try minimize.setMinimized(windowID: wid, false)
             var moved: Bool?
+            var layerUnavailable = false
             var bridgeError: Error?
             do { moved = try spaces.moveWindowsToSpace(windowIDs: [wid], spaceID: targetSpace.spaceID) }
+            catch let e as SpaceAdapterError where e == .layerUnavailable(.bridge) {
+                // 桥接层失效连坐（探针未过 / 运行时 no-op 已标死）：窗口已重最小化原地保持，不判本窗失败
+                layerUnavailable = true
+            }
             catch { bridgeError = error }
             var reMinimized = true
             do { try minimize.setMinimized(windowID: wid, true) } catch { reMinimized = false }
@@ -469,12 +474,16 @@ public final class RestoreEngine: @unchecked Sendable {
                         app: snap.bundleID, action: .minimize, target: target, before: before,
                         after: "-", result: .fail))
                 }
-            } else {
-                // 桥接层失效连坐（探针未过 / 运行时 no-op 已标死）：窗口已重最小化原地保持，不判本窗失败
+            } else if layerUnavailable {
                 skipped += 1
                 log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid,
                     app: snap.bundleID, action: .minimize, target: target, before: before,
                     after: "minimized=true space=\(lw.spaceID)", result: .skip))
+            } else {
+                failed += 1
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid,
+                    app: snap.bundleID, action: .minimize, target: target, before: before,
+                    after: "-", result: .fail))
                 if let bridgeError {
                     logDetail(wid: wid, app: snap.bundleID, action: .minimize, error: bridgeError)
                 }
