@@ -78,7 +78,7 @@ enum SnapshotNow {
             return 1
         }
     } else {
-        print("live=<未产出>（检查屏幕录制权限：未授权时 kCGWindowName/title 为 nil，但不阻止写盘）")
+        print("live=<未产出>（检查屏幕录制权限：未就绪时 kCGWindowName/title 为 nil，但不阻止写盘）")
     }
         return 0
     }

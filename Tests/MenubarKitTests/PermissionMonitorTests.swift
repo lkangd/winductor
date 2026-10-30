@@ -1,7 +1,7 @@
 import XCTest
 @testable import MenubarKit
 
-// 票 18：权限监视器状态机测试（spec §4.6/§8.3）。
+// 票 18：权限观察者状态机测试（spec §4.6/§8.3）。
 // 接缝：PermissionMonitor.checkNow()（公开检测入口，检测函数可注入）。
 // 独立事实来源：spec §4.6 —— 两项（辅助功能、屏幕与系统录音）齐备才算就绪；
 // 缺项引导顺序「辅助功能 → 屏幕与系统录音」；状态变化对外发回调（§8.3 每 2s 自动检测推进）。
@@ -95,7 +95,7 @@ final class PermissionMonitorTests: XCTestCase {
         XCTAssertEqual(statusChanges, [status])
     }
 
-    /// 首样本就全空不判降级（无「之前可读」基线；首启未授权由预检探针说话）
+    /// 首样本就全空不判降级（无「之前可读」基线；首启未就绪由预检探针说话）
     func testFirstSampleAllEmptyDoesNotLapse() {
         accessibilityGranted = true
         screenCaptureGranted = true

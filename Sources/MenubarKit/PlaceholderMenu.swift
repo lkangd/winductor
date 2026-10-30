@@ -25,7 +25,7 @@ public enum PlaceholderMenu {
         menu.addItem(disabled("撤销上次恢复"))
         menu.addItem(.separator())
 
-        // 设置与 Finder 入口占位（票 19 接 SMAppService / 工作区打开）
+        // 设置与 Finder 入口占位（票 19 接 SMAppService / Finder 打开文件夹）
         menu.addItem(disabled("登录时启动"))
         menu.addItem(disabled("打开快照文件夹"))
         menu.addItem(disabled("打开日志文件夹"))

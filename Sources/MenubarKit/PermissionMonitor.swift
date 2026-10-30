@@ -3,7 +3,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-// PermissionMonitor.swift — 权限监视器（票 18，spec §4.6/§8.3/§8.4）。
+// PermissionMonitor.swift — 权限观察者（票 18，spec §4.6/§8.3/§8.4）。
 // 职责：每 2s 检测两项硬前置授权的现状并对外发状态变化（§8.3「每 2 秒自动检测」）；
 //       运行中屏幕录制标题从可读变全空 → 需重新确认信号（§8.4，降回未就绪）。
 // 检测函数全部可注入（单测 fake 驱动；默认实现只探测现状，辅助功能不主动弹窗）。

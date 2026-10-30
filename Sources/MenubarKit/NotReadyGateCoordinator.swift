@@ -25,13 +25,15 @@ public protocol GuideWindowPresenting: AnyObject {
 extension PermissionGuideWindow: GuideWindowPresenting {}
 
 public final class NotReadyGateCoordinator {
-    /// 监视器（公开供装配方复用同一实例接引擎就绪门等）
+    /// 观察者（公开供装配方复用同一实例接引擎就绪门等）
     public let monitor: PermissionMonitor
 
     private let statusItem: StatusPresenting
     /// 就绪门已接线的快照引擎（RuntimeAssembly 产物；app 入口 target 不能 import SnapshotEngine，
     /// 故由本协调器持有并在 start/stop 时同启同停。未就绪 = 引擎照常轮询但零落盘）
     private let snapshotEngine: SnapshotEngine?
+    /// Workspace 事件加速器（spec §7.5 应用启退/Space 切换；全量装配注入，随引擎同启同停）
+    private let eventAccelerator: WorkspaceEventAccelerator?
     private let makeGuideWindow: () -> GuideWindowPresenting
     private var guideWindow: GuideWindowPresenting?
     /// 首启弹窗决策只做一次：此后任何状态变化不再创建引导窗（§8.4 运行中降级不弹窗）
@@ -51,28 +53,32 @@ public final class NotReadyGateCoordinator {
     public init(monitor: PermissionMonitor,
                 statusItem: StatusPresenting,
                 snapshotEngine: SnapshotEngine? = nil,
+                eventAccelerator: WorkspaceEventAccelerator? = nil,
                 makeGuideWindow: @escaping () -> GuideWindowPresenting = { PermissionGuideWindow() },
                 openScreenCaptureSettings: @escaping () -> Void = { SystemSettingsOpener.open(.screenCapture) },
                 makeReadyMenu: @escaping () -> NSMenu = { PlaceholderMenu.build() }) {
         self.monitor = monitor
         self.statusItem = statusItem
         self.snapshotEngine = snapshotEngine
+        self.eventAccelerator = eventAccelerator
         self.makeGuideWindow = makeGuideWindow
         self.makeReadyMenu = makeReadyMenu
         self.menuActionCarrier = MenuActionCarrier(openScreenCaptureSettings)
     }
 
-    /// 启动：接线监视器回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3），
-    /// 并启动快照引擎（就绪门已接 monitor，未就绪零落盘）。
+    /// 启动：接线观察者回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3），
+    /// 并启动快照引擎与 Workspace 事件加速器（就绪门已接 monitor，未就绪零落盘）。
     public func start() {
         monitor.onStatusChange = { [weak self] status in self?.apply(status) }
         monitor.start()  // 立即首检，就绪门随即反映真实现状
         apply(monitor.status)
         snapshotEngine?.start()
+        eventAccelerator?.start()
     }
 
-    /// 停止监视器与引擎（应用退出前由装配方调用）
+    /// 停止观察者、加速器与引擎（应用退出前由装配方调用）
     public func stop() {
+        eventAccelerator?.stop()
         monitor.stop()
         snapshotEngine?.stop()
     }
@@ -83,7 +89,7 @@ public final class NotReadyGateCoordinator {
         refreshMenu(monitor.status)
     }
 
-    // MARK: 状态应用（主线程；监视器定时路径已投递主线程）
+    // MARK: 状态应用（主线程；观察者定时路径已投递主线程）
 
     private func apply(_ status: PermissionMonitor.Status) {
         statusItem.setShowsWarningDot(!status.isReady)

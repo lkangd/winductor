@@ -1,3 +1,4 @@
+import AppKit
 import Core
 import Foundation
 import RestoreEngine
@@ -15,14 +16,18 @@ import SpaceAdapter
 public enum RuntimeAssembly {
     /// 组装就绪门接线的快照引擎。storeDirectory/spaces/log 可注入（单测用临时目录；生产默认用户目录）。
     /// spaces = SpaceAdapter（票 19 注入；nil = 降级 spaceIndex，票 12 兼容口径）。
+    /// notificationCenters = 引擎内置加速器的观察中心（默认 = 生产口径；全量装配时传 [.default]
+    /// 只留屏幕事件，应用启退/Space 切换改由 WorkspaceEventAccelerator 接 NSWorkspace 中心，避免双观察）。
     public static func makeSnapshotEngine(gatedBy monitor: PermissionMonitor,
                                           storeDirectory: URL = SnapshotStore.defaultDirectory,
                                           spaces: SpaceProviding? = nil,
-                                          log: LogWriting? = nil) -> SnapshotEngine {
+                                          log: LogWriting? = nil,
+                                          notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default]) -> SnapshotEngine {
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: storeDirectory, log: log),
             spaces: spaces,
-            log: log
+            log: log,
+            notificationCenters: notificationCenters
         )
         engine.readinessGate = { [monitor] in monitor.status.isReady }
         return engine
@@ -47,10 +52,15 @@ public enum RuntimeAssembly {
         let collector = DegradeCollectingLog(inner: sink)
         let adapter = SpaceAdapter(log: collector)
         let store = SnapshotStore(directory: storeDirectory, log: collector)
+        // spec §7.5 加速器分工：引擎只接屏幕事件（.default）；应用启退 + Space 切换由装配件
+        // WorkspaceEventAccelerator 接 NSWorkspace 中心（引擎无 Space 切换内置观察，见引擎文件头），
+        // 随门控协调器同启同停。
         let snapshotEngine = makeSnapshotEngine(gatedBy: monitor,
                                                 storeDirectory: storeDirectory,
                                                 spaces: adapter,
-                                                log: collector)
+                                                log: collector,
+                                                notificationCenters: [.default])
+        let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
         let restoreEngine = RestoreEngine(store: store,
                                           spaces: SpaceAdapterBridge(adapter),
                                           log: collector)
@@ -77,6 +87,7 @@ public enum RuntimeAssembly {
             monitor: monitor,
             statusItem: statusItem,
             snapshotEngine: snapshotEngine,
+            eventAccelerator: workspaceAccelerator,
             makeReadyMenu: { menuCoordinator.makeReadyMenu() })
         refreshBox.targetProvider = gateCoordinator
         return (gateCoordinator, menuCoordinator)
@@ -89,6 +100,43 @@ protocol MenuRefreshTarget: AnyObject {
 }
 
 extension NotReadyGateCoordinator: MenuRefreshTarget {}
+
+/// Workspace 事件加速器（spec §7.5「应用启退、Space 切换作为加速器立即触发一次差分」）。
+/// 引擎内置加速器只覆盖应用启退与屏幕事件；Space 切换（activeSpaceDidChange）无内置观察，
+/// 由装配件在此统一接 engine.pollNow()（公开入口即差分入口）。中心可注入（单测 fake 驱动；
+/// 生产默认 NSWorkspace.shared.notificationCenter）。
+public final class WorkspaceEventAccelerator {
+    private let engine: SnapshotEngine
+    private let center: NotificationCenter
+    private var tokens: [NSObjectProtocol] = []
+
+    public init(engine: SnapshotEngine,
+                center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+        self.engine = engine
+        self.center = center
+    }
+
+    /// 挂观察（queue: nil = 投递线程同步回调；pollNow 有锁保护，与引擎内置加速器同口径）
+    public func start() {
+        guard tokens.isEmpty else { return }
+        let names: [NSNotification.Name] = [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.activeSpaceDidChangeNotification,  // Space 切换（票面缺陷补接）
+        ]
+        tokens = names.map { name in
+            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                self?.engine.pollNow()  // 加速器：立即差分一次
+            }
+        }
+    }
+
+    /// 摘观察（与门控协调器 stop 同步；应用退出前调用）
+    public func stop() {
+        for token in tokens { center.removeObserver(token) }
+        tokens = []
+    }
+}
 
 /// 组装期的刷新回填箱（coordinator 先于门控协调器构造，闭包先指箱、后回填目标）
 private final class MenuRefreshBox {

@@ -8,7 +8,7 @@ import MenubarKit
 // 退出前停观察者与定时器（applicationWillTerminate）。
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// 持有整个应用生命周期；stop 停监视器/引擎定时器/触发链/屏幕观察者
+    /// 持有整个应用生命周期；stop 停观察者/引擎定时器/触发链/屏幕观察者
     private var gateCoordinator: NotReadyGateCoordinator?
     private var menuCoordinator: MenuRestoreCoordinator?
 
