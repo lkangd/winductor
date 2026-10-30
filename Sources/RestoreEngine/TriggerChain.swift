@@ -280,11 +280,18 @@ public final class TriggerChain: @unchecked Sendable {
             return
         }
         let signatureText = signature.joined(separator: ",")
-        if let previous = lastSpaceSignature, previous == signature {
+        let isFirstSample = (lastSpaceSignature == nil)
+        let matchesPrevious = (lastSpaceSignature == signature)
+        // 连续一致计数：与上一轮一致 +1，变化重计为 1；达到 2 即「连续两轮不变」
+        let roundNow = matchesPrevious ? round : 1
+        consecutiveSamples = roundNow
+        lastSpaceSignature = signature
+
+        if matchesPrevious && roundNow >= 2 {
             // 连续两轮不变 → 触发一次性恢复（spec §6.2 → §6.3，无重试循环）
             let snapshot = pending.snapshot
             let key = pending.key
-            log?.write(chainLine(step: "space-stable", result: "stable", round: round,
+            log?.write(chainLine(step: "space-stable", result: "stable", round: roundNow,
                                  detail: "signature=\(signatureText)"))
             stabilizationTarget = nil
             pendingMatch = nil
@@ -294,19 +301,18 @@ public final class TriggerChain: @unchecked Sendable {
             }
             return
         }
-        lastSpaceSignature = signature
         if atCap {
-            // Space 持续抖动超上限：放弃本轮（回 idle；下一次屏幕事件重新走链）
+            // Space 持续抖动/不可用超上限：放弃本轮（回 idle；下一次屏幕事件重新走链）
             phase = .idle
             stabilizationTarget = nil
             pendingMatch = nil
-            log?.write(chainLine(step: "space-stable", result: "give-up", round: round,
-                                 detail: "signature=\(signatureText) detail=churning"))
+            log?.write(chainLine(step: "space-stable", result: "give-up", round: roundNow,
+                                 detail: "signature=\(signatureText) churning"))
             stateLock.unlock()
             return
         }
-        consecutiveSamples = round
-        log?.write(chainLine(step: "space-stable", result: "sampled", round: round,
+        let outcome = matchesPrevious || isFirstSample ? "sampled" : "changed"
+        log?.write(chainLine(step: "space-stable", result: outcome, round: roundNow,
                              detail: "signature=\(signatureText)"))
         stateLock.unlock()
         scheduleNextSpaceSample()

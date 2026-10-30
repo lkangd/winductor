@@ -336,4 +336,57 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(restorer.snapshots.count, 1, "基线已更新为拔出后集合，插回判「变大」触发")
         XCTAssertTrue(triggerSteps(spy.all).contains("restore-start"))
     }
+
+    // MARK: - 周期 3：部分拓扑不自动恢复 + 提示通知（A5）；Space 抖动重采（连续两轮判据重计）
+
+    func testPartialTopologyNoAutoRestoreButPromptNotice() throws {
+        // A5：插回后仍少一屏（集合变大但不精确匹配任何快照）→ 不自动恢复 + 提示通知结构产出
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report())
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { notices.append($0) })
+
+        box.set([displayA, displayB, displayC])  // 插回但集合 {A,B,C} ≠ 任何快照集合
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertNil(restorer.snapshots.first, "部分拓扑不自动恢复（spec §6.2）")
+        XCTAssertEqual(notices.items, [.partialTopology(PartialTopologyNotice(currentDisplayCount: 3))],
+                       "产出「提示通知」结构（投递归票 19）")
+        XCTAssertEqual(triggerSteps(spy.all),
+                       ["baseline", "event", "debounce-settle", "topology-match", "notify"],
+                       "链止于 topology-match，无 space-stable / restore-start")
+        XCTAssertEqual(triggerResults(spy.all).last, "partial")
+    }
+
+    func testSpaceInstabilityRestartsConsecutiveRounds() throws {
+        // Space 列表两轮间变化 → 连续两轮判据重计（changed），再连续两轮不变才触发恢复
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#2#0"], ["A-uuid#2#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1)
+        let stableLines = spy.all.filter { $0.contains("step=space-stable") }
+        XCTAssertEqual(stableLines.count, 3)
+        XCTAssertTrue(stableLines[0].contains("result=sampled"), "第 1 轮采样")
+        XCTAssertTrue(stableLines[1].contains("result=changed"), "两轮间变化 → 判据重计")
+        XCTAssertTrue(stableLines[2].contains("result=stable"), "重计后连续两轮不变 → 触发")
+    }
 }
