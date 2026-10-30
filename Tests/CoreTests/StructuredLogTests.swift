@@ -16,6 +16,23 @@ final class StructuredLogTests: XCTestCase {
             + "before=(100,200,800,600) after=(100,200,800,600) result=ok")
     }
 
+    /// skip 行的注册扩展键（reason=/detail=）接在冻结字段之后；缺省时与冻结格式逐字节一致
+    func testRestoreLineSkipExtensionKeys() {
+        let line = StructuredLog.restoreLine(
+            layer: 2, wid: 0, app: "com.t.gone", action: .moveToSpace,
+            target: "A-uuid/1", before: "-", after: "-", result: .skip, reason: "app-not-running")
+        XCTAssertEqual(line,
+            "[restore] L2 wid=0 app=com.t.gone action=move-to-space "
+            + "target=A-uuid/1 before=- after=- result=skip reason=app-not-running")
+
+        let withDetail = StructuredLog.restoreLine(
+            layer: 3, wid: 9, app: "com.t.fs", action: .fullscreen,
+            target: "A-uuid/2", before: "b", after: "-", result: .skip,
+            reason: "fullscreen-exit-pending", detail: "already-at-target")
+        XCTAssertTrue(withDetail.hasSuffix("result=skip reason=fullscreen-exit-pending detail=already-at-target"),
+                      "实际行：\(withDetail)")
+    }
+
     /// [degrade] 行逐字段按 spec §10.4 原文格式
     func testDegradeLineFormat() {
         let line = StructuredLog.degradeLine(layer: 2, reason: "probe-miss", detail: "SLSBridgedMoveWindowsToManagedSpaceOperation not found")

@@ -40,7 +40,7 @@ enum MoveWindow {
                 print("FAIL: display \(targetDisplay) has no space #\(targetSpaceIndex) (see list-spaces)")
                 return 1
             }
-            let kindName = target.kind == 0 ? "user" : (target.kind == 4 ? "fullscreen" : "?kind=\(target.kind)")
+            let kindName = SpaceKind.kindName(target.kind)
             print("target: display uuid=\(targetDisplay) space #\(target.index) id64=\(target.spaceID) kind=\(target.kind)(\(kindName))")
             print("before: wid=\(wid) spaces=\(try adapter.spaceIDs(windowID: wid)) disp=\(try adapter.displayUUID(windowID: wid) ?? "?") \(axFrameLine(wid))")
             guard adapter.isLayerAvailable(.bridge) else {

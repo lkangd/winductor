@@ -36,6 +36,24 @@ public protocol SpaceProviding: Sendable {
     func spaceIDsByWindowID() throws -> [UInt32: Int64]
 }
 
+/// SpaceEntry.kind 语义值与人读名（spec §5.1 实测：0=用户桌面、4=全屏）。
+/// 消费方：DebugCLI（list-spaces/move-window 输出）、RestoreEngine（全屏 Space 判定）。
+public enum SpaceKind {
+    /// 用户桌面
+    public static let user = 0
+    /// 全屏应用专属 Space
+    public static let fullscreen = 4
+
+    /// kind → 人读名（调试输出用；未知值回退 ?kind=<n>）
+    public static func kindName(_ kind: Int) -> String {
+        switch kind {
+        case user: return "user"
+        case fullscreen: return "fullscreen"
+        default: return "?kind=\(kind)"
+        }
+    }
+}
+
 /// 公开 API：显示器枚举、几何、旋转与稳定 UUID。
 /// UUID 依赖 CGDisplayCreateUUIDFromDisplayID（dlsym，见 spike；spec §5.1 半边缘能力，实测稳定）。
 public enum Displays: Sendable {

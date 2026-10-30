@@ -70,8 +70,14 @@ final class RestorePipelineTests: XCTestCase {
         let report = try engine.restore(snapshot: world.snapshot)
 
         // A7：已退出应用（com.t.gone）不启动 → 只 skip（reason=app-not-running），不产生任何动作
-        XCTAssertTrue(world.log.all.contains { $0.contains("app=com.t.gone") && $0.contains("reason=app-not-running") },
-                      "应记 skip 行 reason=app-not-running，实际：\(world.log.all)")
+        // 统一 §10.4 格式：规划期整窗 skip 按首个动作层 L2 记（target = 快照意愿；未配对 wid=0）
+        let skipLine = try XCTUnwrap(world.log.all.first {
+            $0.contains("app=com.t.gone") && $0.contains("reason=app-not-running") },
+            "应记 skip 行 reason=app-not-running，实际：\(world.log.all)")
+        XCTAssertTrue(skipLine.contains("[restore] L2 wid=0 app=com.t.gone action=move-to-space"),
+                      "skip 行应走统一格式化器（冻结字段 + reason 扩展键），实际：\(skipLine)")
+        XCTAssertTrue(skipLine.contains("target=B-uuid/1 before=- after=- result=skip"),
+                      "skip 行应携带快照意愿 target 与 result=skip，实际：\(skipLine)")
         XCTAssertTrue(world.bridge.moves.flatMap(\.wids).contains(101), "匹配窗口应被桥接移动")
 
         // A8：快照外窗口 202 一律不动 → 无桥接、无几何写
@@ -571,10 +577,11 @@ extension RestorePipelineTests {
         XCTAssertEqual(world.geometry.calls.map(\.windowID), [101], "L1 照常")
         XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(202), "降级层不动全屏应用窗")
 
-        // 降级 skip 行：无具体窗口可归（未选窗），用与 planEntries 同源的 plain skip 行格式
+        // 降级 skip 行：无具体窗口可归（未选窗），统一 §10.4 格式（wid=0 + reason 扩展键）
         let skipLine = try XCTUnwrap(world.log.all.first {
-            $0.contains("[restore] skip") && $0.contains("app=com.t.fs") })
-        XCTAssertTrue(skipLine.contains("reason=fullscreen-layer-unavailable"), "实际：\(skipLine)")
+            $0.contains("[restore] L3") && $0.contains("result=skip") && $0.contains("app=com.t.fs") })
+        XCTAssertTrue(skipLine.contains("wid=0") && skipLine.contains("reason=fullscreen-layer-unavailable"),
+                      "实际：\(skipLine)")
 
         XCTAssertEqual(report.okCount, 1)
         XCTAssertEqual(report.skipCount, 1)

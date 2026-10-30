@@ -7,6 +7,20 @@ import Foundation
 //   [degrade] layer=L<n> reason=<probe-miss|no-op> detail=<…>
 //   [snapshot] action=<write|load|quarantine> path=<文件名> result=ok|fail detail=<…>
 //     ↑ 存储层自检行，票 11 新增、票 12 沿用；spec §10.4 只定义了前两种
+//
+// 管线级扩展行登记（评审修复项：非逐层逐窗口行，spec §10.4 未定义；拼写冻结，恢复管线沿用）：
+//   [restore] abort reason=no-active-display
+//   [undo]    abort reason=no-active-display|undo-snapshot-missing|undo-snapshot-rejected|undo-snapshot-corrupt
+//             path=<文件名> [detail=<…>] [quarantine=<文件名|failed>]
+//   [restore] done ok=<n> skip=<n> fail=<n> matched=<n> untouched=<n>              （整轮恢复汇总）
+//   [undo]    done ok=<n> skip=<n> fail=<n> pending=<n> matched=<n> untouched=<n>  （整轮撤销汇总）
+//   [restore] space-merge wid=<cgwindowid> app=<bundleID> display=<displayUUID>
+//             snapshotIndex=<n> mergedTo=<n>                                     （快照多出 Space 就近并入，§6.7）
+//   [restore] detail wid=<cgwindowid> app=<bundleID> action=<action> error=<error> （失败详情独立行，§6.3；
+//             幂等达标变体后缀 detail=already-at-target）
+//   [undo]    action=load path=<文件名> result=ok detail=<…>                      （撤销入口读回滚快照自检）
+// 逐窗口行的注册扩展键（restoreLine 尾部可选追加，接在冻结字段之后）：
+//   skip 行可附 reason=<跳过原因> 与 detail=<补充详情>；wid=0 = 未配对实况窗（规划期无 cgwindowid 可引）。
 // 文件 sink：落盘行前缀 ISO8601 时间戳；目录延迟创建（首次写入才建，
 // 默认 ~/Library/Application Support/WindowLayoutRestorer/logs/）。
 
@@ -28,11 +42,16 @@ public enum RestoreOutcome: String, Sendable {
 }
 
 public enum StructuredLog {
-    /// spec §10.4 原文格式的恢复行
+    /// spec §10.4 原文格式的恢复行。reason/detail = 逐窗口 skip 行的注册扩展键（文件头登记），
+    /// 缺省 nil 时输出与冻结格式逐字节一致。
     public static func restoreLine(layer: Int, wid: UInt32, app: String, action: RestoreAction,
-                                   target: String, before: String, after: String, result: RestoreOutcome) -> String {
-        "[restore] L\(layer) wid=\(wid) app=\(app) action=\(action.rawValue)"
+                                   target: String, before: String, after: String, result: RestoreOutcome,
+                                   reason: String? = nil, detail: String? = nil) -> String {
+        var line = "[restore] L\(layer) wid=\(wid) app=\(app) action=\(action.rawValue)"
         + " target=\(target) before=\(before) after=\(after) result=\(result.rawValue)"
+        if let reason { line += " reason=\(reason)" }
+        if let detail { line += " detail=\(detail)" }
+        return line
     }
 
     /// spec §10.4 原文格式的降级行

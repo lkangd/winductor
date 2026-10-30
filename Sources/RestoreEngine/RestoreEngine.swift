@@ -255,7 +255,7 @@ public final class RestoreEngine: @unchecked Sendable {
         var stuckFullscreenWIDs = Set<UInt32>()
         if mode == .undo {
             let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
-            for lw in live where entryBySpaceID[lw.spaceID]?.kind == fullscreenSpaceKind {
+            for lw in live where entryBySpaceID[lw.spaceID]?.kind == SpaceKind.fullscreen {
                 stuckFullscreenWIDs.insert(lw.cgWindowID)
             }
         }
@@ -358,9 +358,16 @@ public final class RestoreEngine: @unchecked Sendable {
         let capturedOrientation = Dictionary(uniqueKeysWithValues:
             snapshot.topology.map { ($0.uuid, $0.orientation) })
         var plan: [PlanItem] = []
-        func skipItem(_ s: Int, _ snap: SnapshotWindow, _ reason: String, wid: UInt32?) -> PlanItem {
-            log?.write("[restore] skip wid=\(wid.map(String.init) ?? "-") app=\(snap.bundleID) "
-                + "title=\(snap.title) reason=\(reason)")
+        // 规划期整窗 skip（unmatched/app-not-running/target-display-absent）：按首个动作层 L2 记统一
+        // skip 行（§10.4 冻结字段 + 文件头登记的 reason 扩展键；target = 快照意愿；
+        // 未配对实况窗 wid=0/before=-，有实况窗则记其 Space 归属）
+        func skipItem(_ s: Int, _ snap: SnapshotWindow, _ reason: String,
+                      wid: UInt32?, liveSpaceID: Int64?) -> PlanItem {
+            log?.write(StructuredLog.restoreLine(
+                layer: SpaceLayerNumber.bridge, wid: wid ?? 0, app: snap.bundleID,
+                action: .moveToSpace, target: "\(snap.displayUUID)/\(snap.spaceIndex)",
+                before: liveSpaceID.map { "space=\($0)" } ?? "-", after: "-", result: .skip,
+                reason: reason))
             return PlanItem(snapshotIndex: s, snapshotWindow: snap,
                             action: .skip(reason: reason))
         }
@@ -368,15 +375,18 @@ public final class RestoreEngine: @unchecked Sendable {
             guard let match = matchBySnapshot[s] else {
                 // 未运行应用不启动 / 同应用配不上不猜（spec §6.4a/c）
                 let reason = liveBundleIDs.contains(snap.bundleID) ? "unmatched" : "app-not-running"
-                plan.append(skipItem(s, snap, reason, wid: nil))
+                plan.append(skipItem(s, snap, reason, wid: nil, liveSpaceID: nil))
                 continue
             }
             let lw = live[match.liveIndex]
             if mode == .undo && stuckFullscreenWIDs.contains(lw.cgWindowID) {
                 // 撤销第一段（票 16 §8.6）：实况窗卡在后台全屏 Space——本段跳过（计 skip，且计入
                 // fullscreenPendingCount），待用户按 Esc 后第二段补完（§5.2 后台退出全屏不可达）
-                log?.write("[restore] skip wid=\(lw.cgWindowID) app=\(snap.bundleID) title=\(snap.title) "
-                    + "reason=fullscreen-exit-pending")
+                log?.write(StructuredLog.restoreLine(
+                    layer: SpaceLayerNumber.bridge, wid: lw.cgWindowID, app: snap.bundleID,
+                    action: .moveToSpace, target: "\(snap.displayUUID)/\(snap.spaceIndex)",
+                    before: "space=\(lw.spaceID)", after: "-", result: .skip,
+                    reason: "fullscreen-exit-pending"))
                 plan.append(PlanItem(snapshotIndex: s, snapshotWindow: snap,
                                      action: .pendingFullscreen(live: lw)))
                 continue
@@ -391,7 +401,8 @@ public final class RestoreEngine: @unchecked Sendable {
                 continue
             }
             guard let targetDisplay = displays.first(where: { $0.uuid == snap.displayUUID }) else {
-                plan.append(skipItem(s, snap, "target-display-absent", wid: lw.cgWindowID))
+                plan.append(skipItem(s, snap, "target-display-absent", wid: lw.cgWindowID,
+                                     liveSpaceID: lw.spaceID))
                 continue
             }
             let resolved = Self.resolveTargetSpace(
@@ -488,24 +499,33 @@ public final class RestoreEngine: @unchecked Sendable {
         for space in snapshot.spaces where space.kind == .fullscreen {
             let target = "\(space.displayUUID)/\(space.index)"
             guard let appID = space.fullscreenAppBundleID, !appID.isEmpty else {
-                log?.write("[restore] skip app=- reason=fullscreen-app-missing detail=space=\(target)")
+                // 无所属应用可归（快照缺 fullscreenAppBundleID）：per-Space skip 行，wid=0/app=-（文件头扩展键口径）
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: 0, app: "-",
+                    action: .fullscreen, target: target, before: "-", after: "-", result: .skip,
+                    reason: "fullscreen-app-missing"))
                 skipped += 1
                 continue
             }
             guard displays.contains(where: { $0.uuid == space.displayUUID }) else {
-                log?.write("[restore] skip app=\(appID) reason=target-display-absent detail=fullscreen-space=\(target)")
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: 0, app: appID,
+                    action: .fullscreen, target: target, before: "-", after: "-", result: .skip,
+                    reason: "target-display-absent"))
                 skipped += 1
                 continue
             }
             guard layerOK else {
                 // L3 降级（探针失败 / FORCE_DEGRADED=fullscreen）：全屏应用不动，其余层照常（§6.1）
-                log?.write("[restore] skip app=\(appID) reason=fullscreen-layer-unavailable detail=space=\(target)")
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: 0, app: appID,
+                    action: .fullscreen, target: target, before: "-", after: "-", result: .skip,
+                    reason: "fullscreen-layer-unavailable"))
                 skipped += 1
                 continue
             }
             guard let lw = live.first(where: { $0.bundleID == appID && !consumed.contains($0.cgWindowID) }) else {
                 // 应用已退出不启动（spec §6.4a）
-                log?.write("[restore] skip app=\(appID) reason=app-not-running detail=fullscreen-space=\(target)")
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: 0, app: appID,
+                    action: .fullscreen, target: target, before: "-", after: "-", result: .skip,
+                    reason: "app-not-running"))
                 skipped += 1
                 continue
             }
@@ -519,7 +539,7 @@ public final class RestoreEngine: @unchecked Sendable {
             // = 第二段补完，进入全屏后台可达（§5.2），落下方常规路径回目标屏重新全屏。
             if mode == .undo {
                 let current = entries.first { $0.spaceID == lw.spaceID }
-                let stuck = current?.kind == fullscreenSpaceKind
+                let stuck = current?.kind == SpaceKind.fullscreen
                 before = "fullscreen=\(stuck) disp=\(lw.displayUUID) space=\(lw.spaceID)"
                 if stuck {
                     if current?.displayUUID == space.displayUUID {
@@ -530,7 +550,9 @@ public final class RestoreEngine: @unchecked Sendable {
                         ok += 1
                         continue
                     }
-                    log?.write("[restore] skip wid=\(wid) app=\(appID) reason=fullscreen-exit-pending detail=space=\(target)")
+                    log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
+                        app: appID, action: .fullscreen, target: target, before: before,
+                        after: "-", result: .skip, reason: "fullscreen-exit-pending"))
                     pending += 1
                     skipped += 1
                     continue
@@ -567,7 +589,9 @@ public final class RestoreEngine: @unchecked Sendable {
               let landing = entries.filter({ $0.displayUUID == displayUUID })
                   .min(by: { $0.index < $1.index }) else {
             // 桥接不可用/目标屏无既有 Space：无法就位（§6.1 L3 失效表现 = 不动；L2 已另有降级日志）
-            log?.write("[restore] skip wid=\(wid) app=\(appID) reason=fullscreen-premove-unavailable detail=space=\(target)")
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid, app: appID,
+                action: .fullscreen, target: target, before: before, after: "-", result: .skip,
+                reason: "fullscreen-premove-unavailable"))
             skipped += 1
             return false
         }
@@ -611,7 +635,9 @@ public final class RestoreEngine: @unchecked Sendable {
             return
         }
         guard let targetSpace else {
-            log?.write("[restore] skip wid=\(wid) app=\(snap.bundleID) title=\(snap.title) reason=target-display-absent")
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
+                action: .minimize, target: target, before: before, after: "-", result: .skip,
+                reason: "target-display-absent"))
             skipped += 1
             return
         }
@@ -755,9 +781,6 @@ public final class RestoreEngine: @unchecked Sendable {
         log?.write("[restore] detail wid=\(wid) app=\(app) action=\(action.rawValue) error=\(error)")
     }
 }
-
-/// SpaceEntry.kind 全屏值（spec §5.1 实测：0=用户桌面、4=全屏）
-private let fullscreenSpaceKind = 4
 
 /// 恢复降级阶梯层号（L1 几何 / L2 桥接 / L3 全屏 / L4 最小化，spec §6.1）
 enum SpaceLayerNumber {

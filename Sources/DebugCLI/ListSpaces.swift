@@ -28,7 +28,7 @@ enum ListSpaces {
                 let cur = current[uuid].map(String.init) ?? "?"
                 print("display #\(dispIdx) uuid=\(uuid) current=\(cur)")
                 for entry in byDisplay[uuid] ?? [] {
-                    let kindName = entry.kind == 0 ? "user" : (entry.kind == 4 ? "fullscreen" : "?kind=\(entry.kind)")
+                    let kindName = SpaceKind.kindName(entry.kind)
                     let marker = current[uuid] == entry.spaceID ? "  <== CURRENT" : ""
                     print("  space #\(entry.index) id64=\(entry.spaceID) kind=\(entry.kind)(\(kindName))\(marker)")
                 }
