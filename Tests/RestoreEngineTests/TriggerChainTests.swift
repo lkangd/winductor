@@ -261,4 +261,79 @@ final class TriggerChainTests: XCTestCase {
         // 链走完后状态机回 idle：无残留挂起回调（幂等前提）
         XCTAssertEqual(scheduler.pendingCount, 0)
     }
+
+    // MARK: - 周期 2：防抖新事件重置 + 反例零动作（A2/A3/A4）
+
+    func testNewEventDuringDebounceResetsTimer() throws {
+        // 场景：拔出事件（A4 形态）后 1.4s 又来一个新事件 → 防抖计时重置，
+        // 第一次 settle 不发生；第二次 settle 在新事件后 1.5s（虚拟时间 2.9s）
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report())
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])            // 拔出 B
+        chain.screenParametersChanged()  // t0
+        clock.set(clock.current.addingTimeInterval(1.4))
+        chain.screenParametersChanged()  // t0+1.4 新事件：重置防抖计时
+        scheduler.step()               // 唯一挂起点 = t0+2.9
+
+        XCTAssertEqual(clock.current.timeIntervalSince(Date(timeIntervalSince1970: 1_000_000)),
+                       2.9, accuracy: 0.001, "新事件重置 1.5s 计时（旧计时点 t0+1.5 不再触发）")
+        XCTAssertEqual(triggerSteps(spy.all).filter { $0 == "debounce-settle" }.count, 1,
+                       "被重置的第一次 settle 不落日志")
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    func testUnchangedSetZeroActionOnWakeLikeEvent() throws {
+        // A2/A3：睡眠唤醒/锁屏解锁/分辨率微调 = 事件到达但集合不变 → 零动作不触发
+        let scheduler = FakeTriggerScheduler(clock: FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000)))
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report())
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000)),
+                                 scheduler: scheduler, log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA, displayB])  // 分辨率微调不改 UUID 集合
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertNil(restorer.snapshots.first, "集合不变零动作，不触发恢复")
+        XCTAssertEqual(triggerSteps(spy.all), ["baseline", "event", "debounce-settle"],
+                       "链止于 debounce-settle，无 topology-match / restore-start")
+        XCTAssertEqual(triggerResults(spy.all).last, "unchanged")
+    }
+
+    func testShrunkenSetOnlyUpdatesBaselineThenPlugBackTriggers() throws {
+        // A4：拔出（集合变小）只更新基线不干预；随后插回（集合变大且精确匹配）→ 完整链触发
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])            // 拔出
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertNil(restorer.snapshots.first, "拔出不干预")
+        XCTAssertEqual(triggerResults(spy.all).last, "shrank")
+
+        box.set([displayA, displayB])  // 插回 → 集合变大且精确匹配快照
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.count, 1, "基线已更新为拔出后集合，插回判「变大」触发")
+        XCTAssertTrue(triggerSteps(spy.all).contains("restore-start"))
+    }
 }
