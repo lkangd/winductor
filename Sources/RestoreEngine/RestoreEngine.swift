@@ -249,8 +249,20 @@ public final class RestoreEngine: @unchecked Sendable {
                                                title: $0.title, x: $0.x, y: $0.y, w: $0.w, h: $0.h,
                                                minimized: $0.minimized) })
         let entries = (try? spaces.managedSpaces()) ?? []
+
+        // 撤销第一段（票 16 §8.6/§5.2）：实况窗卡在后台全屏 Space（kind=4，spec §5.1）时
+        // 后台退出全屏不可达、桥接/几何写对它无效（桥接 no-op 还会毒化 L2 运行时标记），先摘出计 pending
+        var stuckFullscreenWIDs = Set<UInt32>()
+        if mode == .undo {
+            let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
+            for lw in live where entryBySpaceID[lw.spaceID]?.kind == fullscreenSpaceKind {
+                stuckFullscreenWIDs.insert(lw.cgWindowID)
+            }
+        }
+
         let plan = planEntries(snapshot: snapshot, live: live, outcome: outcome,
-                               entries: entries, displays: displays)
+                               entries: entries, displays: displays,
+                               mode: mode, stuckFullscreenWIDs: stuckFullscreenWIDs)
 
         // Pass L2（§6.8 先桥接移窗：屏 + Space 一步到位）→ Pass L1（AX 几何摆位）
         // → Pass L3（全屏最后）→ Pass L4（最小化恢复）—— §6.8 顺序铁律
@@ -265,10 +277,10 @@ public final class RestoreEngine: @unchecked Sendable {
         }
 
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
-        var ok3 = 0, skip3 = 0, fail3 = 0
+        var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
         restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
                                 layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: bridgeOK,
-                                ok: &ok3, skipped: &skip3, failed: &fail3)
+                                mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
 
         // Pass L4（票 15，§6.8 顺序铁律最后一环）：最小化窗口送回快照 Space 并保持最小化
         let l4Items = plan.filter(\.isMinimizedRestore)
@@ -280,19 +292,25 @@ public final class RestoreEngine: @unchecked Sendable {
         }
 
         let skipped = plan.count - actItems.count - l4Items.count
-        let report = RestoreReport(
+        let pending = plan.filter(\.isPendingFullscreen).count + pending3
+        switch mode {
+        case .restore:
+            log?.write("[restore] done ok=\(actItems.count - failed.count + ok3 + ok4) "
+                + "skip=\(skipped + skip3 + skip4) fail=\(failed.count + fail3 + fail4) "
+                + "matched=\(outcome.matches.count) untouched=\(outcome.unmatchedLiveIndexes.count)")
+        case .undo:
+            log?.write("[undo] done ok=\(actItems.count - failed.count + ok3 + ok4) "
+                + "skip=\(skipped + skip3 + skip4) fail=\(failed.count + fail3 + fail4) "
+                + "pending=\(pending) matched=\(outcome.matches.count) untouched=\(outcome.unmatchedLiveIndexes.count)")
+        }
+        return PipelineCounts(
             okCount: actItems.count - failed.count + ok3 + ok4,
             skipCount: skipped + skip3 + skip4,
             failCount: failed.count + fail3 + fail4,
             matchedCount: outcome.matches.count,
             untouchedLiveCount: outcome.unmatchedLiveIndexes.count,
+            fullscreenPendingCount: pending,
             undoSnapshotURL: undoURL)
-        log?.write("[restore] done ok=\(report.okCount) skip=\(report.skipCount) fail=\(report.failCount) "
-            + "matched=\(report.matchedCount) untouched=\(report.untouchedLiveCount)")
-        return PipelineCounts(
-            okCount: report.okCount, skipCount: report.skipCount, failCount: report.failCount,
-            matchedCount: report.matchedCount, untouchedLiveCount: report.untouchedLiveCount,
-            fullscreenPendingCount: 0, undoSnapshotURL: undoURL)
     }
 
     // MARK: - 行动计划（匹配结果 → 每条目动作/跳过判定；skip 行只记一次）
@@ -308,6 +326,8 @@ public final class RestoreEngine: @unchecked Sendable {
                      targetDisplay: Displays.Info, capturedOrientation: Int)
             /// L4 最小化恢复（票 15，spec §6.5）：送回快照 Space 并保持最小化，几何不触碰
             case restoreMinimized(live: LiveRestoreWindow, targetSpace: SpaceEntry?, mergedFrom: Int?)
+            /// 撤销两段式第一段：实况窗卡在后台全屏 Space，待用户 Esc 后第二段补完（票 16，spec §8.6）
+            case pendingFullscreen(live: LiveRestoreWindow)
         }
         let snapshotIndex: Int
         let snapshotWindow: SnapshotWindow
@@ -322,11 +342,17 @@ public final class RestoreEngine: @unchecked Sendable {
             if case .restoreMinimized = action { return true }
             return false
         }
+
+        var isPendingFullscreen: Bool {
+            if case .pendingFullscreen = action { return true }
+            return false
+        }
     }
 
     private func planEntries(snapshot: Snapshot, live: [LiveRestoreWindow],
                              outcome: MatchOutcome, entries: [SpaceEntry],
-                             displays: [Displays.Info]) -> [PlanItem] {
+                             displays: [Displays.Info], mode: RunMode,
+                             stuckFullscreenWIDs: Set<UInt32>) -> [PlanItem] {
         let matchBySnapshot = Dictionary(uniqueKeysWithValues: outcome.matches.map { ($0.snapshotIndex, $0) })
         let liveBundleIDs = Set(live.map(\.bundleID))
         let capturedOrientation = Dictionary(uniqueKeysWithValues:
@@ -346,6 +372,15 @@ public final class RestoreEngine: @unchecked Sendable {
                 continue
             }
             let lw = live[match.liveIndex]
+            if mode == .undo && stuckFullscreenWIDs.contains(lw.cgWindowID) {
+                // 撤销第一段（票 16 §8.6）：实况窗卡在后台全屏 Space——本段跳过（计 skip，且计入
+                // fullscreenPendingCount），待用户按 Esc 后第二段补完（§5.2 后台退出全屏不可达）
+                log?.write("[restore] skip wid=\(lw.cgWindowID) app=\(snap.bundleID) title=\(snap.title) "
+                    + "reason=fullscreen-exit-pending")
+                plan.append(PlanItem(snapshotIndex: s, snapshotWindow: snap,
+                                     action: .pendingFullscreen(live: lw)))
+                continue
+            }
             if lw.minimized {
                 // L4（票 15，spec §6.5）：实况最小化 → 送回快照 Space 并保持最小化，几何不触碰。
                 // 快照 minimized 但实况已展开 → 走常规恢复（终态是否最小化尊重实况，不强行重新最小化）
@@ -446,8 +481,9 @@ public final class RestoreEngine: @unchecked Sendable {
     /// （§5.2/§8.6：程序化不可达的「后台退出全屏」只咬撤销，票 16 两段式）。
     private func restoreFullscreenSpaces(snapshot: Snapshot, live: [LiveRestoreWindow],
                                          entries: [SpaceEntry], displays: [Displays.Info],
-                                         layerOK: Bool, bridgeOK: Bool,
-                                         ok: inout Int, skipped: inout Int, failed: inout Int) {
+                                         layerOK: Bool, bridgeOK: Bool, mode: RunMode,
+                                         ok: inout Int, skipped: inout Int, failed: inout Int,
+                                         pending: inout Int) {
         var consumed = Set<UInt32>()  // 同应用多个全屏 Space 时，一个实况窗只消费一次
         for space in snapshot.spaces where space.kind == .fullscreen {
             let target = "\(space.displayUUID)/\(space.index)"
@@ -476,6 +512,15 @@ public final class RestoreEngine: @unchecked Sendable {
             consumed.insert(lw.cgWindowID)
             let wid = lw.cgWindowID
             var before = "fullscreen=false disp=\(lw.displayUUID) space=\(lw.spaceID)"
+
+            // 撤销第一段（票 16 §8.6，周期2 口径）：全屏条目一律跳过计 pending——
+            // 卡在后台全屏的窗不可达（§5.2），第二段补完判定（是否已 Esc / 已在目标）周期3 精细化
+            if mode == .undo {
+                log?.write("[restore] skip wid=\(wid) app=\(appID) reason=fullscreen-exit-pending detail=space=\(target)")
+                pending += 1
+                skipped += 1
+                continue
+            }
 
             // 目标屏就位（05 #4：窗口先到目标屏；已在目标屏则免桥接）。预移位落点取目标屏既有 Space 之一即可
             if lw.displayUUID != space.displayUUID {
@@ -695,6 +740,9 @@ public final class RestoreEngine: @unchecked Sendable {
         log?.write("[restore] detail wid=\(wid) app=\(app) action=\(action.rawValue) error=\(error)")
     }
 }
+
+/// SpaceEntry.kind 全屏值（spec §5.1 实测：0=用户桌面、4=全屏）
+private let fullscreenSpaceKind = 4
 
 /// 恢复降级阶梯层号（L1 几何 / L2 桥接 / L3 全屏 / L4 最小化，spec §6.1）
 enum SpaceLayerNumber {
