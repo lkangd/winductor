@@ -91,7 +91,9 @@ public final class PermissionMonitor {
         self.screenCaptureProbe = screenCaptureProbe
         self.titleSampler = titleSampler
         self.pollInterval = pollInterval
-        self.currentStatus = Status(accessibilityGranted: true, screenCaptureGranted: true,
+        // 初始哨兵 = 未就绪（失败安全）：首次检测前任何读取（如引擎就绪门）都关闸，
+        // 而不是默认放行。start() 的立即首检会把状态拉回真实现状。
+        self.currentStatus = Status(accessibilityGranted: false, screenCaptureGranted: false,
                                     screenCaptureNeedsReconfirm: false)
     }
 
