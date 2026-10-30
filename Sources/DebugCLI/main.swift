@@ -11,6 +11,7 @@ let registry: [String: ([String]) -> Int32] = [
     "probe": Probe.run,
     "restore": Restore.run,
     "snapshot-now": SnapshotNow.run,
+    "undo": Undo.run,
 ]
 
 let args = Array(CommandLine.arguments.dropFirst())
