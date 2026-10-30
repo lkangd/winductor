@@ -16,6 +16,22 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 **Implementer subagents** should be run in the background where possible for maximum concurrency.
 
+## Orchestrator discipline
+
+The orchestrator schedules and merges; it does not do hands-on work. Context is the scarce resource — the checkpoint that makes any interruption cheap already exists (one commit per ticket, status in ticket files).
+
+- **Delegate output-heavy verification** (codesign, log dumps, live app runs) to an implementer subagent; receive back a short structured report. Never run these yourself.
+- **Filter every bash output**: pipe through `grep`/`head`/`tail`; output that must be long goes to a file read with offset/limit.
+- Per-ticket results stay in the ticket/report files, not in your context — read them back only when a decision needs them.
+
+## Invocation contract
+
+- Agents: `worker` (implementation), `reviewer` (fresh-context review), `researcher`/`scout` (exploration). This flow needs only these — not `general`, not personas.
+- One child: `{agent, task, cwd?, async?}`. A `tasks[]` array is invalid without `workflow: "parallel"`.
+- Exactly **one subagent call per turn**; batch all parallel children inside that single call.
+- Fan out implementers with `async: true`; run reviewers blocking (`async: false`) so findings land in this context.
+- On an agent/args error, fix the call from this contract — mid-flight guide lookups cost a turn each.
+
 ## Steps
 
 1. Read the spec and tickets to understand the task graph.

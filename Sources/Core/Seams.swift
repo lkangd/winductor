@@ -61,6 +61,14 @@ public enum Displays: Sendable {
         public let id: CGDirectDisplayID
         public let bounds: CGRect
         public let uuid: String?
+
+        /// 公开构造器：Displays.active() 之外的注入场景（simulate-restore 干跑、测试桩）需要。
+        /// 纯加法，不改既有签名（Seams.swift 冻结口径不受影响）。
+        public init(id: CGDirectDisplayID, bounds: CGRect, uuid: String?) {
+            self.id = id
+            self.bounds = bounds
+            self.uuid = uuid
+        }
     }
 
     private typealias DisplayUUIDFn = @convention(c) (UInt32) -> CFUUID?

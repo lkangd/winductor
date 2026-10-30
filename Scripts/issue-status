@@ -1,0 +1,46 @@
+#!/bin/bash
+# Flip the Status: line of an issue/ticket file.
+# Usage: issue-status <NN|path/to/file.md> <status>
+#   NN   — ticket number inside .scratch/*/issues/ (e.g. 12 or 07)
+# Examples:
+#   issue-status 12 claimed
+#   issue-status .scratch/feature/issues/12-engine.md resolved
+set -euo pipefail
+
+if [ $# -ne 2 ]; then
+  echo "usage: issue-status <NN|path> <status>" >&2
+  exit 2
+fi
+
+TARGET="$1"
+STATUS="$2"
+
+case "$STATUS" in
+  claimed|resolved|needs-triage|needs-info|ready-for-agent|ready-for-human|wontfix) ;;
+  *) echo "issue-status: unknown status '$STATUS'" >&2
+     echo "  valid: claimed resolved needs-triage needs-info ready-for-agent ready-for-human wontfix" >&2
+     exit 2 ;;
+esac
+
+if [ -f "$TARGET" ]; then
+  FILE="$TARGET"
+else
+  NN="$(printf '%02d' "$TARGET" 2>/dev/null || true)"
+  FILE="$(find .scratch -path '*/issues/*' -name "${NN}-*.md" 2>/dev/null | head -1 || true)"
+  if [ -z "${FILE:-}" ] || [ ! -f "$FILE" ]; then
+    echo "issue-status: no issue file for '$TARGET' under .scratch/*/issues/" >&2
+    exit 1
+  fi
+fi
+
+OLD="$(grep -m1 '^Status:' "$FILE" || true)"
+if [ -z "$OLD" ]; then
+  echo "issue-status: no 'Status:' line in $FILE — nothing flipped" >&2
+  exit 1
+fi
+
+awk -v st="$STATUS" 'BEGIN{done=0} !done && /^Status:/ {print "Status: " st; done=1; next} {print}' \
+  "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+
+echo "issue-status: $FILE"
+echo "  $OLD -> Status: $STATUS"
