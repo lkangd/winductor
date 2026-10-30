@@ -727,3 +727,107 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.failCount, 1); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.skipCount, 0)
     }
 }
+
+// MARK: 降级阶梯逐层独立（票 15，A20/A21 同构：FORCE_DEGRADED 走同一 isLayerAvailable 判定路径）
+
+extension RestorePipelineTests {
+    /// 混合场景：A#1 user + B#1/#2 user + B#3 fullscreen(com.t.fs)；
+    /// 实况 = 101 Doc 在 B#1（常规）、202 fs 在 A 整屏（全屏应用）、301 Mail 最小化在 A#1。
+    func makeMixedWorld() -> (snapshot: Snapshot, bridge: FakeBridge, geometry: FakeGeometry,
+                              fs: FakeFullScreen, mini: FakeMinimize, log: LogSpy, engine: RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                World.userSpace("B-uuid", index: 2),
+                SnapshotSpace(displayUUID: "B-uuid", index: 3, kind: .fullscreen,
+                              fullscreenAppBundleID: "com.t.fs"),
+            ],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.m", title: "Mail", sibling: 0,
+                                     display: "B-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4,
+                                     minimized: true),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.fs", title: "Full",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.0, y: 0.0, w: 1.0, h: 1.0),
+            World.sample(wid: 301, bundleID: "com.t.m", title: "Mail",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.2, y: 0.2, w: 0.4, h: 0.3,
+                         onscreen: false),
+        ]
+        let bridge = FakeBridge(entries: [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 8),
+        ], byWindow: [101: 6, 202: 5, 301: 5])
+        let geometry = FakeGeometry()
+        let fs = FakeFullScreen()
+        let mini = FakeMinimize()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [301]), geometry: geometry,
+            fullscreen: fs, minimize: mini, fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, geometry, fs, mini, log, engine)
+    }
+
+    func testMinimizedLayerUnavailableLeavesWindowUntouchedAsSkipWhileOthersProceed() throws {
+        // A21 同构：FORCE_DEGRADED=minimized → L4 降级：最小化窗原地保持最小化不动、不报失败（skip）
+        let world = makeMixedWorld()
+        world.bridge.layerAvailability[.minimized] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        // L4 失效路径：零动作（无直移、无 AXMinimized 写、无几何、无桥接）
+        XCTAssertTrue(world.bridge.directMinimizedMoves.isEmpty)
+        XCTAssertTrue(world.mini.calls.isEmpty)
+        XCTAssertFalse(world.geometry.calls.map(\.windowID).contains(301))
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(301))
+
+        let skip = try XCTUnwrap(world.log.all.first {
+            $0.contains("[restore] L4") && $0.contains("action=minimize") && $0.contains("result=skip") })
+        XCTAssertTrue(skip.contains("wid=301"), "实际：\(skip)")
+
+        // 其余层照常：101 L2+L1、202 L3 全屏
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101], [202]])
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101])
+        XCTAssertEqual(world.fs.calls.map(\.windowID), [202])
+
+        XCTAssertEqual(report.okCount, 2, "101 常规 + L3 全屏")
+        XCTAssertEqual(report.skipCount, 1, "L4 降级 skip")
+        XCTAssertEqual(report.failCount, 0, "L4 降级不报失败")
+    }
+
+    func testFullscreenLayerDegradedKeepsMinimizedLayerWorking() throws {
+        // FORCE_DEGRADED=fullscreen 语义：L3 降级全屏应用不动，L4 最小化恢复照常
+        let world = makeMixedWorld()
+        world.bridge.layerAvailability[.fullscreen] = false
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.fs.calls.isEmpty, "L3 降级不写全屏")
+        XCTAssertFalse(world.bridge.moves.flatMap(\.wids).contains(202), "全屏应用窗不预移位")
+
+        XCTAssertEqual(world.bridge.directMinimizedMoves.map(\.windowID), [301], "L4 照常")
+        XCTAssertTrue(world.mini.calls.isEmpty, "直移成功无首尾动作")
+        XCTAssertEqual(world.bridge.byWindow[301], 8, "送回快照 Space B#2(id8)")
+
+        // L2/L1 照常
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]])
+        XCTAssertEqual(world.geometry.calls.map(\.windowID), [101])
+
+        XCTAssertEqual(report.okCount, 2, "101 常规 + 301 L4")
+        XCTAssertEqual(report.skipCount, 1, "L3 降级 skip")
+        XCTAssertEqual(report.failCount, 0)
+    }
+}
