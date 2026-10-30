@@ -271,3 +271,85 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.skipCount, 2); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.failCount, 0)
     }
 }
+
+// MARK: L1 几何摆位 — 比例坐标 × 所属屏 bounds + 旋转轴向互换 + AX 失败路径
+
+extension RestorePipelineTests {
+    /// 双屏场景：窗口 101 实况在 A 屏，快照要求落 B 屏（跨屏桥接 + 几何按 B 屏 bounds 摆位）
+    func makeCrossScreenWorld(capturedBOrientation: Int, currentBOrientation: Int,
+                              geometryError: Error? = nil) -> (Snapshot, FakeBridge, FakeGeometry, LogSpy, RestoreEngine) {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: capturedBOrientation,
+                                    x: 2000, y: 0, w: 1000, h: 500),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                           display: "B-uuid", space: 1, x: 0.1, y: 0.2, w: 0.5, h: 0.6)])
+        let samples = [World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                                    displayOrigin: aOrigin, displaySize: screenSize, x: 0.3, y: 0.3, w: 0.4, h: 0.4)]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5),
+                                          World.entry("B-uuid", index: 1, id: 6)],
+                                byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        geometry.error = geometryError
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(), geometry: geometry,
+            displaysProvider: { [Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000), uuid: "A-uuid"),
+                                    Displays.Info(id: 2, bounds: CGRect(x: 2000, y: 0, width: 1000, height: 500), uuid: "B-uuid")] },
+            rotationProvider: World.rotationProvider([1: 0, 2: currentBOrientation]), log: log)
+        return (snapshot, bridge, geometry, log, engine)
+    }
+
+    func testGeometryIsRatioTimesTargetDisplayBounds() throws {
+        // 同旋转：比例 (0.1,0.2,0.5,0.6) × B 屏 bounds (2000,0,1000,500) → 绝对 pos/size
+        let (snapshot, bridge, geometry, log, engine) = makeCrossScreenWorld(
+            capturedBOrientation: 0, currentBOrientation: 0)
+
+        _ = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(bridge.moves[0].spaceID, 6, "先桥接移到 B 屏 Space")
+        XCTAssertEqual(geometry.calls, [FakeGeometry.Call(windowID: 101,
+                                                          position: CGPoint(x: 2000 + 0.1 * 1000, y: 0.2 * 500),
+                                                          size: CGSize(width: 0.5 * 1000, height: 0.6 * 500))])
+        XCTAssertTrue(log.all.contains { $0.contains("[restore] L1") && $0.contains("action=position")
+            && $0.contains("result=ok") && $0.contains("target=B-uuid rot=0") },
+            "应记 L1 ok 行，实际：\(log.all)")
+    }
+
+    func testRotationChangeSwapsAxesBestEffort() throws {
+        // A14 雏形：捕获竖屏 90° vs 当前横屏 0° → 比例轴向互换 (x,y,w,h)→(y,x,h,w)
+        let (snapshot, _, geometry, log, engine) = makeCrossScreenWorld(
+            capturedBOrientation: 90, currentBOrientation: 0)
+
+        _ = try engine.restore(snapshot: snapshot)
+
+        // 互换后比例 (0.2,0.1,0.6,0.5) × B 屏 (2000,0,1000,500) → pos (2200,50) size (600,250)
+        XCTAssertEqual(geometry.calls, [FakeGeometry.Call(windowID: 101,
+                                                          position: CGPoint(x: 2200, y: 50),
+                                                          size: CGSize(width: 600, height: 250))])
+        XCTAssertTrue(log.all.contains { $0.contains("target=B-uuid rot=0") })
+    }
+
+    func testAXPermissionDeniedCountsFailAndLogs() throws {
+        // 「AX 权限不足」路径 = 验收行为：L2 已完成、L1 result=fail + 详情行 + 计数 fail（不中断）
+        let (snapshot, bridge, geometry, log, engine) = makeCrossScreenWorld(
+            capturedBOrientation: 0, currentBOrientation: 0,
+            geometryError: FakeAXPermissionError())
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(bridge.moves.count, 1, "L2 已执行（逐层降级：单动作失败不影响他层已完成的动作）")
+        XCTAssertTrue(log.all.contains { $0.contains("[restore] L1") && $0.contains("action=position")
+            && $0.contains("result=fail") }, "应记 L1 fail 行，实际：\(log.all)")
+        XCTAssertTrue(log.all.contains { $0.contains("[restore] detail") && $0.contains("action=position") },
+            "失败详情应独立成行")
+        XCTAssertEqual(report.failCount, 1)
+        XCTAssertEqual(report.okCount, 0)
+        XCTAssertEqual(report.skipCount, 0)
+    }
+}

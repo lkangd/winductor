@@ -142,3 +142,6 @@ extension XCTestCase {
         return dir
     }
 }
+
+/// 测试本地错误（模拟「AX 权限不足」等写失败；引擎按任意 Error 抛出处理，不耦合具体类型）
+struct FakeAXPermissionError: Error {}
