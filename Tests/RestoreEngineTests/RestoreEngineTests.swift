@@ -127,3 +127,147 @@ final class RestorePipelineTests: XCTestCase {
         XCTAssertTrue(world.geometry.calls.isEmpty)
     }
 }
+
+// MARK: A12/A13 — Space 数量不符双向处置（spec §6.7）
+
+extension RestorePipelineTests {
+    func singleDisplayEngine(snapshot: Snapshot, samples: [CGWindowSample],
+                             bridge: FakeBridge, geometry: FakeGeometry,
+                             log: LogSpy, rotation: Int = 0) -> RestoreEngine {
+        RestoreEngine(
+            store: SnapshotStore(directory: try! makeTempDir()),
+            spaces: bridge,
+            enumerator: FakeEnumerator(samples),
+            ax: FakeAX(),
+            geometry: geometry,
+            displaysProvider: { [Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000),
+                                               uuid: "A-uuid")] },
+            rotationProvider: World.rotationProvider([1: rotation]),
+            log: log)
+    }
+
+    func testSnapshotSpaceBeyondExistingMergesToNearestWithLog() throws {
+        // A12：快照目标 A#2，现状 A 屏只剩 #1 → 按 index 就近并入 id5 + space-merge 日志（不补建）
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("A-uuid", index: 2)],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                           display: "A-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let samples = [World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                                    displayOrigin: aOrigin, displaySize: screenSize, x: 0.5, y: 0.1, w: 0.4, h: 0.4)]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5)], byWindow: [101: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = singleDisplayEngine(snapshot: snapshot, samples: samples,
+                                         bridge: bridge, geometry: geometry, log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(bridge.moves.count, 1)
+        XCTAssertEqual(bridge.moves[0].wids, [101])
+        XCTAssertEqual(bridge.moves[0].spaceID, 5, "应就近并入既有 #1")
+        XCTAssertTrue(log.all.contains { $0.contains("space-merge") && $0.contains("snapshotIndex=2 mergedTo=1") },
+                      "应记 space-merge 行，实际：\(log.all)")
+        XCTAssertTrue(log.all.contains { $0.contains("action=move-to-space target=A-uuid/1") && $0.contains("result=ok") })
+        XCTAssertEqual(report.okCount, 1); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.skipCount, 0)
+        XCTAssertEqual(geometry.calls.map(\.windowID), [101], "并入后几何摆位照常")
+    }
+
+    func testCurrentSpacesBeyondSnapshotPlaceByIndexNormally() throws {
+        // A13：现状多出（A 屏 #1..#3，快照只记 #2/#3）→ 照 index 正常落位，无 space-merge 行
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("A-uuid", index: 2),
+                     World.userSpace("A-uuid", index: 3)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.b", title: "Term", sibling: 0,
+                                     display: "A-uuid", space: 3, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.6, w: 0.4, h: 0.3),
+            World.sample(wid: 102, bundleID: "com.t.b", title: "Term",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.5, y: 0.6, w: 0.4, h: 0.3),
+        ]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5),
+                                          World.entry("A-uuid", index: 2, id: 6),
+                                          World.entry("A-uuid", index: 3, id: 7)],
+                                byWindow: [101: 5, 102: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = singleDisplayEngine(snapshot: snapshot, samples: samples,
+                                         bridge: bridge, geometry: geometry, log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(bridge.moves.count, 2)
+        XCTAssertEqual(bridge.moves[0].wids, [101]); XCTAssertEqual(bridge.moves[0].spaceID, 6)
+        XCTAssertEqual(bridge.moves[1].wids, [102]); XCTAssertEqual(bridge.moves[1].spaceID, 7)
+        XCTAssertFalse(log.all.contains { $0.contains("space-merge") }, "现状多出不产生 merge 行")
+        XCTAssertEqual(report.okCount, 2); XCTAssertEqual(report.failCount, 0)
+    }
+
+    func testBridgeUnavailableSkipsMoveButStillPositions() throws {
+        // FORCE_DEGRADED=bridge 等效：L2 降级 skip 行 + L1 几何照常（spec §6.1 逐层降级）
+        let world = makeWorld(bridgeAvailable: false)
+        let engine = makeEngine(world)
+
+        let report = try engine.restore(snapshot: world.snapshot)
+
+        XCTAssertTrue(world.bridge.moves.isEmpty, "L2 不可用不得调用桥接")
+        XCTAssertTrue(world.log.all.contains {
+            $0.contains("[restore] L2") && $0.contains("action=move-to-space") && $0.contains("result=skip") },
+            "应记 L2 skip 行，实际：\(world.log.all)")
+        XCTAssertEqual(world.geometry.calls, [FakeGeometry.Call(windowID: 101,
+                                                           position: CGPoint(x: 100, y: 100),
+                                                           size: CGSize(width: 400, height: 400))],
+                       "L1 几何照常")
+        XCTAssertEqual(report.okCount, 1, "降级 skip 不计失败")
+        XCTAssertEqual(report.failCount, 0)
+    }
+
+    func testMinimizedSnapshotEntryAndLiveMinimizedWindowAreSkipped() throws {
+        // L4 本票不碰（票 15）：快照 minimized 条目 skip；实况最小化窗口 skip
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.b", title: "Mini", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.5, y: 0.1, w: 0.4, h: 0.4,
+                                     minimized: true),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.6, w: 0.4, h: 0.3,
+                         onscreen: false),  // 最小化窗口 isOnscreen=false（CG 契约），AX minimized 由此读到
+            World.sample(wid: 102, bundleID: "com.t.b", title: "Mini",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.5, y: 0.6, w: 0.4, h: 0.3),
+        ]
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5)], byWindow: [101: 5, 102: 5])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [101]),  // 101 实况最小化
+            geometry: geometry,
+            displaysProvider: { [Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000),
+                                               uuid: "A-uuid")] },
+            rotationProvider: World.rotationProvider([1: 0]), log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertTrue(bridge.moves.isEmpty, "最小化条目/窗口一律不动")
+        XCTAssertTrue(geometry.calls.isEmpty)
+        XCTAssertTrue(log.all.contains { $0.contains("reason=live-minimized") })
+        XCTAssertTrue(log.all.contains { $0.contains("reason=minimized-entry-L4") })
+        XCTAssertEqual(report.skipCount, 2); XCTAssertEqual(report.okCount, 0); XCTAssertEqual(report.failCount, 0)
+    }
+}
