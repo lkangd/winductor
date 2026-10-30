@@ -381,4 +381,130 @@ final class UndoPipelineTests: XCTestCase {
         XCTAssertNotNil(undo.twoStageNotificationText)
         XCTAssertEqual(undo.failCount, 0)
     }
+
+    // MARK: A19 第二段 — Esc 后二次撤销补完 + 已达标全屏幂等（重复撤销无害）
+
+    /// 完整 A19 链：恢复把 301 全屏到 B → 第一段撤销（pending）→ 用户按 Esc（全屏 Space 销毁、窗口归原 Space）
+    /// → 第二段撤销补完：回 U 目标屏（A）预移位 + AXFullScreen=true；回滚快照全程保留。
+    func testSecondUndoAfterEscCompletesFullscreenRollback() throws {
+        let world = makeFullscreenWorld()
+        try makeEngine(world).restore(snapshot: world.snapshot)
+        // 第一段（恢复后实况：301 全屏在 B 屏 id8）
+        world.bridge.entries = [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 8, kind: 4),
+        ]
+        world.bridge.byWindow[301] = 8
+        let afterRestore = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.other", title: "Extra",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
+            CGWindowSample(windowID: 301, pid: 300, bundleID: "com.t.fs", title: "Full",
+                           bounds: CGRect(origin: bOrigin, size: screenSize), isOnscreen: false),
+        ]
+        let first = try makeEngine(world, samples: afterRestore).undo()
+        XCTAssertEqual(first.fullscreenPendingCount, 1, "第一段应报全屏待办")
+        let movesAfterFirst = world.bridge.moves.count
+        let fsCallsAfterFirst = world.fullscreen.calls.count
+
+        // 用户按 Esc：全屏 Space 销毁、窗口归原 Space（B#1 恢复预移位落点）——不再全屏、不再卡壳
+        world.bridge.entries = [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)]
+        world.bridge.byWindow[301] = 6
+        let afterEsc = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.other", title: "Extra",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
+            World.sample(wid: 301, bundleID: "com.t.fs", title: "Full",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.3, h: 0.3),
+        ]
+
+        // 第二段：用仍保留的回滚快照补完——301 预移位回 A 屏（A#1 id5）+ AXFullScreen=true
+        let second = try makeEngine(world, samples: afterEsc).undo()
+
+        XCTAssertEqual(world.fullscreen.calls.count, fsCallsAfterFirst + 1, "第二段应恰好补一次全屏写")
+        XCTAssertEqual(world.fullscreen.calls.last?.windowID, 301)
+        XCTAssertEqual(world.fullscreen.calls.last?.value, true, "按回滚快照语义回 U 目标屏重新全屏")
+        let secondMoves = world.bridge.moves.dropFirst(movesAfterFirst)
+        XCTAssertEqual(secondMoves.flatMap(\.wids), [101, 202, 301],
+                       "第二段补完：常规窗幂等回滚 + 301 预移位回 A 屏")
+        XCTAssertEqual(secondMoves.last?.spaceID, 5, "301 预移位落点 = U 目标屏既有 Space A#1")
+        XCTAssertEqual(world.bridge.byWindow[301], 5, "预移位已生效")
+
+        // 无待办、无失败、不出两段式文案；全屏窗几何仍不触碰（全屏条目不走几何）
+        XCTAssertEqual(second.fullscreenPendingCount, 0)
+        XCTAssertNil(second.twoStageNotificationText)
+        XCTAssertFalse(second.isTwoStageFirstPass)
+        XCTAssertEqual(second.failCount, 0)
+
+        // 回滚快照两段全程保留（§7.4）
+        XCTAssertTrue(FileManager.default.fileExists(atPath: undoURL(world.store).path))
+    }
+
+    /// 重复撤销幂等无害：回滚完成后（301 已全屏在 U 目标屏 A）再撤销——不再报 pending、不再要求 Esc、
+    /// 不写全屏状态、无失败；连撤两次结果一致。
+    func testRepeatedUndoAfterCompletionIsHarmlessAndNeverRepeatsPending() throws {
+        let world = makeFullscreenWorld()
+        try makeEngine(world).restore(snapshot: world.snapshot)
+        // 第一段 + Esc + 第二段（同上）
+        world.bridge.entries = [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 8, kind: 4),
+        ]
+        world.bridge.byWindow[301] = 8
+        let afterRestore = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.other", title: "Extra",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
+            CGWindowSample(windowID: 301, pid: 300, bundleID: "com.t.fs", title: "Full",
+                           bounds: CGRect(origin: bOrigin, size: screenSize), isOnscreen: false),
+        ]
+        _ = try makeEngine(world, samples: afterRestore).undo()
+        world.bridge.entries = [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)]
+        world.bridge.byWindow[301] = 6
+        let afterEsc = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.other", title: "Extra",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
+            World.sample(wid: 301, bundleID: "com.t.fs", title: "Full",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.3, h: 0.3),
+        ]
+        _ = try makeEngine(world, samples: afterEsc).undo()
+        let fsCallsAfterSecond = world.fullscreen.calls.count
+
+        // 回滚完成后的实况：301 全屏在 U 目标屏 A（新建全屏 Space id9，kind=4）
+        world.bridge.entries = [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("A-uuid", index: 2, id: 9, kind: 4),
+            World.entry("B-uuid", index: 1, id: 6),
+        ]
+        world.bridge.byWindow[301] = 9
+        let rolledBack = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.other", title: "Extra",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
+            CGWindowSample(windowID: 301, pid: 300, bundleID: "com.t.fs", title: "Full",
+                           bounds: CGRect(origin: aOrigin, size: screenSize), isOnscreen: false),
+        ]
+
+        // 第三、四次撤销：已在目标 = 幂等 ok，不再 pending / 不再写全屏 / 无失败
+        let third = try makeEngine(world, samples: rolledBack).undo()
+        XCTAssertEqual(third.fullscreenPendingCount, 0, "已在回滚目标屏的全屏不再要求用户 Esc")
+        XCTAssertNil(third.twoStageNotificationText)
+        XCTAssertEqual(third.failCount, 0)
+        XCTAssertEqual(world.fullscreen.calls.count, fsCallsAfterSecond, "已达标不再写全屏状态")
+
+        let fourth = try makeEngine(world, samples: rolledBack).undo()
+        XCTAssertEqual(fourth.fullscreenPendingCount, 0)
+        XCTAssertEqual(fourth.failCount, 0)
+        XCTAssertEqual(world.fullscreen.calls.count, fsCallsAfterSecond)
+        XCTAssertEqual(world.log.all.filter { $0.contains("already-at-target") }.count, 2,
+                       "已达标条目记 already-at-target 幂等日志")
+    }
 }

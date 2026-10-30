@@ -513,13 +513,28 @@ public final class RestoreEngine: @unchecked Sendable {
             let wid = lw.cgWindowID
             var before = "fullscreen=false disp=\(lw.displayUUID) space=\(lw.spaceID)"
 
-            // 撤销第一段（票 16 §8.6，周期2 口径）：全屏条目一律跳过计 pending——
-            // 卡在后台全屏的窗不可达（§5.2），第二段补完判定（是否已 Esc / 已在目标）周期3 精细化
+            // 撤销（票 16 §8.6）：按「是否仍卡在全屏 Space」分流两段式。
+            // 卡在目标屏 = 已达标幂等 ok（重复撤销无害）；卡在其它屏 = 后台退出不可达（§5.2），
+            // 第一段跳过计 pending（文案 N）；已不在全屏（用户已按 Esc：全屏 Space 销毁、窗口归原 Space）
+            // = 第二段补完，进入全屏后台可达（§5.2），落下方常规路径回目标屏重新全屏。
             if mode == .undo {
-                log?.write("[restore] skip wid=\(wid) app=\(appID) reason=fullscreen-exit-pending detail=space=\(target)")
-                pending += 1
-                skipped += 1
-                continue
+                let current = entries.first { $0.spaceID == lw.spaceID }
+                let stuck = current?.kind == fullscreenSpaceKind
+                before = "fullscreen=\(stuck) disp=\(lw.displayUUID) space=\(lw.spaceID)"
+                if stuck {
+                    if current?.displayUUID == space.displayUUID {
+                        log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
+                            app: appID, action: .fullscreen, target: target, before: before,
+                            after: "fullscreen=true", result: .ok))
+                        log?.write("[restore] detail wid=\(wid) app=\(appID) action=fullscreen detail=already-at-target")
+                        ok += 1
+                        continue
+                    }
+                    log?.write("[restore] skip wid=\(wid) app=\(appID) reason=fullscreen-exit-pending detail=space=\(target)")
+                    pending += 1
+                    skipped += 1
+                    continue
+                }
             }
 
             // 目标屏就位（05 #4：窗口先到目标屏；已在目标屏则免桥接）。预移位落点取目标屏既有 Space 之一即可
