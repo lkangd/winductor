@@ -117,6 +117,8 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
 
     /// 移窗后等待 WindowServer 结算再校验归属的时长（spike 实测 1.2s 足够）
     private let settleSeconds: TimeInterval
+    /// 可注入的 spaceIDs 读取器（nil = 直连 SkyLight；单测注入假读/阻塞读）
+    var spaceReader: ((UInt32) throws -> [Int64])?
 
     private let log: LogWriting?
     private let lock = NSLock()
@@ -132,9 +134,10 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     /// - Parameters:
     ///   - log: 结构化日志 sink（[degrade] 行经 Core.StructuredLog 格式化写出）
     ///   - settleSeconds: 桥接移窗后校验归属前的等待（默认 1.2s，spike 实测）
-    public init(log: LogWriting? = nil, settleSeconds: TimeInterval = 1.2) {
+    public init(log: LogWriting? = nil, settleSeconds: TimeInterval = 1.2, spaceReader: ((UInt32) throws -> [Int64])? = nil) {
         self.log = log
         self.settleSeconds = settleSeconds
+        self.spaceReader = spaceReader
         // 钩子生效即记 [degrade] probe-miss（验收路径：FORCE_DEGRADED=bridge → L2 不可用 + 日志出现）
         if let f = Self.forcedDegradedLayer {
             log?.write(StructuredLog.degradeLine(
@@ -290,7 +293,16 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     @discardableResult
     public func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {
         guard isLayerAvailable(.bridge) else { throw SpaceAdapterError.layerUnavailable(.bridge) }
-        let before = try wids.map { try spaceIDs(windowID: $0) }
+        var before: [[Int64]] = []
+        for wid in wids {
+            guard let ids = Self.spaceIDsBounded(wid, timeout: Self.bridgeReadTimeoutSeconds,
+                                                 reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) else {
+                markRuntimeNoOp(reason: "bridge-timeout",
+                                detail: "space-read wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s")
+                throw SpaceAdapterError.layerUnavailable(.bridge)
+            }
+            before.append(ids)
+        }
         // 已在目标 Space：无事可做，不视为 no-op
         if before.allSatisfy({ $0 == [spaceID] }) { return true }
 
@@ -307,7 +319,14 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
 
         var changed = false
         for (i, wid) in wids.enumerated() {
-            if try spaceIDs(windowID: wid) != before[i] { changed = true }
+            guard let ids = Self.spaceIDsBounded(wid, timeout: Self.bridgeReadTimeoutSeconds,
+                                                 reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) else {
+                markRuntimeNoOp(reason: "bridge-timeout",
+                                detail: "verify-read wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s")
+                changed = false
+                break
+            }
+            if ids != before[i] { changed = true }
         }
         if !changed {
             markRuntimeNoOp(detail: "attribution unchanged after perform wids=\(wids) target=\(spaceID)")
@@ -326,6 +345,25 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     /// 实测 WindowServer 迁移单窗可阻塞 159s 拖死整轮恢复；专用线程 + 信号量限界，
     /// 超时后放弃等待继续管线（服务端迁移通常最终完成，归属校验以实测为准）
     static let bridgeOpTimeoutSeconds: TimeInterval = 8
+    /// SkyLight 读取超时（秒）：楔死时 spaceIDs 查询同样长时间阻塞（实测 111s），一并限界
+    static let bridgeReadTimeoutSeconds: TimeInterval = 5
+
+    /// SkyLight spaceIDs 有界读取（楔死时该查询同样阻塞；reader 注入便于单测）
+    /// 返回 nil = 超时（未知归属）
+    static func spaceIDsBounded(
+        _ wid: UInt32, timeout: TimeInterval,
+        reader: @escaping (UInt32) throws -> [Int64]
+    ) -> [Int64]? {
+        final class Box: @unchecked Sendable { var ids: [Int64]? }
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.ids = try? reader(wid)
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut { return nil }
+        return box.ids
+    }
 
     /// 限时包装（runner 注入便于单测；生产直通 performBridgedMove）
     static func performBridgedMoveBounded(

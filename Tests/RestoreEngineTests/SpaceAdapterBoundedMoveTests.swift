@@ -30,3 +30,21 @@ final class SpaceAdapterBoundedMoveTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "超时上限应生效，不等待 runner 结束")
     }
 }
+
+/// SkyLight 读取限时（楔死时 spaceIDs 查询同样阻塞 111s，一并限界）
+final class SpaceAdapterBoundedReadTests: XCTestCase {
+    func testBoundedReadReturnsValueWhenReaderFinishesInTime() {
+        let ids = SpaceAdapter.spaceIDsBounded(7, timeout: 2) { _ in [5] }
+        XCTAssertEqual(ids, [5])
+    }
+
+    func testBoundedReadReturnsNilWhenReaderBlocks() {
+        let start = Date()
+        let ids = SpaceAdapter.spaceIDsBounded(7, timeout: 0.2) { _ in
+            Thread.sleep(forTimeInterval: 2)
+            return [5]
+        }
+        XCTAssertNil(ids, "阻塞读取应超时返回 nil（未知归属）")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "超时上限应生效")
+    }
+}
