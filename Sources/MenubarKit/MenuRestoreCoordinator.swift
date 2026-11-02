@@ -53,9 +53,15 @@ final class RestoringIconDecorator: SnapshotRestoring, @unchecked Sendable {
     }
 
     func restore(snapshot: Snapshot) throws -> RestoreReport {
-        icon.showRestoringIcon()
-        defer { icon.showNormalIcon() }
+        Self.runOnMain { [icon] in icon.showRestoringIcon() }
+        defer { Self.runOnMain { [icon] in icon.showNormalIcon() } }
         return try inner.restore(snapshot: snapshot)
+    }
+
+    /// 图标属 UI 状态：恢复管线现跑在后台队列（自动路径调度队列 / 手动路径 restoreEnqueue），
+    /// NSStatusItem 换图必须主线程（防跨线程 UI 变异）
+    private static func runOnMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 }
 
@@ -107,6 +113,9 @@ public final class MenuRestoreCoordinator {
                 spaces: SpaceListProviding?,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 scheduler: TriggerChainScheduling = DispatchTriggerScheduler(),
+                restoreEnqueue: @escaping (@escaping @Sendable () -> Void) -> Void = { work in
+                    DispatchQueue(label: "wlr.restore", qos: .userInitiated).async(execute: work)
+                },
                 log: LogWriting? = nil,
                 degradeCollector: DegradeCollectingLog? = nil,
                 undo: UndoPerforming,
@@ -139,6 +148,7 @@ public final class MenuRestoreCoordinator {
                              scheduler: scheduler,
                              log: log,
                              degradeCollector: degradeCollector,
+                             restoreEnqueue: restoreEnqueue,
                              onNotice: { noticeSink.call($0) })
         // 引用 self 的成员放在全部存储属性初始化之后
         menuWillOpenCarrier.coordinator = self
@@ -236,7 +246,7 @@ public final class MenuRestoreCoordinator {
     // MARK: 菜单动作（经 WiredMenuBuilder 载体路由；与真实点击同路径）
 
     private func restoreNowTapped() {
-        chain.restoreNow()  // 完成通知经 onNotice 桥接投递（§8.5 计数 + 降级附注）
+        chain.restoreNowAsync()  // 管线离主线程（修复 2 屏拓扑点立即恢复卡死）；完成通知经 onNotice 桥接投递（§8.5 计数 + 降级附注）
     }
 
     private func undoLastTapped() {

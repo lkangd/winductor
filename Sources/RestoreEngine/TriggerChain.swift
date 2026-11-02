@@ -111,6 +111,8 @@ public final class TriggerChain: @unchecked Sendable {
     private let log: LogWriting?
     /// 与 RestoreEngine/SpaceAdapter 共用的 [degrade] 收集 sink（票 19 接线：同一个实例传给引擎）
     private let degradeCollector: DegradeCollectingLog?
+    /// 手动异步入口的管线执行器（默认后台串行队列；菜单路径不阻塞主线程）
+    private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
     /// 通知投递接缝（票 19：接 UNUserNotificationCenter；测试收集断言）
     private let onNotice: @Sendable (RestoreNotice) -> Void
 
@@ -145,6 +147,9 @@ public final class TriggerChain: @unchecked Sendable {
                 scheduler: TriggerChainScheduling = DispatchTriggerScheduler(),
                 log: LogWriting? = nil,
                 degradeCollector: DegradeCollectingLog? = nil,
+                restoreEnqueue: @escaping (@escaping @Sendable () -> Void) -> Void = { work in
+                    DispatchQueue(label: "wlr.restore", qos: .userInitiated).async(execute: work)
+                },
                 onNotice: @escaping @Sendable (RestoreNotice) -> Void = { _ in }) {
         self.store = store
         self.restorer = restorer
@@ -154,6 +159,7 @@ public final class TriggerChain: @unchecked Sendable {
         self.scheduler = scheduler
         self.log = log
         self.degradeCollector = degradeCollector
+        self.restoreEnqueue = restoreEnqueue
         self.onNotice = onNotice
         // 基线：链建立时的屏幕集合（app 启动即建链；此后第一次插回事件即判「变大」）
         stateLock.lock()
@@ -393,6 +399,37 @@ public final class TriggerChain: @unchecked Sendable {
             deliver(notice)
             return notice
         }
+        guard let selected = selectManualSnapshot() else { return nil }
+        guard let notice = performRestore(trigger: .manual, snapshot: selected.snapshot, key: selected.key) else {
+            return nil
+        }
+        deliver(notice)
+        return notice
+    }
+
+    /// 手动「立即恢复」异步形态（菜单路径）：快照选择仍在调用线程（毫秒级目录扫描），
+    /// 恢复管线经 restoreEnqueue 离开调用线程（主线程不阻塞，修复 2 屏拓扑点立即恢复卡死数分钟的缺陷）；
+    /// 完成通知照常投递（handle(notice:) 自带主线程汇编，后台线程投递安全）。
+    public func restoreNowAsync(snapshot explicit: Snapshot? = nil) {
+        if let explicit {
+            let key = SnapshotStore.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
+            restoreEnqueue { [weak self] in
+                guard let self,
+                      let notice = self.performRestore(trigger: .manual, snapshot: explicit, key: key) else { return }
+                self.deliver(notice)
+            }
+            return
+        }
+        guard let selected = selectManualSnapshot() else { return }
+        restoreEnqueue { [weak self] in
+            guard let self,
+                  let notice = self.performRestore(trigger: .manual, snapshot: selected.snapshot, key: selected.key) else { return }
+            self.deliver(notice)
+        }
+    }
+
+    /// 手动形态共用：按当前屏幕集合选快照（精确一致 → best-effort 超集；含对应 [trigger] 日志行与忙守卫）
+    private func selectManualSnapshot() -> (snapshot: Snapshot, key: String)? {
         let current = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
         stateLock.lock()
         guard phase != .restoring else {
@@ -402,25 +439,18 @@ public final class TriggerChain: @unchecked Sendable {
         }
         stateLock.unlock()
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
-        let chosen: (snapshot: Snapshot, key: String)?
         if let snapshot = matchSnapshot(for: current, key: key) {
             log?.write(chainLine(step: "topology-match", result: "exact", detail: "key=\(key) trigger=manual"))
-            chosen = (snapshot, key)
-        } else if let bestEffort = bestEffortSnapshot(for: current) {
+            return (snapshot, key)
+        }
+        if let bestEffort = bestEffortSnapshot(for: current) {
             // 部分拓扑（A5）的手动出口：重叠最多的超集快照 best-effort（引擎对缺失屏条目 skip）
             log?.write(chainLine(step: "topology-match", result: "best-effort",
                                  detail: "key=\(bestEffort.key) trigger=manual"))
-            chosen = bestEffort
-        } else {
-            log?.write(chainLine(step: "topology-match", result: "no-snapshot", detail: "key=\(key) trigger=manual"))
-            chosen = nil
+            return (bestEffort.snapshot, bestEffort.key)
         }
-        guard let selected = chosen,
-              let notice = performRestore(trigger: .manual, snapshot: selected.snapshot, key: selected.key) else {
-            return nil
-        }
-        deliver(notice)
-        return notice
+        log?.write(chainLine(step: "topology-match", result: "no-snapshot", detail: "key=\(key) trigger=manual"))
+        return nil
     }
 
     /// 部分拓扑的 best-effort 快照选取：与当前集合重叠最多者优先；并列取屏幕更少，再字典序拓扑键。

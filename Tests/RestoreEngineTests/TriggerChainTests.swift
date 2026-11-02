@@ -629,4 +629,66 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(spy.all.filter { $0.contains("step=topology-match") }.first?.contains("result=no-snapshot"),
                        true)
     }
+
+    // MARK: 异步手动入口（菜单路径不阻塞调用线程；管线经注入执行器离开主线程）
+
+    /// restoreNowAsync：选择在调用线程、管线经注入执行器执行、完成通知照常投递（与同步形态同一管线）
+    func testRestoreNowAsyncRunsPipelineViaEnqueueAndDelivers() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 2, skip: 0, fail: 0))
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let enqueuedFlag = EnqueueFlagBox()
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil,
+                                 restoreEnqueue: { work in enqueuedFlag.used = true; work() },
+                                 onNotice: { notices.append($0) })
+
+        chain.restoreNowAsync()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "管线经注入执行器执行一次")
+        XCTAssertEqual(enqueuedFlag.used, true)
+        XCTAssertEqual(notices.items.first?.trigger, .manual, "完成通知与同步形态同结构同投递")
+        let steps = triggerSteps(spy.all)
+        XCTAssertTrue(steps.contains("restore-start"))
+        XCTAssertFalse(steps.contains("event"), "手动入口不经屏幕事件/方向判定")
+    }
+
+    /// 重入忙守卫：恢复进行中再入异步入口 → ignored 落日志、不二次恢复
+    func testRestoreNowAsyncReentrantWhileRestoringIsIgnored() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chainBox = ChainBox()
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: nil,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil,
+                                 restoreEnqueue: { work in work() },
+                                 onNotice: { _ in })
+        chainBox.chain = chain
+        restorer.onRestore = { chainBox.chain?.restoreNowAsync() }  // 引擎执行中重入（真忙态）
+
+        chain.restoreNowAsync()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "忙态重入不二次恢复")
+        XCTAssertEqual(triggerSteps(spy.all).filter { $0 == "ignored" }.count, 1,
+                       "重入命中 restore-in-progress 守卫并落日志")
+    }
+}
+
+/// 执行器使用标记（测试断言辅助）
+final class EnqueueFlagBox: @unchecked Sendable {
+    var used = false
+}
+
+/// 链引用盒（重入测试用：初始化后回填）
+final class ChainBox: @unchecked Sendable {
+    weak var chain: TriggerChain?
 }
