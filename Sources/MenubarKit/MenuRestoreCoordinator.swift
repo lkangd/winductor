@@ -96,6 +96,7 @@ public final class MenuRestoreCoordinator {
     private let logsFolder: URL
     private let openFolder: (URL) -> Void
     private let refreshMenu: () -> Void
+    private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
     private let store: SnapshotStore
     private let displaysProvider: () -> [Displays.Info]
     private let log: LogWriting?
@@ -128,6 +129,7 @@ public final class MenuRestoreCoordinator {
                 openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
                 refreshMenu: @escaping () -> Void) {
         self.store = store
+        self.restoreEnqueue = restoreEnqueue
         self.undo = undo
         self.notifier = notifier
         self.loginItem = loginItem
@@ -250,6 +252,14 @@ public final class MenuRestoreCoordinator {
     }
 
     private func undoLastTapped() {
+        // undo 跑全量回滚管线（分钟级），与立即恢复同修复：经执行器离主线程；
+        // 通知投递线程安全（UNUserNotificationCenter），菜单刷新自带主线程汇编
+        restoreEnqueue { [weak self] in
+            self?.performUndoAndNotify()
+        }
+    }
+
+    private func performUndoAndNotify() {
         do {
             let report = try undo.undo()
             if report.isTwoStageFirstPass {

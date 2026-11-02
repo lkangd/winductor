@@ -97,6 +97,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var store: SnapshotStore!
     private var restorer: FakeRestorer!
     private var undo: FakeUndo!
+    private var enqueueUsed = false
     private var notifier: FakeNotifier!
     private var icon: FakeIcon!
     private var login: FakeLogin!
@@ -148,7 +149,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             spaces: FakeSpaceList(["s1"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
             scheduler: scheduler,
-            restoreEnqueue: { $0() },
+            restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
             undo: undo,
             icon: icon,
             notifier: notifier,
@@ -197,7 +198,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             spaces: FakeSpaceList(["s1"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
             scheduler: scheduler,
-            restoreEnqueue: { $0() },
+            restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
             degradeCollector: collector,
             undo: undo, icon: icon, notifier: notifier, loginItem: login,
             capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
@@ -231,6 +232,18 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     }
 
     // MARK: 撤销上次恢复（§8.6 两段式通知 + 计数通知）
+
+    /// 撤销经注入执行器离开调用线程（与立即恢复同修复：undo 跑全管线 ≈ 分钟级，不能阻塞主线程）
+    func testUndoRunsViaRestoreEnqueue() throws {
+        try writeLiveSnapshot()
+        undo.canUndoValue = true
+        let coordinator = makeCoordinator()
+
+        try perform(coordinator, title: "撤销上次恢复")
+
+        XCTAssertEqual(enqueueUsed, true, "撤销管线必须经注入执行器（离主线程）")
+        XCTAssertEqual(notifier.deliveries.count, 1, "完成通知照常投递")
+    }
 
     /// 两段式第一段：§8.6 逐字通知（N = fullscreenPendingCount）
     func testTwoStageUndoDeliversVerbatimNotice() throws {
