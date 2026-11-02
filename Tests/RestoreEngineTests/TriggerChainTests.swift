@@ -328,12 +328,92 @@ final class TriggerChainTests: XCTestCase {
         chain.screenParametersChanged()
         scheduler.runUntilIdle()
         XCTAssertNil(restorer.snapshots.first, "拔出不干预")
-        XCTAssertEqual(triggerResults(spy.all).last, "shrank")
+        XCTAssertTrue(triggerResults(spy.all).contains("shrank"))
+        XCTAssertTrue(triggerSteps(spy.all).contains("baseline-hold"), "拔出时冻结拔屏前基线")
 
-        box.set([displayA, displayB])  // 插回 → 集合变大且精确匹配快照
+        box.set([displayA, displayB])  // 插回 = 回到拔屏前拓扑 → 集合变大且精确匹配快照
         chain.screenParametersChanged()
         scheduler.runUntilIdle()
-        XCTAssertEqual(restorer.snapshots.count, 1, "基线已更新为拔出后集合，插回判「变大」触发")
+        XCTAssertEqual(restorer.snapshots.count, 1, "回到基线拓扑触发恢复")
+        XCTAssertTrue(triggerSteps(spy.all).contains("restore-start"))
+    }
+
+    /// 实测缺陷回归：中间态拓扑（拔 2 屏后先插回 1 块）即使精确命中过期快照也不自动恢复；
+    /// 回到基线拓扑时恢复源用拔屏前冻结内容（而非被 poller 重写的现势文件）
+    func testIntermediateTopologySkipsAutoRestoreAndHomeRestoreUsesHeldContent() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid"]])
+        // 预写基线快照（带标记窗口）：拔屏冻结时应读到它
+        let homeKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
+        let homeTopology = ["A-uuid", "B-uuid", "C-uuid"].map {
+            World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
+        }
+        let held = Snapshot(capturedAt: Date(timeIntervalSince1970: 1), topology: homeTopology, spaces: [],
+                            windows: [SnapshotWindow(bundleID: "held.app", title: "held", siblingIndex: 0,
+                                                     displayUUID: "A-uuid", spaceIndex: 1,
+                                                     x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        try store.write(held, topologyKey: homeKey)
+        let box = DisplayBox([displayA, displayB, displayC])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])            // 拔出两块 → 冻结基线（读到 held.app 内容）
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertTrue(triggerSteps(spy.all).contains("baseline-hold"))
+
+        // poller 中间态重写：live-{A,B,C} 被换成污染内容
+        let polluted = Snapshot(capturedAt: Date(timeIntervalSince1970: 2), topology: homeTopology, spaces: [],
+                                windows: [SnapshotWindow(bundleID: "polluter.app", title: "junk", siblingIndex: 0,
+                                                         displayUUID: "B-uuid", spaceIndex: 1,
+                                                         x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        try store.write(polluted, topologyKey: homeKey)
+
+        box.set([displayA, displayB])  // 中间态：精确命中 {A,B} 过期快照也不许自动恢复
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.count, 0, "非基线拓扑的精确匹配不自动恢复")
+        XCTAssertTrue(triggerSteps(spy.all).contains("return-home-guard"))
+
+        box.set([displayA, displayB, displayC])  // 回到基线拓扑 → 用冻结内容恢复
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.count, 1)
+        XCTAssertEqual(restorer.snapshots.first?.windows.first?.bundleID, "held.app",
+                       "恢复源是拔屏前冻结内容，而非被 poller 重写的污染文件")
+    }
+
+    /// 结构门槛：持有基线时，Space 结构与基线不一致期间不得 stable；一致后两轮才开火
+    func testHeldBaselineStructureGatesStability() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        // 队列：前两轮结构与基线不符（churn），后两轮一致
+        let spaces = FakeSpaceLists(queue: [["B-uuid#1#0"], ["B-uuid#1#0"],
+                                            ["A-uuid#1#0"], ["A-uuid#1#0"]])
+        var snapshot = makeSnapshot(topology: ["A-uuid", "B-uuid"])
+        snapshot.spaces = [SnapshotSpace(displayUUID: "A-uuid", index: 1, kind: .user, fullscreenAppBundleID: nil)]
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wlr-triggerchain-\(UUID().uuidString)")
+        let store = SnapshotStore(directory: dir)
+        try store.write(snapshot, topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"]))
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA, displayB])  // 纯插回（无拔出）：基线快照带 Space 结构 → 门槛生效
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "结构一致后两轮 stable 恢复")
+        XCTAssertTrue(triggerResults(spy.all).contains("structure-changed"), "结构不符期间不得 stable")
         XCTAssertTrue(triggerSteps(spy.all).contains("restore-start"))
     }
 

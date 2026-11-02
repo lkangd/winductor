@@ -43,9 +43,12 @@ public struct SnapshotComposer: Sendable {
         for window in sample {
             guard !window.bundleID.isEmpty else { continue }
             let entry = widToSpaceID[window.windowID].flatMap { spaceByID[$0] }
-            guard let display = pickDisplay(window.bounds, in: displays)
-                ?? displays.first(where: { $0.uuid == entry?.displayUUID }) else {
-                continue  // 落不到任何屏且无 Space 归属：无从记录，跳过
+            // 归属以 Space 所有权为权威（SLS），frame 相交仅兜底：非可见 Space 后台窗的
+            // AX frame 是过期值，相交会归错屏（实测：内置屏后台窗被记到中屏，restore 据此移错），
+            // 故先查 window 所在 Space 的所属屏，无 Space 归属才按 frame 定屏。
+            guard let display = displays.first(where: { $0.uuid == entry?.displayUUID })
+                ?? pickDisplay(window.bounds, in: displays) else {
+                continue  // 无 Space 归属且落不到任何屏：无从记录，跳过
             }
             var minimized = false
             var axFullScreen = false

@@ -113,6 +113,17 @@ public final class TriggerChain: @unchecked Sendable {
     private let degradeCollector: DegradeCollectingLog?
     /// 手动异步入口的管线执行器（默认后台串行队列；菜单路径不阻塞主线程）
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
+    /// 拔屏前基线（shrank 时冻结）：回到该拓扑集合才允许自动恢复，且恢复源用冻结时的快照内容
+    /// （实测缺陷：插回后 poller 会把 macOS 中间态重排写进 live 快照，恢复若在触发时现读
+    /// 就是垃圾基线；中间态拓扑也可能精确命中过期快照触发全量垃圾恢复，如 2 屏键）
+    private struct ReturnHome {
+        let uuids: Set<String>
+        let snapshot: Snapshot?
+        let structure: Set<String>   // displayUUID#index#kind 集合（与运行时签名同构）
+    }
+    private var returnHome: ReturnHome?
+    /// 本轮稳定判据是否要求签名与基线结构一致（持有基线内容时为真；防止 Space 重排未完成时开火）
+    private var pendingHomeStructure: Set<String>?
     /// 通知投递接缝（票 19：接 UNUserNotificationCenter；测试收集断言）
     private let onNotice: @Sendable (RestoreNotice) -> Void
 
@@ -138,6 +149,11 @@ public final class TriggerChain: @unchecked Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
+    /// 快照 Space 结构 → 与运行时签名同构的记号集合（displayUUID#index#kind；kind 对齐 SpaceEntry 的 0/4）
+    static func structureSignature(from spaces: [SnapshotSpace]) -> Set<String> {
+        Set(spaces.map { "\($0.displayUUID)#\($0.index)#\($0.kind == .fullscreen ? 4 : 0)" })
+    }
 
     public init(store: SnapshotStore,
                 restorer: SnapshotRestoring,
@@ -228,18 +244,37 @@ public final class TriggerChain: @unchecked Sendable {
             return
         }
         if current.count < baseline.count {
-            // 拔出（集合变小）：只更新基线不干预（spec §6.2，A4）
+            // 拔出（集合变小）：只更新基线不干预（spec §6.2，A4）；
+            // 同时冻结拔屏前基线（集合 + 快照内容 + Space 结构），回到该集合才自动恢复
+            let held = store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
+            returnHome = ReturnHome(
+                uuids: baseline,
+                snapshot: held,
+                structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
             settledUUIDs = current
             stabilizationTarget = nil
             phase = .idle
             stateLock.unlock()
+            log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
+                                 detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))"))
             return
         }
 
-        // 集合变大 = 唯一自动触发方向（spec §6.2）
+        // 集合变大 = 唯一自动触发方向（spec §6.2）；若与拔屏前基线不一致（插回中间态），
+        // 即使精确命中某份过期快照也不自动恢复——等待回到基线拓扑（手动「立即恢复」不受限）
         settledUUIDs = current
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
-        guard let snapshot = matchSnapshot(for: current, key: key) else {
+        if let home = returnHome, current != home.uuids {
+            phase = .idle
+            log?.write(chainLine(step: "return-home-guard", result: "skip",
+                                 detail: "matched=\(key) home-displays=\(home.uuids.count) current-displays=\(current.count)"))
+            stateLock.unlock()
+            return
+        }
+        // 回到基线拓扑：恢复源优先用冻结的拔屏前内容（防触发时现读被 poller 重写的中间态）
+        let homeSnapshot = returnHome?.snapshot
+        returnHome = nil
+        guard let snapshot = homeSnapshot ?? matchSnapshot(for: current, key: key) else {
             // 拓扑部分匹配（插回后仍少一屏）：不自动恢复（spec §6.2，A5；提示通知见 emitPartialTopology）
             phase = .idle
             log?.write(chainLine(step: "topology-match", result: "partial",
@@ -250,6 +285,10 @@ public final class TriggerChain: @unchecked Sendable {
         }
         log?.write(chainLine(step: "topology-match", result: "exact",
                              detail: "key=\(key) baseline=\(baseline.count) current=\(current.count)"))
+        // 结构门槛：恢复源快照自带 Space 结构时，稳定判据额外要求现场签名与之一致
+        //（空 Space 记录无法验证，不设门槛）；防插回后 macOS Space 重排未完成时把窗口移进中间态
+        let sourceStructure = Self.structureSignature(from: snapshot.spaces)
+        pendingHomeStructure = sourceStructure.isEmpty ? nil : sourceStructure
         phase = .stabilizing
         stabilizationTarget = current
         pendingMatch = (snapshot, key)
@@ -299,19 +338,23 @@ public final class TriggerChain: @unchecked Sendable {
         let signatureText = signature.joined(separator: ",")
         let isFirstSample = (lastSpaceSignature == nil)
         let matchesPrevious = (lastSpaceSignature == signature)
+        // 结构门槛：持有拔屏前基线时，除连续两轮一致外还要求 Space 结构与基线一致——
+        // 插回后 macOS 重排 Space 需要数十秒，过早开火会把窗口移进重排中间态（实测缺陷）
+        let structureReady = pendingHomeStructure == nil || Set(signature) == pendingHomeStructure
         // 连续一致计数：与上一轮一致 +1，变化重计为 1；达到 2 即「连续两轮不变」
         let roundNow = matchesPrevious ? round : 1
         consecutiveSamples = roundNow
         lastSpaceSignature = signature
 
-        if matchesPrevious && roundNow >= 2 {
-            // 连续两轮不变 → 触发一次性恢复（spec §6.2 → §6.3，无重试循环）
+        if matchesPrevious && roundNow >= 2 && structureReady {
+            // 连续两轮不变（且结构与基线一致）→ 触发一次性恢复（spec §6.2 → §6.3，无重试循环）
             let snapshot = pending.snapshot
             let key = pending.key
             log?.write(chainLine(step: "space-stable", result: "stable", round: roundNow,
                                  detail: "signature=\(signatureText)"))
             stabilizationTarget = nil
             pendingMatch = nil
+            pendingHomeStructure = nil
             stateLock.unlock()
             if let notice = performRestore(trigger: .auto, snapshot: snapshot, key: key) {
                 deliver(notice)
@@ -323,12 +366,13 @@ public final class TriggerChain: @unchecked Sendable {
             phase = .idle
             stabilizationTarget = nil
             pendingMatch = nil
+            pendingHomeStructure = nil
             log?.write(chainLine(step: "space-stable", result: "give-up", round: roundNow,
                                  detail: "signature=\(signatureText) churning"))
             stateLock.unlock()
             return
         }
-        let outcome = matchesPrevious || isFirstSample ? "sampled" : "changed"
+        let outcome = (matchesPrevious || isFirstSample) ? (structureReady ? "sampled" : "structure-changed") : "changed"
         log?.write(chainLine(step: "space-stable", result: outcome, round: roundNow,
                              detail: "signature=\(signatureText)"))
         stateLock.unlock()

@@ -146,7 +146,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         MenuRestoreCoordinator(
             store: store,
             restorer: restorer,
-            spaces: FakeSpaceList(["s1"]),
+            spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
             scheduler: scheduler,
             restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
@@ -195,7 +195,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         let coordinator = MenuRestoreCoordinator(
             store: store,
             restorer: restorer,
-            spaces: FakeSpaceList(["s1"]),
+            spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
             scheduler: scheduler,
             restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },

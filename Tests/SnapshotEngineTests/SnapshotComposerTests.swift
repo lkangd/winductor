@@ -51,6 +51,29 @@ final class SnapshotComposerTests: XCTestCase {
         XCTAssertEqual(rightHeavy.windows.first?.displayUUID, displayB, "1050..1250 交集右 150 > 左 50")
     }
 
+    /// 实测缺陷回归：非可见 Space 后台窗的 AX frame 过期，可能与错误屏相交——
+    /// 归属必须以 Space 所有权为权威，frame 仅在无 Space 归属时兜底
+    func testBackgroundWindowAttributionPrefersSpaceOwnershipOverFrame() throws {
+        let a = fakeDisplay(displayA, x: 0, y: 0, w: 1000, h: 1000)
+        let b = fakeDisplay(displayB, x: 1000, y: 0, w: 1000, h: 1000)
+        // 窗口 frame 落在 B 屏区域内，但 SLS 说它的 Space 在 A 屏
+        let spaces = FakeSpaces(
+            entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 1, kind: 0)],
+            byWindow: [1: 11])
+        let snapshot = compose(composer(spaces: spaces),
+                               [window(1, title: "stale-frame", x: 1100, y: 100, w: 400, h: 300)],
+                               displays: [a, b])
+        let w = try XCTUnwrap(snapshot.windows.first)
+        XCTAssertEqual(w.displayUUID, displayA, "Space 所属屏优先于 frame 相交（后台窗 frame 过期会归错屏）")
+        XCTAssertEqual(w.spaceIndex, 1)
+
+        // 无 Space 归属 → 回落 frame 相交（保留原行为）
+        let noSpace = compose(composer(spaces: nil),
+                              [window(2, title: "frame-only", x: 1100, y: 100, w: 400, h: 300)],
+                              displays: [a, b])
+        XCTAssertEqual(noSpace.windows.first?.displayUUID, displayB, "无 Space 归属时按 frame 定屏")
+    }
+
     /// spaceIndex 经 SpaceProviding 接缝；归一化几何按所属屏换算并夹取 [0,1]
     func testSpaceIndexViaSpaceProvidingAndNormalizedGeometry() throws {
         let a = fakeDisplay(displayA, x: 0, y: 0, w: 1000, h: 1000)
