@@ -79,6 +79,24 @@ public enum AXFacade {
         return nil
     }
 
+    /// 一次遍历建 windowID → AX 元素索引（L1 批量摆位用；逐窗全量遍历实测 105s，索引后秒级）。
+    /// timeoutPerApp：给每个 app 元素设消息超时（秒），防止单 app 卡顿拖住整轮。
+    public static func makeWindowIndex(timeoutPerApp: Float? = nil) -> [UInt32: AXUIElement] {
+        var index: [UInt32: AXUIElement] = [:]
+        for app in NSWorkspace.shared.runningApplications
+        where app.processIdentifier > 0 && app.activationPolicy != .prohibited {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            if let t = timeoutPerApp {
+                AXUIElementSetMessagingTimeout(appElement, t)
+            }
+            guard let wins = try? windows(ofApplication: app.processIdentifier) else { continue }
+            for w in wins {
+                if let wid = try? windowID(of: w) { index[wid] = w }
+            }
+        }
+        return index
+    }
+
     // MARK: - 几何读写（AXPosition / AXSize）
 
     public static func position(of element: AXUIElement) throws -> CGPoint {

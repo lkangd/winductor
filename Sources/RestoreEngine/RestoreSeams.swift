@@ -1,4 +1,5 @@
 import AXFacade
+import ApplicationServices
 import Core
 import CoreGraphics
 import Foundation
@@ -51,19 +52,47 @@ public struct SpaceAdapterBridge: SpaceBridge {
     }
 }
 
-/// AX 几何写接缝（spec §6.8 L1 摆位）。「AX 权限不足」等失败以抛错表达，管线按 result=fail 记日志。
+/// AX 几何写接缝（spec §6.8 L1 摆位）。「AX 权限不足」等写失败以抛错表达，管线按 result=fail 记日志。
 public protocol WindowGeometryWriting: Sendable {
+    /// L1 批次开始前调用一次：生产实现一次遍历建 windowID → AX 元素索引（实测缺陷修复：
+    /// 逐窗全量遍历 AX 树使 44 窗耗时 105s；一次建索引后仅需查表 + 两次属性写）。
+    /// 默认空实现兼容模拟接缝/测试假体。
+    func prepare(windowIDs: [UInt32])
     func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws
 }
 
-/// WindowGeometryWriting 生产实现：经 AxFacade 反查 AX 元素后写 AXPosition/AXSize。
+public extension WindowGeometryWriting {
+    func prepare(windowIDs: [UInt32]) {}
+}
+
+/// WindowGeometryWriting 生产实现：预建 windowID → AX 元素索引后写 AXPosition/AXSize。
 /// 无辅助功能授权时 setPosition 抛 AXFacadeError.apiDisabled（本票验收行为之一）。
-public struct AXGeometryWriter: WindowGeometryWriting {
+public final class AXGeometryWriter: WindowGeometryWriting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var index: [UInt32: AXUIElement] = [:]
+
     public init() {}
 
+    /// 一次遍历所有运行中 app 建 windowID → AX 元素索引（实测：逐窗遍历 44 窗耗时 105s，
+    /// 索引后 L1 全批次降至秒级）；同时给每个 app 元素设 1.5s 消息超时，防单 app 卡顿拖垮整轮
+    public func prepare(windowIDs: [UInt32]) {
+        lock.lock()
+        index = AXFacade.makeWindowIndex(timeoutPerApp: 1.5)
+        lock.unlock()
+    }
+
     public func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
-        guard let element = AXFacade.findWindow(withWindowID: windowID) else {
-            throw AXFacadeError.elementInvalid
+        lock.lock()
+        let element = index[windowID]
+        lock.unlock()
+        guard let element else {
+            // 索引未命中（prepare 后新出现的窗）：回退逐树反查，保持原语义
+            guard let fallback = AXFacade.findWindow(withWindowID: windowID) else {
+                throw AXFacadeError.elementInvalid
+            }
+            try AXFacade.setPosition(fallback, position)
+            try AXFacade.setSize(fallback, size)
+            return
         }
         try AXFacade.setPosition(element, position)
         try AXFacade.setSize(element, size)

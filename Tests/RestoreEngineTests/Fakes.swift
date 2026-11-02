@@ -69,7 +69,10 @@ final class FakeGeometry: WindowGeometryWriting, @unchecked Sendable {
         let size: CGSize
     }
     private(set) var calls: [Call] = []
+    private(set) var prepareCalls = 0
     var error: Error?
+
+    func prepare(windowIDs: [UInt32]) { prepareCalls += 1 }
 
     func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
         calls.append(Call(windowID: windowID, position: position, size: size))

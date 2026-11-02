@@ -272,6 +272,11 @@ public final class RestoreEngine: @unchecked Sendable {
         for item in actItems {
             bridgeMove(item, bridgeOK: bridgeOK, failed: &failed)
         }
+        // 一次遍历建 windowID → AX 元素索引（实测逐窗全量遍历 44 窗 105s，索引后秒级）
+        geometry.prepare(windowIDs: actItems.compactMap { item in
+            guard case .act(let lw, _, _, _, _) = item.action else { return nil }
+            return lw.cgWindowID
+        })
         for item in actItems {
             place(item, failed: &failed)
         }

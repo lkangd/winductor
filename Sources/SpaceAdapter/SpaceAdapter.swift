@@ -294,8 +294,14 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         // 已在目标 Space：无事可做，不视为 no-op
         if before.allSatisfy({ $0 == [spaceID] }) { return true }
 
-        if let issue = Self.performBridgedMove(wids, spaceID: UInt64(spaceID)) {
-            throw SpaceAdapterError.bridgedOpFailed(issue)
+        // 限时执行：防单窗 WindowServer 长阻塞拖死整轮（实测 159s）；超时落 [degrade] 可观测，
+        // 服务端迁移通常最终完成，下方归属校验以实测为准
+        switch Self.performBridgedMoveBounded(wids, spaceID: UInt64(spaceID), timeout: Self.bridgeOpTimeoutSeconds) {
+        case .completed(let issue):
+            if let issue { throw SpaceAdapterError.bridgedOpFailed(issue) }
+        case .timedOut:
+            log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "bridge-timeout",
+                      detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s"))
         }
         Thread.sleep(forTimeInterval: settleSeconds)
 
@@ -313,6 +319,32 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     /// 桥接操作执行器（spike moveto 实测形态）：
     /// NSClassFromString → class_createInstance → IMP 调 initWithWindows:spaceID: → performWithWMBridgeDelegate。
     /// 返回 nil = 已执行；否则为失败细节。
+    /// 桥接操作限时执行的结局
+    enum BridgedOutcome { case completed(issue: String?); case timedOut }
+
+    /// 桥接操作超时上限（秒）：performBridgedMove 是无超时同步私有 API，
+    /// 实测 WindowServer 迁移单窗可阻塞 159s 拖死整轮恢复；专用线程 + 信号量限界，
+    /// 超时后放弃等待继续管线（服务端迁移通常最终完成，归属校验以实测为准）
+    static let bridgeOpTimeoutSeconds: TimeInterval = 8
+
+    /// 限时包装（runner 注入便于单测；生产直通 performBridgedMove）
+    static func performBridgedMoveBounded(
+        _ wids: [UInt32], spaceID: UInt64, timeout: TimeInterval,
+        runner: @escaping ([UInt32], UInt64) -> String? = { SpaceAdapter.performBridgedMove($0, spaceID: $1) }
+    ) -> BridgedOutcome {
+        final class Box: @unchecked Sendable { var issue: String? }
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.issue = runner(wids, spaceID)
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            return .timedOut
+        }
+        return .completed(issue: box.issue)
+    }
+
     static func performBridgedMove(_ wids: [UInt32], spaceID: UInt64) -> String? {
         guard let cls = NSClassFromString(bridgeOpClassName) as? NSObject.Type else { return "class missing" }
         let initSel = NSSelectorFromString("initWithWindows:spaceID:")
