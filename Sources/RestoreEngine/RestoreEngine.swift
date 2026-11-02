@@ -87,6 +87,8 @@ public final class RestoreEngine: @unchecked Sendable {
     private let spaces: SpaceBridge
     private let enumerator: WindowEnumerating
     private let ax: WindowAXProbing
+    /// 管线死线（秒）：超时剩余条目计 skip、通知照发——无论系统级楔死拖慢哪层，通知计数必须有界到达
+    private let pipelineDeadlineSeconds: TimeInterval
     private let geometry: WindowGeometryWriting
     /// L3 全屏写（AXFullScreen；票 15）
     private let fullscreen: WindowFullScreenWriting
@@ -108,6 +110,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 fullscreen: WindowFullScreenWriting = AXFullScreenWriter(),
                 minimize: WindowMinimizeWriting = AXMinimizeWriter(),
                 fullscreenSettleSeconds: TimeInterval = 1.0,
+                pipelineDeadlineSeconds: TimeInterval = 90,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 rotationProvider: @escaping (CGDirectDisplayID) -> Int = Displays.rotation,
                 log: LogWriting? = nil) {
@@ -119,6 +122,7 @@ public final class RestoreEngine: @unchecked Sendable {
         self.fullscreen = fullscreen
         self.minimize = minimize
         self.fullscreenSettleSeconds = fullscreenSettleSeconds
+        self.pipelineDeadlineSeconds = pipelineDeadlineSeconds
         self.displaysProvider = displaysProvider
         self.rotationProvider = rotationProvider
         self.log = log
@@ -269,36 +273,59 @@ public final class RestoreEngine: @unchecked Sendable {
         let bridgeOK = spaces.isBridgeAvailable() && !entries.isEmpty
         let actItems = plan.filter(\.canAct)
         var failed = Set<Int>()
-        for item in actItems {
+        // 管线死线：无论哪层被系统级楔死拖慢，通知计数必须有界到达（用户实测通知迟到数分钟）
+        let deadline = Date().addingTimeInterval(pipelineDeadlineSeconds)
+        var deadlineHit = false
+        func deadlineExceeded(_ processed: Int, _ total: Int) -> Bool {
+            if Date() < deadline { return false }
+            if !deadlineHit {
+                deadlineHit = true
+                log?.write("[restore] action=deadline detail=waited=\(Int(pipelineDeadlineSeconds))s remaining=\(total - processed) items-marked-skip")
+            }
+            return true
+        }
+        var actProcessed = 0
+        for (offset, item) in actItems.enumerated() {
+            if deadlineExceeded(offset, actItems.count) { break }
             // 逐项重查桥接可用性：桥接操作超时降级（runtime no-op）后，剩余项快速跳过，
             // 防 WindowServer 侧棋死把后续 SLS 查询一并拖住（实测 111s）；L1 几何照常
             bridgeMove(item, bridgeOK: bridgeOK && spaces.isBridgeAvailable(), failed: &failed)
+            actProcessed += 1
         }
         // 一次遍历建 windowID → AX 元素索引（实测逐窗全量遍历 44 窗 105s，索引后秒级）
         geometry.prepare(windowIDs: actItems.compactMap { item in
             guard case .act(let lw, _, _, _, _) = item.action else { return nil }
             return lw.cgWindowID
         })
-        for item in actItems {
+        for (offset, item) in actItems.enumerated() {
+            if deadlineHit || deadlineExceeded(offset, actItems.count) { break }
             place(item, failed: &failed)
+            actProcessed += 1
         }
 
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
         var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
-        restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
-        layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: spaces.isBridgeAvailable(),
-                                mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
+        if !deadlineHit {
+            restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
+            layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: spaces.isBridgeAvailable(),
+                                    mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
+        }
 
         // Pass L4（票 15，§6.8 顺序铁律最后一环）：最小化窗口送回快照 Space 并保持最小化
         let l4Items = plan.filter(\.isMinimizedRestore)
         let minimizedLayerOK = spaces.isLayerAvailable(.minimized)
         var ok4 = 0, skip4 = 0, fail4 = 0
-        for item in l4Items {
-            restoreMinimizedWindow(item, layerOK: minimizedLayerOK,
-                                   ok: &ok4, skipped: &skip4, failed: &fail4)
+        if !deadlineHit {
+            for item in l4Items {
+                restoreMinimizedWindow(item, layerOK: minimizedLayerOK,
+                                       ok: &ok4, skipped: &skip4, failed: &fail4)
+            }
         }
 
-        let skipped = plan.count - actItems.count - l4Items.count
+        // 死线未处理项计入跳过（未尝试 ≠ 失败；一次性结算防跨层重复计数）
+        let deadlineSkipped = deadlineHit ? (actItems.count - actProcessed + l4Items.count
+                                            + plan.filter(\.isPendingFullscreen).count) : 0
+        let skipped = plan.count - actItems.count - l4Items.count + deadlineSkipped
         let pending = plan.filter(\.isPendingFullscreen).count + pending3
         switch mode {
         case .restore:

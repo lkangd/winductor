@@ -58,6 +58,11 @@ public enum SpaceAdapterError: Error, Equatable, Sendable {
     case layerUnavailable(SpaceLayer)
 }
 
+/// 有界执行的跨线程结果盒（Swift 泛型函数内不可嵌套类）
+private final class BoundedResultBox<T: Sendable>: @unchecked Sendable {
+    var value: Result<T, Error>?
+}
+
 public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     // MARK: - SkyLight 私有绑定（dlopen，无链接期依赖，照 spike）
 
@@ -199,22 +204,26 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
 
     /// SLSCopyManagedDisplaySpaces 展开：每屏 1 起 index，kind 0=用户桌面 4=全屏（spec §5.1 实测）
     public func managedSpaces() throws -> [SpaceEntry] {
-        var out: [SpaceEntry] = []
-        for display in try managedDisplays() {
-            out.append(contentsOf: display.spaces)
+        try SpaceAdapter.bounded(timeout: Self.bridgeReadTimeoutSeconds) { [self] in
+            var out: [SpaceEntry] = []
+            for display in try managedDisplays() {
+                out.append(contentsOf: display.spaces)
+            }
+            return out
         }
-        return out
     }
 
     /// CGWindowID → spaceID；最小化窗口报原 Space（spec §5.1 实测）。
     /// 无归属辅助窗（0 个 Space）与多 Space 粘性窗（>1 个）均不入表（spec §5.3 排除出恢复集合）。
     public func spaceIDsByWindowID() throws -> [UInt32: Int64] {
-        var out: [UInt32: Int64] = [:]
-        for wid in Self.windowListWindowIDs() {
-            let ids = try spaceIDs(windowID: wid)
-            if ids.count == 1 { out[wid] = ids[0] }
+        try SpaceAdapter.bounded(timeout: Self.bridgeReadTimeoutSeconds) { [self] in
+            var out: [UInt32: Int64] = [:]
+            for wid in Self.windowListWindowIDs() {
+                let ids = try spaceIDs(windowID: wid)
+                if ids.count == 1 { out[wid] = ids[0] }
+            }
+            return out
         }
-        return out
     }
 
     // MARK: - 只读查询（票 14/15 恢复管线与调试命令共用）
@@ -347,6 +356,22 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     static let bridgeOpTimeoutSeconds: TimeInterval = 8
     /// SkyLight 读取超时（秒）：楔死时 spaceIDs 查询同样长时间阻塞（实测 111s），一并限界
     static let bridgeReadTimeoutSeconds: TimeInterval = 5
+
+    /// 通用有界执行：楔死的 SkyLight 调用无法中断，只能弃线程继续（超时抛 slsFailed）
+    static func bounded<T: Sendable>(
+        timeout: TimeInterval, work: @escaping @Sendable () throws -> T
+    ) throws -> T {
+        let box = BoundedResultBox<T>()
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.value = Result { try work() }
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + timeout) != .timedOut, let result = box.value else {
+            throw SpaceAdapterError.slsFailed("bounded-read timeout \(timeout)s")
+        }
+        return try result.get()
+    }
 
     /// SkyLight spaceIDs 有界读取（楔死时该查询同样阻塞；reader 注入便于单测）
     /// 返回 nil = 超时（未知归属）

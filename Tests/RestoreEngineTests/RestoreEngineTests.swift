@@ -884,3 +884,52 @@ extension RestorePipelineTests {
         XCTAssertEqual(skipLines.count, 1, "失效后剩余桥接项记 skip")
     }
 }
+
+// MARK: - 管线死线（实测缺陷：系统级楔死可把通知拖到数分钟后；死线保证计数有界到达）
+
+extension RestorePipelineTests {
+    /// 桥接每窗阻塞 > 死线 → 死线触发、剩余项计 skip、restore 在有界时间内返回
+    func testPipelineDeadlineMarksRemainingItemsSkippedAndReturnsBounded() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.b", title: "Mail", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.b", title: "Mail",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [101: 6, 202: 6])
+        // 每次桥接移动阻塞 0.3s（模拟楔死）
+        bridge.moveHook = { Thread.sleep(forTimeInterval: 0.3) }
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: FakeGeometry(),
+            pipelineDeadlineSeconds: 0.1,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        let start = Date()
+        let report = try engine.restore(snapshot: snapshot)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 5.0, "死线保证有界返回")
+        XCTAssertTrue(log.all.contains { $0.contains("action=deadline") }, "死线触发要落日志")
+        XCTAssertEqual(report.okCount + report.skipCount + report.failCount,
+                       3, "计数闭合不丢条目：ok 1 + 死线跳过 1 + 缺席 skip 1")
+    }
+}

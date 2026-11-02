@@ -25,6 +25,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var minimizedDirectMoveFails = false
     /// 非 nil = 第 N 次 moveWindowsToSpace 后把 bridgeAvailable 翻 false（模拟桥接超时降级，实测缺陷）
     var degradeBridgeAfterMoves: Int?
+    /// 每次桥接移动的阻塞钩子（模拟 WindowServer 楔死，测管线死线）
+    var moveHook: (() -> Void)?
     private(set) var moveCalls = 0
     private(set) var moves: [(wids: [UInt32], spaceID: Int64)] = []
     private(set) var directMinimizedMoves: [(windowID: UInt32, spaceID: Int64)] = []
@@ -47,6 +49,7 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     @discardableResult
     func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {
         moveCalls += 1
+        moveHook?()
         if let n = degradeBridgeAfterMoves, moveCalls >= n { bridgeAvailable = false }
         moves.append((wids, spaceID))
         if let moveError { throw moveError }
