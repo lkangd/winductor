@@ -294,14 +294,14 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         // 已在目标 Space：无事可做，不视为 no-op
         if before.allSatisfy({ $0 == [spaceID] }) { return true }
 
-        // 限时执行：防单窗 WindowServer 长阻塞拖死整轮（实测 159s）；超时落 [degrade] 可观测，
-        // 服务端迁移通常最终完成，下方归属校验以实测为准
+        // 限时执行：防单窗 WindowServer 长阻塞拖死整轮（实测 159s/111s）；超时标记该层失效
+        // （本轮剩余桥接项快速跳过，防后续 SLS 查询被同一棋死拖住）；服务端迁移通常最终完成
         switch Self.performBridgedMoveBounded(wids, spaceID: UInt64(spaceID), timeout: Self.bridgeOpTimeoutSeconds) {
         case .completed(let issue):
             if let issue { throw SpaceAdapterError.bridgedOpFailed(issue) }
         case .timedOut:
-            log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "bridge-timeout",
-                      detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s"))
+            markRuntimeNoOp(reason: "bridge-timeout",
+                            detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s")
         }
         Thread.sleep(forTimeInterval: settleSeconds)
 
@@ -363,10 +363,10 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     }
 
     /// 运行时 no-op 识别：标记该层失效 + [degrade] 日志（spec §10.2，静默 no-op 是失效特征）
-    private func markRuntimeNoOp(detail: String) {
+    private func markRuntimeNoOp(reason: String = "no-op", detail: String) {
         lock.lock()
         runtimeNoOpLayers.insert(.bridge)
         lock.unlock()
-        log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "no-op", detail: detail))
+        log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: reason, detail: detail))
     }
 }

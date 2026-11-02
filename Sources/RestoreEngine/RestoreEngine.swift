@@ -270,7 +270,9 @@ public final class RestoreEngine: @unchecked Sendable {
         let actItems = plan.filter(\.canAct)
         var failed = Set<Int>()
         for item in actItems {
-            bridgeMove(item, bridgeOK: bridgeOK, failed: &failed)
+            // 逐项重查桥接可用性：桥接操作超时降级（runtime no-op）后，剩余项快速跳过，
+            // 防 WindowServer 侧棋死把后续 SLS 查询一并拖住（实测 111s）；L1 几何照常
+            bridgeMove(item, bridgeOK: bridgeOK && spaces.isBridgeAvailable(), failed: &failed)
         }
         // 一次遍历建 windowID → AX 元素索引（实测逐窗全量遍历 44 窗 105s，索引后秒级）
         geometry.prepare(windowIDs: actItems.compactMap { item in
@@ -284,7 +286,7 @@ public final class RestoreEngine: @unchecked Sendable {
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
         var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
         restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
-                                layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: bridgeOK,
+        layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: spaces.isBridgeAvailable(),
                                 mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
 
         // Pass L4（票 15，§6.8 顺序铁律最后一环）：最小化窗口送回快照 Space 并保持最小化

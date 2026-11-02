@@ -19,8 +19,13 @@ extension SpaceAdapter {
         let before = try spaceIDs(windowID: wid)
         // 已在目标 Space：无事可做
         if before == [spaceID] { return true }
-        if let issue = Self.performBridgedMove([wid], spaceID: UInt64(spaceID)) {
-            throw SpaceAdapterError.bridgedOpFailed(issue)
+        // 限时执行（同 moveWindowsToSpace；超时按未迁移处理，调用方走 §6.5 回退保持最小化）
+        switch SpaceAdapter.performBridgedMoveBounded([wid], spaceID: UInt64(spaceID),
+                                                      timeout: SpaceAdapter.bridgeOpTimeoutSeconds) {
+        case .completed(let issue):
+            if let issue { throw SpaceAdapterError.bridgedOpFailed(issue) }
+        case .timedOut:
+            throw SpaceAdapterError.bridgedOpFailed("bridge-timeout")
         }
         Thread.sleep(forTimeInterval: Self.minimizedSettleSeconds)
         return try spaceIDs(windowID: wid) != before

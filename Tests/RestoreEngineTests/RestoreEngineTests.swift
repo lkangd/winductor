@@ -838,3 +838,49 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.failCount, 0)
     }
 }
+
+// MARK: - 桥接超时降级（实测缺陷：WindowServer 迁移单窗可阻塞 159s，超时后本轮剩余桥接项快速跳过）
+
+extension RestorePipelineTests {
+    /// 第 1 个桥接移动后桥接失效 → 第 2 个条目跳过 L2（不再碰桥）但仍走 L1 几何
+    func testBridgeDegradedMidRunSkipsRemainingBridgeMovesButKeepsGeometry() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.b", title: "Mail", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        // 实况两窗都跑到 B#1（快照外位置）→ 都需要桥接移回 A#1
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.b", title: "Mail",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [101: 6, 202: 6])
+        bridge.degradeBridgeAfterMoves = 1  // 第 1 次移动后桥接失效（超时降级模拟）
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: geometry, displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        _ = try engine.restore(snapshot: snapshot)
+
+        XCTAssertEqual(bridge.moves.count, 1, "失效后不再碰桥（实测：后续调用被同一楔死拖住 111s）")
+        XCTAssertEqual(geometry.calls.count, 2, "L1 几何照常，两窗都摆位")
+        let skipLines = log.all.filter { $0.contains("[restore] L2") && $0.contains("result=skip") }
+        XCTAssertEqual(skipLines.count, 1, "失效后剩余桥接项记 skip")
+    }
+}
