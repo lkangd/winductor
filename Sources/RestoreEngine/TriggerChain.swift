@@ -287,11 +287,20 @@ public final class TriggerChain: @unchecked Sendable {
         settledUUIDs = current
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
         if let home = returnHome, current != home.uuids {
-            phase = .idle
-            log?.write(chainLine(step: "return-home-guard", result: "skip",
-                                 detail: "matched=\(key) home-displays=\(home.uuids.count) current-displays=\(current.count)"))
-            stateLock.unlock()
-            return
+            // 实测缺陷（11-03 多段插屏）：拔屏后的基线可能已被中间拓扑降级（home=2 屏），
+            // 用户插回 3 屏（home ⊂ current）正是「回到基线且超越基线」——放行恢复，
+            // 快照源回退到现存拓扑匹配（home 的冻结快照是更少屏的，不可用）
+            let isSupersetOfHome = home.uuids.isSubset(of: current) && current.count > home.uuids.count
+            if !isSupersetOfHome {
+                phase = .idle
+                log?.write(chainLine(step: "return-home-guard", result: "skip",
+                                     detail: "matched=\(key) home-displays=\(home.uuids.count) current-displays=\(current.count)"))
+                stateLock.unlock()
+                return
+            }
+            log?.write(chainLine(step: "return-home-guard", result: "pass",
+                                 detail: "superset-of-home home=\(home.uuids.count) current=\(current.count)"))
+            returnHome = ReturnHome(uuids: current, snapshot: nil, structure: [])
         }
         // 回到基线拓扑：恢复源优先用冻结的拔屏前内容（防触发时现读被 poller 重写的中间态）
         let homeSnapshot = returnHome?.snapshot

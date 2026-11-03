@@ -339,6 +339,39 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(restorer.snapshots.count, 1)
     }
 
+    func testPlugBackToSupersetOfHomeRestores() throws {
+        // 实测缺陷（11-03 多段插屏）：基线被中间拓扑降级（home=2 屏），用户插回 3 屏
+        // （home ⊂ current）被 guard skip 吞掉且基线同步污染 → 后续事件全部静默。
+        // 期望：home 是 current 子集 = 回到基线且超越基线 → 放行，恢复源回退到现存拓扑匹配。
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [
+            ["A-uuid#1#0", "B-uuid#1#0", "C-uuid#1#0"],
+            ["A-uuid#1#0", "B-uuid#1#0", "C-uuid#1#0"],
+        ])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"], ["A-uuid", "B-uuid", "C-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])               // 拔出（3→1？此处 start 2 屏 → 1 屏）
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()          // settle shrank → baseline-hold（home={A,B}）
+        box.set([displayA, displayB, displayC])  // 多段插屏完成：3 屏（home 的超集）
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()          // settle grew → guard 放行 → match 3 屏快照 → 恢复
+
+        let steps = triggerSteps(spy.all)
+        XCTAssertTrue(steps.contains { $0 == "return-home-guard" } || spy.all.contains { $0.contains("superset-of-home") },
+                      "guard 放行落日志")
+        XCTAssertTrue(steps.contains("topology-match"), "匹配现存 3 屏快照")
+        XCTAssertTrue(steps.contains("restore-start"), "完整触发恢复")
+        XCTAssertEqual(restorer.snapshots.count, 1)
+    }
+
     func testShrunkenSetOnlyUpdatesBaselineThenPlugBackTriggers() throws {
         // A4：拔出（集合变小）只更新基线不干预；随后插回（集合变大且精确匹配）→ 完整链触发
         let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
