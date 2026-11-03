@@ -91,6 +91,31 @@ final class SnapshotComposerTests: XCTestCase {
         XCTAssertEqual(snapshot.spaces.map(\.kind), [.user])
     }
 
+    /// 实测缺陷回归（11-03 ghostty/WeCom 高度缺 Dock 高度）：延迟几何待补写的窗，实况是 macOS
+    /// 为躲 Dock 缩过的尺寸；poller 若照实写进 live，下次拔屏冻结 → 恢复目标被永久污染。
+    /// 期望：同屏的待补写窗按 pending 目标几何记录；不同屏（未就位）不覆盖。
+    func testPendingGeometryOverridesObservedGeometryOnSameDisplay() throws {
+        let a = fakeDisplay(displayA, x: 0, y: 0, w: 1000, h: 1000)
+        let b = fakeDisplay(displayB, x: 1000, y: 0, w: 1000, h: 1000)
+        let spaces = FakeSpaces(
+            entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 2, kind: 0)],
+            byWindow: [1: 11, 2: 11])
+        let overrides = [
+            UInt32(1): WindowGeometryOverride(displayUUID: displayA, x: 0.0, y: 0.05, w: 1.0, h: 0.95),
+            UInt32(2): WindowGeometryOverride(displayUUID: displayB, x: 0.0, y: 0.05, w: 1.0, h: 0.95),
+        ]
+        let snapshot = composer(spaces: spaces).compose(
+            sample: [window(1, bundleID: "com.pending", title: "p", x: 0, y: 50, w: 1000, h: 890),
+                     window(2, bundleID: "com.elsewhere", title: "e", x: 0, y: 50, w: 1000, h: 890)],
+            displays: [a, b], capturedAt: Date(timeIntervalSince1970: 0), geometryOverrides: overrides)
+        let pending = try XCTUnwrap(snapshot.windows.first { $0.bundleID == "com.pending" })
+        XCTAssertEqual(pending.h, 0.95, "待补写窗记录 pending 目标高度，而非 macOS 缩过的实况")
+        XCTAssertEqual(pending.y, 0.05)
+        XCTAssertEqual(pending.spaceIndex, 2, "Space 归属仍按实况")
+        let elsewhere = try XCTUnwrap(snapshot.windows.first { $0.bundleID == "com.elsewhere" })
+        XCTAssertEqual(elsewhere.h, 0.89, accuracy: 1e-9, "pending 目标屏与实况屏不一致：不覆盖")
+    }
+
     /// 兄弟序：同应用同标题按归一化「先 y 后 x」（复用 ConservativeMatcher 同一规则）
     func testSiblingOrderIsYThenX() throws {
         let a = fakeDisplay(displayA)

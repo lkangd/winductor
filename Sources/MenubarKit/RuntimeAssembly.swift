@@ -23,13 +23,15 @@ public enum RuntimeAssembly {
                                           spaces: SpaceProviding? = nil,
                                           log: LogWriting? = nil,
                                           notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
-                                          visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil) -> SnapshotEngine {
+                                          visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
+                                          geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil) -> SnapshotEngine {
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: storeDirectory, log: log),
             spaces: spaces,
             log: log,
             notificationCenters: notificationCenters,
-            visibilityTransitionHandler: visibilityTransitionHandler
+            visibilityTransitionHandler: visibilityTransitionHandler,
+            geometryOverrides: geometryOverrides
         )
         engine.readinessGate = { [monitor] in monitor.status.isReady }
         return engine
@@ -59,7 +61,8 @@ public enum RuntimeAssembly {
         // 随门控协调器同启同停。
         // 后台窗延迟几何：restore 时 AX 不可见（非可见 Space）的窗记 pending；
         // poller 检测到变可见时由 applier 补写一次（每窗单次，一次性语义保留形态）
-        let deferredApplier = DeferredGeometryApplier(store: DeferredGeometryStore(directory: storeDirectory),
+        let deferredStore = DeferredGeometryStore(directory: storeDirectory)
+        let deferredApplier = DeferredGeometryApplier(store: deferredStore,
                                                       displaysProvider: { Displays.active() },
                                                       log: collector)
         let snapshotEngine = makeSnapshotEngine(gatedBy: monitor,
@@ -69,6 +72,14 @@ public enum RuntimeAssembly {
                                                 notificationCenters: [.default],
                                                 visibilityTransitionHandler: { [deferredApplier] wids in
                                                     for wid in wids { deferredApplier.applyIfPending(windowID: wid) }
+                                                },
+                                                // 待补写窗按 pending 目标记进 live：防 macOS 中间态（躲 Dock 缩高）
+                                                // 在补写前被采样、下次拔屏冻结成恢复目标（11-03 ghostty/WeCom）
+                                                geometryOverrides: { [deferredStore] in
+                                                    Dictionary(deferredStore.load().map {
+                                                        ($0.windowID, WindowGeometryOverride(displayUUID: $0.displayUUID,
+                                                                                             x: $0.x, y: $0.y, w: $0.w, h: $0.h))
+                                                    }, uniquingKeysWith: { a, _ in a })
                                                 })
         let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
         let restoreEngine = RestoreEngine(store: store,
@@ -77,8 +88,8 @@ public enum RuntimeAssembly {
         // 后台窗延迟几何的消费轮询：CG isOnscreen 对跨 Space 窗恒 true，迁移事件永不触发；
         // 改为 2s 轮询「pending ∩ 活跃 Space」消费（恢复期间随 poller 一起挂起）
         let pendingConsumer = PendingGeometryConsumer(
-            store: DeferredGeometryStore(directory: storeDirectory),
-            applier: deferredApplier, adapter: adapter, snapshotEngine: snapshotEngine)
+            store: deferredStore,
+            applier: deferredApplier, adapter: adapter, snapshotEngine: snapshotEngine, log: collector)
         pendingConsumer.start()
         // 恢复/撤销期间暂停 SnapshotEngine 轮询（poller 的高频 SLS 采样与管线 SLS 读并发冲突，
         // 实测导致 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip，11-03 生产复现 + DebugCLI 无

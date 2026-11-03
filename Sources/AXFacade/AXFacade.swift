@@ -60,8 +60,10 @@ public enum AXFacade {
     // MARK: - 元素枚举
 
     /// 某 app 的全部 AX 窗口元素（AXWindows 属性）。
-    public static func windows(ofApplication pid: pid_t) throws -> [AXUIElement] {
+    /// messagingTimeout：设在本次查询所用的 app 元素上（超时只对设置它的元素对象生效）
+    public static func windows(ofApplication pid: pid_t, messagingTimeout: Float? = nil) throws -> [AXUIElement] {
         let app = AXUIElementCreateApplication(pid)
+        if let t = messagingTimeout { AXUIElementSetMessagingTimeout(app, t) }
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(app, "AXWindows" as CFString, &value)
         guard err == .success else { throw map(err) }
@@ -71,6 +73,13 @@ public enum AXFacade {
 
     /// CGWindowID → AX 元素反查（遍历运行中 app 配对；全屏后台窗口 AX 不可见会返回 nil，spike #4 实测）。
     public static func findWindow(withWindowID wid: UInt32) -> AXUIElement? {
+        // 先按 CG owner pid 只查所属 app（实测全量遍历被 WebKit 等无响应进程各拖 1.5s，单次 ~4.7s）；
+        // CG 查不到 owner 才回退全量遍历
+        if let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(wid)) as? [[String: Any]],
+           let pid = info.first?[kCGWindowOwnerPID as String] as? pid_t {
+            guard let wins = try? windows(ofApplication: pid, messagingTimeout: 1.5) else { return nil }
+            return wins.first { (try? windowID(of: $0)) == wid }
+        }
         for app in NSWorkspace.shared.runningApplications
         where app.processIdentifier > 0 && app.activationPolicy != .prohibited {
             guard let wins = try? windows(ofApplication: app.processIdentifier) else { continue }

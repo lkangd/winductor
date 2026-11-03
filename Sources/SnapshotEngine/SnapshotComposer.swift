@@ -14,6 +14,17 @@ import Foundation
 //   - 兄弟序：同应用同标题按归一化「先 y 后 x」排序取序号（复用 Core/ConservativeMatch 同一规则，
 //     与 verify 存活侧口径一致）
 
+/// 快照几何覆盖（延迟几何待补写窗的目标；归一比例坐标，与快照同口径）
+public struct WindowGeometryOverride: Equatable, Sendable {
+    public let displayUUID: String
+    public let x: Double, y: Double, w: Double, h: Double
+
+    public init(displayUUID: String, x: Double, y: Double, w: Double, h: Double) {
+        self.displayUUID = displayUUID
+        self.x = x; self.y = y; self.w = w; self.h = h
+    }
+}
+
 public struct SnapshotComposer: Sendable {
     private let spaces: SpaceProviding?
     private let ax: WindowAXProbing
@@ -23,8 +34,11 @@ public struct SnapshotComposer: Sendable {
         self.ax = ax
     }
 
-    /// 组装 schema v1 快照（纯映射；IO 由调用方经 SnapshotStore 落盘）
-    public func compose(sample: [CGWindowSample], displays: [Displays.Info], capturedAt: Date) -> Snapshot {
+    /// 组装 schema v1 快照（纯映射；IO 由调用方经 SnapshotStore 落盘）。
+    /// geometryOverrides：待补写延迟几何的窗（windowID → 目标几何），同屏时按目标记录——
+    /// 实况是 macOS 中间态（如躲 Dock 缩高），照实写会把它固化成下次恢复的目标（11-03 实测）
+    public func compose(sample: [CGWindowSample], displays: [Displays.Info], capturedAt: Date,
+                        geometryOverrides: [UInt32: WindowGeometryOverride] = [:]) -> Snapshot {
         let entries = loadSpaceEntries()
         let widToSpaceID = loadSpaceIDsByWindow()
         let spaceByID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
@@ -67,15 +81,17 @@ public struct SnapshotComposer: Sendable {
             }
             let w = display.bounds.width, h = display.bounds.height
             func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
+            // 待补写窗：只在已就位目标屏时覆盖几何（屏归属仍按实况，未就位不伪造）
+            let override = geometryOverrides[window.windowID].flatMap { $0.displayUUID == display.uuid ? $0 : nil }
             drafts.append(Draft(
                 bundleID: window.bundleID,
                 title: window.title ?? "",
                 displayUUID: display.uuid ?? "",
                 spaceIndex: entry?.index ?? 1,
-                x: clamp01((window.bounds.minX - display.bounds.minX) / w),
-                y: clamp01((window.bounds.minY - display.bounds.minY) / h),
-                w: clamp01(window.bounds.width / w),
-                h: clamp01(window.bounds.height / h),
+                x: override.map { clamp01($0.x) } ?? clamp01((window.bounds.minX - display.bounds.minX) / w),
+                y: override.map { clamp01($0.y) } ?? clamp01((window.bounds.minY - display.bounds.minY) / h),
+                w: override.map { clamp01($0.w) } ?? clamp01(window.bounds.width / w),
+                h: override.map { clamp01($0.h) } ?? clamp01(window.bounds.height / h),
                 minimized: minimized))
         }
 

@@ -1118,11 +1118,93 @@ extension RestorePipelineTests {
         store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
         let geometry = FakeGeometry()
         let applier = DeferredGeometryApplier(store: store, writer: geometry,
-                                              displaysProvider: { World.displays() }, log: LogSpy())
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
 
         XCTAssertTrue(applier.applyIfPending(windowID: 7), "命中 pending")
         XCTAssertEqual(geometry.calls.count, 1)
         XCTAssertFalse(applier.applyIfPending(windowID: 7), "一次性消费，不重复应用")
         XCTAssertTrue(store.load().isEmpty, "消费后清空")
     }
+
+    /// 实测缺陷回归（11-03 第四轮 WeChat）：补写 AX 调用成功但实际高度仍缺 Dock 高度（写未生效/被
+    /// app 回弹），一次性消费后再无补救。期望：写后回读，与目标不符计失败重试，并记实际值。
+    func testDeferredGeometryApplierVerifiesWriteByReadBack() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0, y: 0.05, w: 1, h: 0.95)])
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        // A 屏 1000×1000：目标 (0,50,1000,950)；回读高度少 55（躲 Dock）
+        let frame = Unchecked(CGRect(x: 0, y: 50, width: 1000, height: 895))
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: log,
+                                              frameReader: { _ in frame.value })
+
+        XCTAssertTrue(applier.applyIfPending(windowID: 7))
+        XCTAssertEqual(store.load().first?.failedAttempts, 1, "回读不符：计失败保留重试")
+        XCTAssertTrue(log.all.contains { $0.contains("readback-mismatch") && $0.contains("h=895") },
+                      "记录实际回读值（定位 Dock 躲让/回弹）")
+
+        frame.value = CGRect(x: 0, y: 50, width: 1000, height: 950)
+        XCTAssertTrue(applier.applyIfPending(windowID: 7))
+        XCTAssertTrue(store.load().isEmpty, "回读一致：消费")
+    }
+
+    /// 实测缺陷回归（11-03 第二轮 WeCom 缺 Dock 高度）：补写读整表 → AX 写阻塞数秒 → 写回整表；
+    /// 阻塞期间新一轮恢复落盘的 pending 被旧表覆盖丢失（含 WeCom）。期望：只按 wid 原子删改，
+    /// 新一轮同 wid 的新目标不被旧条目的消费删掉。
+    func testDeferredGeometryApplierDoesNotClobberPendingWrittenDuringApply() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                    PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let nextRound = [PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.2, y: 0.2, w: 0.5, h: 0.5),
+                         PendingGeometryEntry(windowID: 28801, displayUUID: "A-uuid", x: 0, y: 0.05, w: 1, h: 0.95)]
+        let geometry = FakeGeometry()
+        geometry.onApply = { store.save(nextRound) }  // AX 写阻塞期间新一轮恢复整写替换
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+
+        XCTAssertTrue(applier.applyIfPending(windowID: 7))
+        XCTAssertEqual(store.load(), nextRound, "新一轮 pending 原样保留（旧 wid=7 的消费不删新目标，旧表不回写）")
+
+        store.save([PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        geometry.error = AXFacadeError.elementInvalid
+        XCTAssertTrue(applier.applyIfPending(windowID: 8))
+        XCTAssertEqual(store.load(), nextRound, "失败重试计数也不得把旧条目写回新一轮")
+    }
+
+    /// 实测缺陷回归（11-03 WeCom）：切到窗所在 Space 后首次补写 elementInvalid（AX 树滞后），
+    /// 一次性丢弃 → 窗停在缩过的高度且被 poller 固化。期望：失败保留重试，达上限才丢弃。
+    func testDeferredGeometryApplierRetriesFailedWriteUpToLimit() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = FakeGeometry()
+        geometry.error = AXFacadeError.elementInvalid
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+
+        for attempt in 1..<DeferredGeometryApplier.maxAttempts {
+            XCTAssertTrue(applier.applyIfPending(windowID: 7))
+            XCTAssertEqual(store.load().map(\.windowID), [7], "第 \(attempt) 次失败后保留待重试")
+        }
+        geometry.error = nil
+        XCTAssertTrue(applier.applyIfPending(windowID: 7))
+        XCTAssertEqual(geometry.calls.count, DeferredGeometryApplier.maxAttempts)
+        XCTAssertTrue(store.load().isEmpty, "成功即消费")
+
+        store.save([PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        geometry.error = AXFacadeError.elementInvalid
+        for _ in 0..<DeferredGeometryApplier.maxAttempts { applier.applyIfPending(windowID: 8) }
+        XCTAssertTrue(store.load().isEmpty, "达上限丢弃（不无限重试）")
+    }
+}
+
+private final class Unchecked<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }

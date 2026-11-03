@@ -28,6 +28,8 @@ public final class SnapshotEngine {
 
     /// 窗口「变为可见」迁移回调（后台窗延迟几何消费口；测试注入）
     private let visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)?
+    /// 写盘时的几何覆盖源（生产：pending 延迟几何；见 SnapshotComposer.compose）
+    private let geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])?
     /// 轮询挂起（恢复管线运行期间置位：避免 poller 的 SLS 采样与管线 SLS 读并发冲突，
     /// 实测并发下 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip）
     private var pollSuspended = false
@@ -65,7 +67,8 @@ public final class SnapshotEngine {
                 pollTolerance: TimeInterval = SnapshotEngineConstants.pollTolerance,
                 debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
                 notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
-                visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil) {
+                visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
+                geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil) {
         // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
         // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
         // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
@@ -79,6 +82,7 @@ public final class SnapshotEngine {
         self.pollTolerance = pollTolerance
         self.debounceInterval = debounceInterval
         self.visibilityTransitionHandler = visibilityTransitionHandler
+        self.geometryOverrides = geometryOverrides
     }
 
     deinit { stop() }
@@ -181,7 +185,8 @@ public final class SnapshotEngine {
             log?.write("[snapshot] action=write path=- result=fail detail=no-active-display")
             return
         }
-        let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date())
+        let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date(),
+                                        geometryOverrides: geometryOverrides?() ?? [:])
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
         do {
             try store.write(snapshot, topologyKey: key)  // 现势 1 + 滚动历史 4（SnapshotStore 内滚动）
