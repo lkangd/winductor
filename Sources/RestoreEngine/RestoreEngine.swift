@@ -18,7 +18,13 @@ import SpaceAdapter
 /// 引擎无法启动的错误（逐窗口问题不 throw，走 best-effort 日志 + 计数，spec §6.3）
 /// 单窗 AX 写限时执行的跨线程结果盒（泛型函数内不可嵌套类，同 SpaceAdapter.BoundedResultBox 口径）
 private final class PlaceBox: @unchecked Sendable {
-    var value: Result<Void, Error>?
+    // 工作线程写、调用方轮询读：须加锁（Result<Void, Error> 多字长，无锁读可撕裂）
+    private let lock = NSLock()
+    private var _value: Result<Void, Error>?
+    var value: Result<Void, Error>? {
+        get { lock.lock(); defer { lock.unlock() }; return _value }
+        set { lock.lock(); _value = newValue; lock.unlock() }
+    }
 }
 
 public enum RestoreEngineError: Error, Equatable, Sendable {
@@ -106,6 +112,9 @@ public final class RestoreEngine: @unchecked Sendable {
     private let deferredGeometry: DeferredGeometryStore
     /// 本轮 pending（runPipeline 开始清零，结束整写替换 pending 文件）
     private var runPendingGeometry: [PendingGeometryEntry] = []
+    /// L1 并发 lanes 共享状态锁（runPendingGeometry / outcomes）：无锁并发 append 实测堆损坏崩溃，
+    /// 生产上可静默丢 pending 条目（被延迟的窗再无补写）
+    private let l1Lock = NSLock()
     /// L3 全屏写（AXFullScreen；票 15）
     private let fullscreen: WindowFullScreenWriting
     /// L4 最小化写（AXMinimized；票 15）
@@ -338,13 +347,14 @@ public final class RestoreEngine: @unchecked Sendable {
         if !deadlineHit {
             var outcomes = [PlaceOutcome?](repeating: nil, count: actItems.count)
             DispatchQueue.concurrentPerform(iterations: actItems.count) { i in
-                outcomes[i] = place(actItems[i], activeSpaceIDs: activeSpaceIDs)
+                let outcome = place(actItems[i], activeSpaceIDs: activeSpaceIDs)
+                l1Lock.lock(); outcomes[i] = outcome; l1Lock.unlock()
             }
             for (i, outcome) in outcomes.enumerated() {
                 switch outcome ?? .fail {
                 case .ok: break
                 case .deferred:
-                    deferredCount += 1  // pending 已在 place 内记录（并发安全：互不重叠的 wid）
+                    deferredCount += 1  // pending 已在 place 内记录（锁内追加）
                 case .fail:
                     failed.insert(actItems[i].snapshotIndex)
                 }
@@ -588,7 +598,7 @@ public final class RestoreEngine: @unchecked Sendable {
         func recordPending(_ why: String) -> PlaceOutcome {
             let entry = PendingGeometryEntry(
                 windowID: wid, displayUUID: snap.displayUUID, x: rx, y: ry, w: rw, h: rh)
-            runPendingGeometry.append(entry)
+            l1Lock.lock(); runPendingGeometry.append(entry); l1Lock.unlock()
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
                 action: .position, target: snap.displayUUID, before: "-", after: "-", result: .skip))
             log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position "

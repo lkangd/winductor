@@ -91,17 +91,23 @@ final class FakeGeometry: WindowGeometryWriting, @unchecked Sendable {
         let position: CGPoint
         let size: CGSize
     }
-    private(set) var calls: [Call] = []
+    // L1 8 路并发调 apply：calls 需加锁（无锁 append 在全量测试下偶发丢记录）
+    private let callsLock = NSLock()
+    private var _calls: [Call] = []
+    var calls: [Call] { callsLock.lock(); defer { callsLock.unlock() }; return _calls }
     private(set) var prepareCalls = 0
     var error: Error?
     /// >0 = apply 前睡眠秒数（AX 写限时测试：睡过 1.5s 上限触发 ax-apply-timeout）
     var applyDelay: TimeInterval?
+    /// apply 期间执行的钩子（并发写入测试：模拟 AX 写阻塞期间新一轮恢复落盘 pending）
+    var onApply: (() -> Void)?
 
     func prepare(windowIDs: [UInt32]) { prepareCalls += 1 }
 
     func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
         if let d = applyDelay { Thread.sleep(forTimeInterval: d) }  // 限时测试：睡过 boundedApply 上限
-        calls.append(Call(windowID: windowID, position: position, size: size))
+        onApply?()
+        callsLock.lock(); _calls.append(Call(windowID: windowID, position: position, size: size)); callsLock.unlock()
         if let error { throw error }
     }
 }

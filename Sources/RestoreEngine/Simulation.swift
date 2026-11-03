@@ -184,9 +184,10 @@ final class SimulatedSeams: SpaceBridge, @unchecked Sendable {
         displayByID[id]?.rotation ?? 0
     }
 
-    private func record<T>(_ keyPath: WritableKeyPath<SimulatedActionLog, T>, _ value: T) {
+    /// 锁内追加（L1 并发 8 路调写接缝：锁外读 actionLog 再整体赋值会丢记录）
+    private func append<T>(_ keyPath: WritableKeyPath<SimulatedActionLog, [T]>, _ values: [T]) {
         lock.lock(); defer { lock.unlock() }
-        actionLog[keyPath: keyPath] = value
+        actionLog[keyPath: keyPath] += values
     }
 }
 
@@ -214,14 +215,13 @@ extension SimulatedSeams {
 
     @discardableResult
     public func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {
-        record(\.bridgeMoves, actionLog.bridgeMoves + [SimulatedBridgeMove(windowIDs: wids, spaceID: spaceID)])
+        append(\.bridgeMoves, [SimulatedBridgeMove(windowIDs: wids, spaceID: spaceID)])
         return true
     }
 
     @discardableResult
     public func tryMoveMinimized(windowID wid: UInt32, spaceID: Int64) throws -> Bool {
-        record(\.minimizedDirectMoves,
-               actionLog.minimizedDirectMoves + [SimulatedBridgeMove(windowIDs: [wid], spaceID: spaceID)])
+        append(\.minimizedDirectMoves, [SimulatedBridgeMove(windowIDs: [wid], spaceID: spaceID)])
         return true
     }
     func activeSpaceIDs() throws -> Set<Int64> { [] }
@@ -247,21 +247,20 @@ extension SimulatedSeams: WindowAXProbing {
 
 extension SimulatedSeams: WindowGeometryWriting {
     public func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
-        record(\.geometryWrites,
-               actionLog.geometryWrites + [SimulatedGeometryWrite(windowID: windowID,
+        append(\.geometryWrites, [SimulatedGeometryWrite(windowID: windowID,
                                                                   position: position, size: size)])
     }
 }
 
 extension SimulatedSeams: WindowFullScreenWriting {
     public func setFullScreen(windowID wid: UInt32, _ fullScreen: Bool) throws {
-        record(\.fullscreenSets, actionLog.fullscreenSets + [SimulatedToggleWrite(windowID: wid, value: fullScreen)])
+        append(\.fullscreenSets, [SimulatedToggleWrite(windowID: wid, value: fullScreen)])
     }
 }
 
 extension SimulatedSeams: WindowMinimizeWriting {
     public func setMinimized(windowID wid: UInt32, _ minimized: Bool) throws {
-        record(\.minimizeSets, actionLog.minimizeSets + [SimulatedToggleWrite(windowID: wid, value: minimized)])
+        append(\.minimizeSets, [SimulatedToggleWrite(windowID: wid, value: minimized)])
     }
 }
 

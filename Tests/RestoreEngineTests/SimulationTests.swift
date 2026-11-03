@@ -76,8 +76,7 @@ final class SimulationTests: XCTestCase {
                                displayUUID: "U3", spaceIndex: 1, x: 0.1, y: 0.1, w: 0.5, h: 0.5, minimized: false),
             ])
 
-        var lines: [String] = []
-        let sink = CollectingSink(lines: &lines)
+        let sink = LogSpy()  // 加锁 sink：L1 8 路并发写日志
         let storeDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("simulate-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: storeDir) }
@@ -138,13 +137,12 @@ final class SimulationTests: XCTestCase {
                                displayUUID: "U2", spaceIndex: 1, x: 0.1, y: 0.1, w: 0.5, h: 0.5, minimized: false),
             ])
 
-        var lines: [String] = []
         let storeDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("simulate-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: storeDir) }
 
         let (report, actions) = try SimulatedRestore.run(
-            snapshot: snapshot, fixture: fixture, log: CollectingSink(lines: &lines),
+            snapshot: snapshot, fixture: fixture, log: LogSpy(),
             storeDirectory: storeDir)
 
         XCTAssertEqual(report.okCount, 1, "在位屏的窗照常恢复")
@@ -156,8 +154,3 @@ final class SimulationTests: XCTestCase {
 }
 
 /// 测试用日志收集器（照 ConsoleLogSink 口径）
-final class CollectingSink: LogWriting, @unchecked Sendable {
-    private let lines: UnsafeMutablePointer<[String]>
-    init(lines: UnsafeMutablePointer<[String]>) { self.lines = lines }
-    func write(_ line: String) { lines.pointee.append(line) }
-}
