@@ -23,6 +23,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var moveReturnsFalse = false
     /// 置 true = tryMoveMinimized 返回 false（模拟最小化窗直移不可行，走 §6.5 回退路径）
     var minimizedDirectMoveFails = false
+    /// 非 nil = activeSpaceIDs 返回该集合（活跃 Space 判定测试）
+    var activeSpaces: Set<Int64>?
     /// >0 = managedSpaces 前 N 次调用抛错（模拟 poller 并发 SLS 冲突：undo 快照与
     /// 管线 Space 清单两次读都可能失败，重试才成功）
     var managedSpacesFailures = 0
@@ -49,6 +51,7 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         return entries
     }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
+    func activeSpaceIDs() throws -> Set<Int64> { activeSpaces ?? [] }
 
     /// 降级阶梯层可用性（spec §6.1/§10.2；bridge 沿用 bridgeAvailable 注入口）
     func isLayerAvailable(_ layer: SpaceLayer) -> Bool {

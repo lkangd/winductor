@@ -1026,6 +1026,51 @@ extension RestorePipelineTests {
 }
 
 extension RestorePipelineTests {
+    /// 窗在后台 Space（不在任一屏活跃 Space）→ 不打 AX 写（4.7s/项），直接 pending 计 skip；
+    /// 活跃窗照常 L1（精准口径优于 CG isOnscreen——后者对跨 Space 窗恒 true）
+    func testWindowOnInactiveSpaceSkipsAXWriteToPending() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.bg", title: "BG", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.fg", title: "FG", sibling: 0,
+                                     display: "B-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 301, bundleID: "com.t.bg", title: "BG",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 302, bundleID: "com.t.fg", title: "FG",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [301: 5, 302: 6])
+        bridge.activeSpaces = [6]  // A#1 非活跃（301 后台），B#1 活跃（302 可见）
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: geometry, deferredGeometry: DeferredGeometryStore(directory: try makeTempDir()),
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        XCTAssertEqual((try? bridge.activeSpaceIDs()) ?? [], [6], "fake 活跃集合注入验证")
+        _ = try engine.restore(snapshot: snapshot)
+
+        let calls = geometry.calls.map(\.windowID)
+        XCTAssertFalse(calls.contains(301), "后台 Space 窗不打 AX 写; lines=\(log.all.joined(separator: " | "))")
+        XCTAssertTrue(calls.contains(302), "活跃 Space 窗照常 L1")
+        XCTAssertTrue(log.all.contains { $0.contains("wid=301") && $0.contains("offscreen-deferred") },
+                      "后台窗落 pending 观测日志")
+    }
+
     /// Applier：命中 pending 补写一次（一次性消费，重复调用不二次写）
     func testDeferredGeometryApplierConsumesPendingOnce() throws {
         let dir = try makeTempDir()

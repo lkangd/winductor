@@ -74,6 +74,12 @@ public enum RuntimeAssembly {
         let restoreEngine = RestoreEngine(store: store,
                                           spaces: SpaceAdapterBridge(adapter),
                                           log: collector)
+        // 后台窗延迟几何的消费轮询：CG isOnscreen 对跨 Space 窗恒 true，迁移事件永不触发；
+        // 改为 2s 轮询「pending ∩ 活跃 Space」消费（恢复期间随 poller 一起挂起）
+        let pendingConsumer = PendingGeometryConsumer(
+            store: DeferredGeometryStore(directory: storeDirectory),
+            applier: deferredApplier, adapter: adapter, snapshotEngine: snapshotEngine)
+        pendingConsumer.start()
         // 恢复/撤销期间暂停 SnapshotEngine 轮询（poller 的高频 SLS 采样与管线 SLS 读并发冲突，
         // 实测导致 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip，11-03 生产复现 + DebugCLI 无
         // poller 复测即愈）；完成后自动恢复轮询

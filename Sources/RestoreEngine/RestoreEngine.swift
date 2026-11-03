@@ -320,9 +320,11 @@ public final class RestoreEngine: @unchecked Sendable {
             guard case .act(let lw, _, _, _, _) = item.action else { return nil }
             return lw.cgWindowID
         })
+        // 后台窗精准判定数据源：各屏活跃 Space（一次 SLS 读；窗不在任一活跃 Space = AX 不可见）
+        let activeSpaceIDs = (try? spaces.activeSpaceIDs()) ?? []
         for (offset, item) in actItems.enumerated() {
             if deadlineHit || deadlineExceeded(offset, actItems.count) { break }
-            place(item, failed: &failed)
+            place(item, failed: &failed, activeSpaceIDs: activeSpaceIDs)
             actProcessed += 1
         }
 
@@ -498,6 +500,10 @@ public final class RestoreEngine: @unchecked Sendable {
             // L2 降级（探针失败 / 运行时 no-op / FORCE_DEGRADED / 无既有 Space 可落）：该层跳过，L1 照常（§6.1）
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.bridge, wid: wid, app: snap.bundleID,
                 action: .moveToSpace, target: target, before: "space=\(lw.spaceID)", after: "-", result: .skip))
+            // 原因分类：bridgeOK=false = 探针层不可用；targetSpace=nil = 快照目标屏在当前 Space 清单无记录
+            log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=move-to-space "
+                + "error=l2-skip-cause bridgeOK=\(bridgeOK) targetSpaceNil=\(targetSpace == nil) "
+                + "probe=\(spaces.isLayerAvailable(.bridge)) entriesEmpty=\(!bridgeOK && spaces.isBridgeAvailable())")
             return
         }
         if let from = mergedFrom {
@@ -522,14 +528,17 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - Pass L1：AX 几何摆位（比例坐标 × 所属屏 CGDisplayBounds，spec §7.2）
 
-    private func place(_ item: PlanItem, failed: inout Set<Int>) {
+    private func place(_ item: PlanItem, failed: inout Set<Int>, activeSpaceIDs: Set<Int64>) {
         guard case .act(let lw, _, _, let targetDisplay, let capturedOrientation) = item.action else { return }
         let snap = item.snapshotWindow
         let wid = lw.cgWindowID
 
-        // 后台窗（非可见 Space）事前判定：AX 树不含它，打 AX 写只会 4.7s 超时后 elementInvalid
-        //（实测 13 项 fail × 4.7s = 61s，通知被拖到分钟级）→ 直接进延迟几何，计 skip（未尝试 ≠ 失败）
-        if !lw.isOnscreen {
+        // 后台窗事前判定（精准口径）：窗不在任一屏的活跃 Space → AX 树不含它，打 AX 写只会
+        // 4.7s 超时后 elementInvalid（实测 13 项 × 4.7s = 61s，通知拖到分钟级）→ 直接进延迟几何，
+        // 计 skip（未尝试 ≠ 失败）。isOnscreen（CG 口径）兜底最小化以外的残余场景。
+        // activeSpaceIDs 为空 = 数据源不可用（fake/异常），判定禁用退回 isOnscreen 口径
+        if !lw.isOnscreen
+            || (!activeSpaceIDs.isEmpty && !activeSpaceIDs.contains(lw.spaceID)) {
             let swap0 = (capturedOrientation % 180) != (rotationProvider(targetDisplay.id) % 180)
             runPendingGeometry.append(PendingGeometryEntry(
                 windowID: wid, displayUUID: snap.displayUUID,

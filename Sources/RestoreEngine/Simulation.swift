@@ -224,6 +224,7 @@ extension SimulatedSeams {
                actionLog.minimizedDirectMoves + [SimulatedBridgeMove(windowIDs: [wid], spaceID: spaceID)])
         return true
     }
+    func activeSpaceIDs() throws -> Set<Int64> { [] }
 }
 
 extension SimulatedSeams: WindowEnumerating {

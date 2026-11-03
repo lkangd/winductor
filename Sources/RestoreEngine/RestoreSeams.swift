@@ -24,6 +24,10 @@ public protocol SpaceBridge: SpaceProviding, Sendable {
     /// 返回 false = perform 后归属未变更
     @discardableResult
     func tryMoveMinimized(windowID: UInt32, spaceID: Int64) throws -> Bool
+
+    /// 各屏活跃 Space id 集合（后台窗精准判定：窗不在任一活跃 Space = AX 不可见）。
+    /// 协议 requirement（extension 方法对 existential 静态分派到默认实现，witness 不生效——实测教训）
+    func activeSpaceIDs() throws -> Set<Int64>
 }
 
 public extension SpaceBridge {
@@ -40,6 +44,7 @@ public struct SpaceAdapterBridge: SpaceBridge {
     public func managedSpaces() throws -> [SpaceEntry] { try adapter.managedSpaces() }
     public func spaceIDsByWindowID() throws -> [UInt32: Int64] { try adapter.spaceIDsByWindowID() }
     public func isLayerAvailable(_ layer: SpaceLayer) -> Bool { adapter.isLayerAvailable(layer) }
+    public func activeSpaceIDs() throws -> Set<Int64> { Set(try adapter.currentSpaceIDs().values) }
 
     @discardableResult
     public func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {
