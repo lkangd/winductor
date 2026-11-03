@@ -449,6 +449,164 @@ final class TriggerChainTests: XCTestCase {
                        "恢复源是拔屏前冻结内容，而非被 poller 重写的污染文件")
     }
 
+    /// 实测缺陷回归（11-03 03:54 cmux 归位到中屏）：多段拔屏 3→{A,B}→{A} 时第二次 shrank
+    /// 把 3 屏冻结点替换成 {A,B}；插回 3 屏走 superset 分支回退现读 live-3，而 poller 在
+    /// settle 前已把插屏中间态写进 live-3 → 恢复目标被污染。期望：3 屏冻结点不被降级覆盖。
+    func testMultiStageUnplugKeepsOuterHomeSnapshotForReturn() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid"], ["A-uuid", "C-uuid"]])
+        let homeKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
+        let homeTopology = ["A-uuid", "B-uuid", "C-uuid"].map {
+            World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
+        }
+        let held = Snapshot(capturedAt: Date(timeIntervalSince1970: 1), topology: homeTopology, spaces: [],
+                            windows: [SnapshotWindow(bundleID: "held.app", title: "held", siblingIndex: 0,
+                                                     displayUUID: "A-uuid", spaceIndex: 1,
+                                                     x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        try store.write(held, topologyKey: homeKey)
+        let box = DisplayBox([displayA, displayB, displayC])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        for stage in [[displayA, displayB], [displayA]] {  // 多段拔屏：先拔 C，再拔 B
+            box.set(stage)
+            chain.screenParametersChanged()
+            scheduler.runUntilIdle()
+        }
+        // poller 在插回 3 屏后、settle 前把 macOS 中间态写进 live-3
+        let polluted = Snapshot(capturedAt: Date(timeIntervalSince1970: 2), topology: homeTopology, spaces: [],
+                                windows: [SnapshotWindow(bundleID: "polluter.app", title: "junk", siblingIndex: 0,
+                                                         displayUUID: "B-uuid", spaceIndex: 3,
+                                                         x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        try store.write(polluted, topologyKey: homeKey)
+        for stage in [[displayA, displayC], [displayA, displayB, displayC]] {  // 多段插屏：先 C 后 B
+            box.set(stage)
+            chain.screenParametersChanged()
+            scheduler.runUntilIdle()
+        }
+
+        XCTAssertEqual(restorer.snapshots.count, 1, "回到 3 屏触发一次恢复（{A,C} 中间态不触发）")
+        XCTAssertEqual(restorer.snapshots.first?.windows.first?.bundleID, "held.app",
+                       "恢复源是首段拔屏前的 3 屏冻结内容，而非插屏中间态污染的 live-3")
+    }
+
+    /// 实测事故回归（11-03 07:39）：app 在拔屏状态下（重）启动 → 内存冻结点为空；插回时右屏先到
+    /// = 中间拓扑 {A,C}，精确命中陈旧 2 屏快照被当成正常拓扑恢复，窗口全乱。期望：启动时按磁盘上
+    /// 「当前集合的最大超集拓扑」快照重建冻结点（拔屏后它不可能被写过 = 拔屏前内容）→ 中间拓扑不恢复，
+    /// 回到 3 屏用该冻结内容恢复。
+    func testLaunchWhileUnpluggedSeedsHomeFromLargestKnownTopology() throws {
+        let a = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let b = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        let c = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
+        let dA = Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000), uuid: a)
+        let dB = Displays.Info(id: 2, bounds: CGRect(x: 2000, y: 0, width: 1000, height: 1000), uuid: b)
+        let dC = Displays.Info(id: 3, bounds: CGRect(x: 4000, y: 0, width: 1000, height: 1000), uuid: c)
+        func snap(_ uuids: [String], _ bundle: String) -> Snapshot {
+            Snapshot(capturedAt: Date(timeIntervalSince1970: 1),
+                     topology: uuids.map { World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000) },
+                     spaces: [],
+                     windows: [SnapshotWindow(bundleID: bundle, title: "t", siblingIndex: 0, displayUUID: a,
+                                              spaceIndex: 1, x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        }
+        let store = try makeStore(topologies: [])
+        try store.write(snap([a, b, c], "home.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a, b, c]))
+        try store.write(snap([a, c], "stale.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a, c]))
+        try store.write(snap([a], "single.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a]))
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["x"], ["x"]])
+        let box = DisplayBox([dA])  // 拔屏状态下启动
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([dA, dC])  // 右屏先到：中间拓扑
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.count, 0, "中间拓扑精确命中陈旧快照也不得自动恢复")
+
+        box.set([dA, dB, dC])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        XCTAssertEqual(restorer.snapshots.map { $0.windows.first?.bundleID }, ["home.app"],
+                       "回到 3 屏：用启动时重建的冻结内容恢复")
+    }
+
+    /// 实测事故回归（11-03 07:39）：恢复进行中第二块屏接入，事件记 ignored 后再无人重判拓扑，
+    /// 3 屏恢复永不触发且 poller 把乱序布局写进 live-3。期望：恢复结束后重判一次拓扑。
+    func testScreenEventDuringRestoreIsReEvaluatedAfterRestore() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"], ["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"], ["A-uuid", "B-uuid", "C-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+        box.set([displayA])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        let fired = Unboxed(false)
+        restorer.onRestore = { [weak chain] in
+            guard !fired.value else { return }
+            fired.value = true
+            box.set([displayA, displayB, displayC])  // 恢复进行中第三块屏接入
+            chain?.screenParametersChanged()
+        }
+        box.set([displayA, displayB])
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.map { $0.topology.count }, [2, 3],
+                       "恢复期间的屏幕事件在恢复结束后重判 → 3 屏恢复")
+    }
+
+    /// 多段拔屏后回到中间拓扑：该拓扑自己的冻结点仍可用（不因保留外层冻结点而被吞）
+    func testMultiStageUnplugReturnToIntermediateUsesItsOwnHeldSnapshot() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid", "C-uuid"]])
+        let midKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
+        let midTopology = ["A-uuid", "B-uuid"].map {
+            World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
+        }
+        let box = DisplayBox([displayA, displayB, displayC])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA, displayB])  // 3→2：用户在 2 屏上工作，live-{A,B} 落下 2 屏布局
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        let midHeld = Snapshot(capturedAt: Date(timeIntervalSince1970: 1), topology: midTopology, spaces: [],
+                               windows: [SnapshotWindow(bundleID: "mid.app", title: "mid", siblingIndex: 0,
+                                                        displayUUID: "B-uuid", spaceIndex: 1,
+                                                        x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
+        try store.write(midHeld, topologyKey: midKey)
+        box.set([displayA])            // 2→1：冻结 {A,B}，且不丢 3 屏冻结点
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        box.set([displayA, displayB])  // 1→2：回到 {A,B} = 其冻结点的拓扑 → 恢复
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1)
+        XCTAssertEqual(restorer.snapshots.first?.windows.first?.bundleID, "mid.app")
+    }
+
     /// 结构门槛：持有基线时，Space 结构与基线不一致期间不得 stable；一致后两轮才开火
     func testHeldBaselineStructureGatesStability() throws {
         let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
@@ -832,4 +990,9 @@ final class EnqueueFlagBox: @unchecked Sendable {
 /// 链引用盒（重入测试用：初始化后回填）
 final class ChainBox: @unchecked Sendable {
     weak var chain: TriggerChain?
+}
+
+private final class Unboxed<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }
