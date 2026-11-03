@@ -21,6 +21,12 @@ final class PollPausingRestorer: SnapshotRestoring, UndoPerforming {
         return try base.restore(snapshot: snapshot)
     }
 
+    func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
+        snapshotEngine.pollingSuspended = true
+        defer { snapshotEngine.pollingSuspended = false }
+        return try base.restore(snapshot: snapshot, preserveUndo: preserveUndo)
+    }
+
     func undo() throws -> UndoReport {
         snapshotEngine.pollingSuspended = true
         defer { snapshotEngine.pollingSuspended = false }

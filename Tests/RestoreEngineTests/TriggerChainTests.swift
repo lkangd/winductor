@@ -112,10 +112,21 @@ final class FakeSnapshotRestorer: SnapshotRestoring, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return _snapshots
     }
+    private var _preserveUndoFlags: [Bool] = []
+    /// 每次 restore 的 preserveUndo 实参（余震重放不得覆盖回滚快照）
+    var preserveUndoFlags: [Bool] {
+        lock.lock(); defer { lock.unlock() }
+        return _preserveUndoFlags
+    }
     @discardableResult
     func restore(snapshot: Snapshot) throws -> RestoreReport {
+        try restore(snapshot: snapshot, preserveUndo: false)
+    }
+    @discardableResult
+    func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
         lock.lock(); defer { lock.unlock() }
         _snapshots.append(snapshot)
+        _preserveUndoFlags.append(preserveUndo)
         onRestore?()
         if let error { throw error }
         return report
@@ -766,7 +777,8 @@ final class TriggerChainTests: XCTestCase {
         scheduler.runUntilIdle()
         XCTAssertEqual(restorer.snapshots.count, 1)
 
-        box.set([displayA, displayB])  // 同集合再来事件（睡眠唤醒等价形态）
+        box.set([displayA, displayB])  // 同集合再来事件（睡眠唤醒等价形态；余震窗外——窗内重放见 TriggerChainAftershockTests）
+        clock.set(clock.current.addingTimeInterval(TriggerChainConstants.aftershockWindow + 1))
         chain.screenParametersChanged()
         scheduler.runUntilIdle()
 
@@ -995,4 +1007,122 @@ final class ChainBox: @unchecked Sendable {
 private final class Unboxed<T>: @unchecked Sendable {
     var value: T
     init(_ value: T) { self.value = value }
+}
+
+// MARK: - 余震重放（恢复提速后的正确性补丁）
+
+/// 实测缺陷（11-03 08:42/08:43）：插回第三屏后 macOS 还会再发一次屏幕事件（2–6s 后，集合不变）并重排窗口。
+/// 提速前恢复本身要 5–13s，L1 天然落在这次余震之后；提速后恢复 0.2s 就结束，L1 被余震覆盖，
+/// poller 再把被覆盖的几何写进 live 快照成为下次恢复基线（herdr 左缘贴边、WeCom x=0）。
+/// 期望：自动恢复结束后的余震窗内，集合不变的 settle 用同一冻结快照重放恢复（不重写回滚快照、不重复通知）。
+final class TriggerChainAftershockTests: XCTestCase {
+    private struct Rig {
+        let clock: FakeTriggerClock
+        let scheduler: FakeTriggerScheduler
+        let spy: LogSpy
+        let restorer: FakeSnapshotRestorer
+        let notices: NoticeRecorder
+        let box: DisplayBox
+        let chain: TriggerChain
+    }
+
+    private func makeRig() throws -> Rig {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: Array(repeating: ["B-uuid#1#0"], count: 32))
+        let notices = NoticeRecorder()
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA])
+        let chain = TriggerChain(
+            store: store, restorer: restorer, spaces: spaces,
+            displaysProvider: { box.displays },
+            clock: clock, scheduler: scheduler, log: spy, degradeCollector: nil,
+            onNotice: { notices.append($0) })
+        box.set([displayA, displayB])  // 插回 B → 首轮自动恢复
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+        return Rig(clock: clock, scheduler: scheduler, spy: spy, restorer: restorer,
+                   notices: notices, box: box, chain: chain)
+    }
+
+    private func lateEvent(_ rig: Rig, after seconds: TimeInterval) {
+        rig.clock.set(rig.clock.current.addingTimeInterval(seconds))
+        rig.chain.screenParametersChanged()
+        rig.scheduler.runUntilIdle()
+    }
+
+    func testAftershockWithinWindowReappliesSameSnapshotPreservingUndoWithoutSecondNotice() throws {
+        let rig = try makeRig()
+        XCTAssertEqual(rig.restorer.snapshots.count, 1)
+
+        lateEvent(rig, after: 2)  // 恢复结束 2s 后余震（集合不变）
+
+        XCTAssertEqual(rig.restorer.snapshots.count, 2, "余震后重放一次")
+        XCTAssertEqual(rig.restorer.snapshots.last?.topology.map(\.uuid).sorted(), ["A-uuid", "B-uuid"])
+        XCTAssertEqual(rig.restorer.preserveUndoFlags, [false, true], "重放不得覆盖首轮的回滚快照")
+        XCTAssertEqual(rig.notices.items.count, 1, "重放不重复弹完成通知")
+        XCTAssertTrue(triggerSteps(rig.spy.all).contains("aftershock-reapply"))
+        XCTAssertEqual(rig.scheduler.pendingCount, 0)
+    }
+
+    func testEventAfterWindowIsZeroAction() throws {
+        let rig = try makeRig()
+        lateEvent(rig, after: TriggerChainConstants.aftershockWindow + 5)
+        XCTAssertEqual(rig.restorer.snapshots.count, 1, "余震窗外的集合不变事件仍是零动作（A2/A3）")
+    }
+
+    func testReapplyIsCappedPerRestore() throws {
+        let rig = try makeRig()
+        for _ in 0..<4 { lateEvent(rig, after: 1) }
+        XCTAssertEqual(rig.restorer.snapshots.count, 1 + TriggerChainConstants.aftershockMaxReapplies,
+                       "重放有上限，不构成循环")
+    }
+
+    func testShrinkClearsAftershockState() throws {
+        let rig = try makeRig()
+        rig.box.set([displayA])          // 恢复后立刻拔屏
+        lateEvent(rig, after: 1)
+        rig.box.set([displayA])
+        lateEvent(rig, after: 1)         // 集合不变事件（{A}）：不得重放 {A,B} 快照
+        XCTAssertEqual(rig.restorer.snapshots.count, 1)
+    }
+}
+
+// MARK: - 冻结点取自事件串起点（防拔屏中途写盘污染）
+
+/// 实测缺陷（11-03 09:08）：拔屏首个事件后 2.2s，在途写盘把拔屏中途态落进 live-<拔屏前拓扑>，
+/// settle(shrank) 时现读冻结 → 冻结了垃圾。期望：冻结内容取自本串事件首个到达时的 live 快照。
+final class TriggerChainBurstBaselineTests: XCTestCase {
+    func testShrinkFreezesLiveSnapshotAsOfFirstEventNotAtSettle() throws {
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: Array(repeating: ["A-uuid#1#0", "B-uuid#1#0"], count: 8))
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let key = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
+        let good = try XCTUnwrap(store.loadLive(topologyKey: key))
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: LogSpy(), degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])                // 拔出 B：事件串首个事件
+        chain.screenParametersChanged()
+        // 防抖期内在途写盘把拔屏中途态落进 live-{A,B}（同拓扑键、内容是垃圾）
+        var polluted = makeSnapshot(topology: ["A-uuid", "B-uuid"])
+        polluted = Snapshot(capturedAt: Date(timeIntervalSince1970: 42), topology: polluted.topology,
+                            spaces: polluted.spaces, windows: polluted.windows)
+        try store.write(polluted, topologyKey: key)
+        scheduler.runUntilIdle()           // settle: shrank → 冻结
+
+        box.set([displayA, displayB])      // 插回
+        chain.screenParametersChanged()
+        scheduler.runUntilIdle()
+
+        XCTAssertEqual(restorer.snapshots.count, 1)
+        XCTAssertEqual(restorer.snapshots.first?.capturedAt, good.capturedAt,
+                       "恢复源应是首个事件时的 live 快照，而非防抖期内被污染的版本")
+    }
 }

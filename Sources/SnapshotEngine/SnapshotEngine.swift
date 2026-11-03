@@ -178,6 +178,12 @@ public final class SnapshotEngine {
         debounceQueue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
     }
 
+    /// 显示器集合 + 全局几何签名（写盘前后比对用）
+    static func displaySignature(_ displays: [Displays.Info]) -> [String] {
+        displays.map { "\($0.uuid ?? "-")#\($0.bounds.minX),\($0.bounds.minY),\($0.bounds.width)x\($0.bounds.height)" }
+            .sorted()
+    }
+
     private func performWrite() {
         guard readinessGate() else { return }  // 未就绪零落盘
         let displays = displaysProvider()
@@ -188,6 +194,14 @@ public final class SnapshotEngine {
         let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date(),
                                         geometryOverrides: geometryOverrides?() ?? [:])
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
+        // 采样（SLS/AX，插拔中可达数秒）期间显示器变了 → 内容是拔插中途态，键却是起点拓扑：丢弃。
+        // 实测 11-03 09:08:16：拔屏开始 2.2s 后这样一份写盘落进 live-3，0.3s 后被冻结为拔屏前基线，
+        // 插回时结构门槛 6 轮不过放弃恢复。拓扑已变的指纹会让下一轮差分按新拓扑重写
+        let after = displaysProvider()
+        guard Self.displaySignature(after) == Self.displaySignature(displays) else {
+            log?.write("[snapshot] action=write path=live-\(key).json result=skip detail=topology-changed-while-composing")
+            return
+        }
         do {
             try store.write(snapshot, topologyKey: key)  // 现势 1 + 滚动历史 4（SnapshotStore 内滚动）
         } catch {

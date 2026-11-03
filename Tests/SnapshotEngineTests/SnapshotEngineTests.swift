@@ -177,6 +177,31 @@ final class SnapshotEngineTests: XCTestCase {
 
     // MARK: 工具
 
+    /// 实测缺陷（11-03 09:08:16）：拔屏开始后，开拔前已在途的写盘按「起点拓扑键」落盘了拔屏中途的
+    /// 窗口/Space 态；0.3s 后触发链冻结拔屏前基线读到的正是这份垃圾 → 插回时结构门槛 6 轮不过放弃恢复。
+    /// 期望：采样期间显示器集合/几何变了 → 丢弃本次写盘（拓扑键与内容不一致）。
+    func testWriteDiscardedWhenTopologyChangesWhileComposing() throws {
+        final class Flip: @unchecked Sendable { var calls = 0 }
+        let flip = Flip()
+        let a = fakeDisplay("AAAA-1111-1111-1111-111111111111")
+        let b = fakeDisplay("BBBB-2222-2222-2222-222222222222", x: 1000)
+        let w = sample(id: 1, bundleID: "com.a", title: "t")
+        let engine = SnapshotEngine(
+            store: SnapshotStore(directory: root, log: log),
+            spaces: FakeSpaces(entries: [SpaceEntry(spaceID: 11, displayUUID: a.uuid!, index: 1, kind: 0)],
+                               byWindow: [1: 11]),
+            log: log, enumerator: FakeEnumerator([w], [w]), ax: FakeAXProber(),
+            displaysProvider: {
+                flip.calls += 1
+                return flip.calls == 1 ? [a, b] : [a]  // 写盘起点 2 屏，采样后已拔成 1 屏
+            },
+            pollInterval: 3600, pollTolerance: 0.5, debounceInterval: 3600,
+            notificationCenters: [NotificationCenter()])
+        engine.writePendingNow()
+        XCTAssertEqual(try snapshotFiles(), [], "拓扑在采样期间变化：不得按旧拓扑键落盘")
+        XCTAssertTrue(log.all.contains { $0.contains("detail=topology-changed-while-composing") })
+    }
+
     private func makeEngine(_ enumerator: FakeEnumerator, ax: WindowAXProbing = FakeAXProber(),
                             pollInterval: TimeInterval = 3600, debounceInterval: TimeInterval = 3600,
                             notificationCenters: [NotificationCenter]? = nil) -> SnapshotEngine {

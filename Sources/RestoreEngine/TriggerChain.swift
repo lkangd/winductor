@@ -21,6 +21,11 @@ public enum TriggerChainConstants {
     /// Space 稳定性采样总轮次上限（含不可用/变化重采）：SLS 长期不可用或 Space 持续抖动时
     /// 单轮放弃回 idle，防无限采样空转（恢复本身仍是一次性，不构成重试循环）
     public static let spaceStableMaxSamples = 6
+    /// 余震窗（秒）：自动恢复结束后此窗内的「集合不变」settle 视为插屏余震，用同一快照重放恢复。
+    /// 实测 macOS 插回末屏后 2–6s 还会再发一次屏幕事件并重排窗口（11-03），提速后恢复先于余震结束
+    public static let aftershockWindow: TimeInterval = 10
+    /// 单次自动恢复的余震重放上限（不构成重试循环）
+    public static let aftershockMaxReapplies = 2
 }
 
 /// 触发链时钟接缝（日志 at= 时间戳来源；测试注入虚拟时钟，生产 = 系统时钟）
@@ -89,6 +94,18 @@ public struct ManagedSpaceListProvider: SpaceListProviding {
 public protocol SnapshotRestoring: Sendable {
     @discardableResult
     func restore(snapshot: Snapshot) throws -> RestoreReport
+    /// preserveUndo = true：不重写回滚快照（余震重放用——此刻实况是被余震打乱的恢复结果，
+    /// 覆盖会让「撤销」回到乱序态而非恢复前）。协议 requirement：existential 动态分派到实现
+    @discardableResult
+    func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport
+}
+
+public extension SnapshotRestoring {
+    /// 默认：不支持保留回滚快照的实现按普通恢复处理
+    @discardableResult
+    func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
+        try restore(snapshot: snapshot)
+    }
 }
 
 /// 生产接线：触发链直接驱动恢复引擎（restore(snapshot:) 即 §6.8 单轮管线）
@@ -149,6 +166,13 @@ public final class TriggerChain: @unchecked Sendable {
     private var totalSamples = 0
     /// 上一轮 Space 规范形签名
     private var lastSpaceSignature: [String]?
+    /// 最近一次自动恢复（余震重放的快照来源；拔/插屏、手动恢复即作废）
+    private var lastAutoRestore: (snapshot: Snapshot, key: String, uuids: Set<String>, doneAt: Date, reapplies: Int)?
+    /// 进行中的稳定判据是否为余震重放（开火时保留回滚快照、不重复通知）
+    private var pendingIsReapply = false
+    /// 事件串首个事件到达时的基线 live 快照（idle → debouncing 时读取）。冻结点取它而非 settle 时现读：
+    /// 实测 11-03 09:08 拔屏开始后在途写盘把中途态落进 live-<拔屏前拓扑>，settle 现读冻结了垃圾
+    private var burstBaseline: (uuids: Set<String>, snapshot: Snapshot?)?
 
     /// [trigger] 行自带 at= 时间戳（ISO8601 带小数秒），时间戳链不依赖外层 sink 是否加戳
     private static let stampFormatter: ISO8601DateFormatter = {
@@ -246,6 +270,10 @@ public final class TriggerChain: @unchecked Sendable {
         }
         // 防抖：新事件取消挂起回调、重排 1.5s 计时（spec §6.2 新事件重置）
         scheduler.cancelScheduled()
+        if phase == .idle {
+            burstBaseline = (settledUUIDs, store.loadLive(
+                topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: settledUUIDs.sorted())))
+        }
         phase = .debouncing
         // 快速拔插痕迹：静默期内见过非基线拓扑（拔出瞬间）。settle 时即使已回到基线，
         // 也按「回到基线拓扑」处理而非零动作——否则拔插循环被 A2/A3 分支误吞（11-03 实测）
@@ -270,6 +298,12 @@ public final class TriggerChain: @unchecked Sendable {
         let baseline = settledUUIDs
         let sawDivergence = sawDivergenceDuringDebounce
         sawDivergenceDuringDebounce = false
+        // 冻结源：事件串起点的基线快照（同一基线集合才可用；否则回退现读）
+        let burstHeld = burstBaseline.flatMap { $0.uuids == baseline ? $0 : nil }
+        burstBaseline = nil
+        func heldBaseline() -> Snapshot? {
+            burstHeld.map(\.snapshot) ?? store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
+        }
 
         // 防抖静默期结束：先落 debounce-settle 行（时间戳链第 2 环），再按集合变化分岔。
         // resume=stability：稳定判据进行中来了新事件（插拔二段事件常见），
@@ -289,6 +323,28 @@ public final class TriggerChain: @unchecked Sendable {
                 return
             }
             guard sawDivergence else {
+                if var last = lastAutoRestore, last.uuids == current,
+                   clock.now().timeIntervalSince(last.doneAt) <= TriggerChainConstants.aftershockWindow,
+                   last.reapplies < TriggerChainConstants.aftershockMaxReapplies {
+                    // 插屏余震：自动恢复刚结束，macOS 又发集合不变的屏幕事件并重排窗口 →
+                    // 同一快照走稳定判据后重放（L1 覆盖余震的重排；poller 不会把乱序几何固化为基线）
+                    last.reapplies += 1
+                    lastAutoRestore = last
+                    log?.write(chainLine(step: "aftershock-reapply", result: "scheduled",
+                                         detail: "key=\(last.key) reapply=\(last.reapplies)/\(TriggerChainConstants.aftershockMaxReapplies)"))
+                    let structure = Self.structureSignature(from: last.snapshot.spaces)
+                    pendingHomeStructure = structure.isEmpty ? nil : structure
+                    phase = .stabilizing
+                    stabilizationTarget = current
+                    pendingMatch = (last.snapshot, last.key)
+                    pendingIsReapply = true
+                    consecutiveSamples = 0
+                    totalSamples = 0
+                    lastSpaceSignature = nil
+                    stateLock.unlock()
+                    sampleSpaceStability()
+                    return
+                }
                 // 无拓扑变化事件（睡眠唤醒/锁屏解锁/分辨率微调）→ 零动作（spec §6.2，A2/A3）
                 phase = .idle
                 stateLock.unlock()
@@ -297,7 +353,7 @@ public final class TriggerChain: @unchecked Sendable {
             // 快速拔→插回（同处静默期，插回事件重置了防抖）：按「回到基线拓扑」处理。
             // 补记 baseline-hold（该拓扑已有冻结点则保留更早的拔屏前内容，不现读覆盖）
             if returnHomes[baseline] == nil {
-                let held = store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
+                let held = heldBaseline()
                 returnHomes[baseline] = ReturnHome(
                     uuids: baseline,
                     snapshot: held,
@@ -310,13 +366,14 @@ public final class TriggerChain: @unchecked Sendable {
         if current.count < baseline.count {
             // 拔出（集合变小）：只更新基线不干预（spec §6.2，A4）；
             // 同时冻结拔屏前基线（集合 + 快照内容 + Space 结构），回到该集合才自动恢复
-            let held = store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
+            let held = heldBaseline()
             returnHomes[baseline] = ReturnHome(
                 uuids: baseline,
                 snapshot: held,
                 structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
             settledUUIDs = current
             stabilizationTarget = nil
+            lastAutoRestore = nil
             phase = .idle
             stateLock.unlock()
             log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
@@ -327,6 +384,7 @@ public final class TriggerChain: @unchecked Sendable {
         // 集合变大 = 唯一自动触发方向（spec §6.2）；若与拔屏前基线不一致（插回中间态），
         // 即使精确命中某份过期快照也不自动恢复——等待回到基线拓扑（手动「立即恢复」不受限）
         settledUUIDs = current
+        lastAutoRestore = nil
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
         var homeSnapshot: Snapshot?
         if !returnHomes.isEmpty {
@@ -368,6 +426,7 @@ public final class TriggerChain: @unchecked Sendable {
         phase = .stabilizing
         stabilizationTarget = current
         pendingMatch = (snapshot, key)
+        pendingIsReapply = false
         consecutiveSamples = 0
         totalSamples = 0
         lastSpaceSignature = nil
@@ -400,6 +459,7 @@ public final class TriggerChain: @unchecked Sendable {
                 phase = .idle
                 stabilizationTarget = nil
                 pendingMatch = nil
+                pendingIsReapply = false
                 log?.write(chainLine(step: "space-stable", result: "give-up", round: round,
                                      detail: "space-list-unavailable"))
                 stateLock.unlock()
@@ -439,8 +499,11 @@ public final class TriggerChain: @unchecked Sendable {
             stabilizationTarget = nil
             pendingMatch = nil
             pendingHomeStructure = nil
+            let isReapply = pendingIsReapply
+            pendingIsReapply = false
             stateLock.unlock()
-            if let notice = performRestore(trigger: .auto, snapshot: snapshot, key: key) {
+            if let notice = performRestore(trigger: .auto, snapshot: snapshot, key: key, reapply: isReapply),
+               !isReapply {
                 deliver(notice)
             }
             return
@@ -450,6 +513,7 @@ public final class TriggerChain: @unchecked Sendable {
             phase = .idle
             stabilizationTarget = nil
             pendingMatch = nil
+            pendingIsReapply = false
             pendingHomeStructure = nil
             log?.write(chainLine(step: "space-stable", result: "give-up", round: roundNow,
                                  detail: "signature=\(signatureText) churning"))
@@ -473,7 +537,9 @@ public final class TriggerChain: @unchecked Sendable {
 
     /// 调恢复引擎单轮管线（§6.8）；结束产出完成通知（§8.5 计数 + [degrade] 附注汇总）。
     /// 返回 nil = 当时已在恢复中（busy，记 ignored 日志）。
-    private func performRestore(trigger: RestoreTriggerKind, snapshot: Snapshot, key: String) -> RestoreNotice? {
+    /// reapply = 余震重放：保留回滚快照（undo 仍指向首轮恢复前），调用方不投递通知
+    private func performRestore(trigger: RestoreTriggerKind, snapshot: Snapshot, key: String,
+                                reapply: Bool = false) -> RestoreNotice? {
         stateLock.lock()
         guard phase != .restoring else {
             stateLock.unlock()
@@ -488,9 +554,16 @@ public final class TriggerChain: @unchecked Sendable {
         // 引擎调用在锁外：恢复可持续数秒（全屏动画等待等），期间事件入口记 ignored 不阻塞
         var report: RestoreReport?
         var failure: Error?
-        do { report = try restorer.restore(snapshot: snapshot) } catch { failure = error }
+        do { report = try restorer.restore(snapshot: snapshot, preserveUndo: reapply) } catch { failure = error }
 
         stateLock.lock()
+        if trigger == .auto, report != nil {
+            // 余震窗起点 = 最近一次（含重放）完成时刻；重放计数沿用，上限兜底不成循环
+            let reapplies = reapply ? (lastAutoRestore?.reapplies ?? TriggerChainConstants.aftershockMaxReapplies) : 0
+            lastAutoRestore = (snapshot, key, Set(snapshot.topology.map(\.uuid)), clock.now(), reapplies)
+        } else {
+            lastAutoRestore = nil
+        }
         var degradedNames: [String] = []
         if let collector = degradeCollector {
             degradedNames = collector.drainDegradeLayers().map { RestoreNoticeLayers.name(forDegradeLayer: $0) }

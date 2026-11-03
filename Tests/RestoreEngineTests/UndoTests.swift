@@ -140,6 +140,29 @@ final class UndoPipelineTests: XCTestCase {
 
     // MARK: A18 — 无全屏恢复后撤销：几何/Space/屏幕一步回滚 + 回滚快照保留 + verify 核回滚
 
+    /// 触发链余震重放（preserveUndo）：不重写回滚快照——撤销仍回到首轮恢复前，而非被余震打乱的中间态
+    func testPreserveUndoRestoreKeepsFirstRoundUndoSnapshot() throws {
+        let world = makeWorld()
+        try makeEngine(world).restore(snapshot: world.snapshot)
+        let url = undoURL(world.store)
+        let firstUndo = try Data(contentsOf: url)
+
+        // 余震后实况已变（101 被挪到 A 屏别处）；重放时若重写回滚快照，撤销就会回到这个乱序态
+        let scrambled = [World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                                      displayOrigin: aOrigin, displaySize: screenSize, x: 0.0, y: 0.2, w: 0.3, h: 0.3)]
+        try makeEngine(world, samples: scrambled).restore(snapshot: world.snapshot, preserveUndo: true)
+
+        XCTAssertEqual(try Data(contentsOf: url), firstUndo, "preserveUndo 不得覆盖首轮回滚快照")
+        XCTAssertTrue(world.log.all.contains { $0.contains("detail=preserve-undo") })
+    }
+
+    func testPreserveUndoStillWritesUndoWhenNoneExists() throws {
+        // 无既有回滚快照时 preserveUndo 退化为普通恢复（§7.4：动手前必须有撤销保险）
+        let world = makeWorld()
+        try makeEngine(world).restore(snapshot: world.snapshot, preserveUndo: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: undoURL(world.store).path))
+    }
+
     func testUndoAfterRestoreRollsBackGeometrySpaceDisplayInOneStep() throws {
         let world = makeWorld()
         let engine = makeEngine(world)

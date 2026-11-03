@@ -169,12 +169,20 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 逐窗口问题一律记日志计数，不中断（spec §6.3 单轮 best-effort）。
     @discardableResult
     public func restore(snapshot: Snapshot) throws -> RestoreReport {
+        try restore(snapshot: snapshot, preserveUndo: false)
+    }
+
+    /// preserveUndo = true：沿用既有回滚快照不重写（触发链余震重放：此刻实况是被 macOS 余震
+    /// 打乱的恢复结果，重写会让「撤销」回到乱序态而非首轮恢复前）
+    @discardableResult
+    public func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
         let displays = displaysProvider()
         guard !displays.isEmpty else {
             log?.write("[restore] abort reason=no-active-display")
             throw RestoreEngineError.noActiveDisplay
         }
-        let counts = try runPipeline(snapshot: snapshot, mode: .restore, displays: displays)
+        let counts = try runPipeline(snapshot: snapshot, mode: .restore, displays: displays,
+                                     preserveUndo: preserveUndo)
         return RestoreReport(
             okCount: counts.okCount, skipCount: counts.skipCount, failCount: counts.failCount,
             matchedCount: counts.matchedCount, untouchedLiveCount: counts.untouchedLiveCount,
@@ -260,12 +268,14 @@ public final class RestoreEngine: @unchecked Sendable {
     }
 
     private func runPipeline(snapshot: Snapshot, mode: RunMode,
-                             displays: [Displays.Info]) throws -> PipelineCounts {
+                             displays: [Displays.Info], preserveUndo: Bool = false) throws -> PipelineCounts {
         let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
         // 分段计时（恢复提速：每轮一行 perf，定位瓶颈段）
         let tStart = Date()
 
         switch mode {
+        case .restore where preserveUndo && FileManager.default.fileExists(atPath: undoURL.path):
+            log?.write("[snapshot] action=write path=\(undoURL.lastPathComponent) result=skip detail=preserve-undo")
         case .restore:
             // §7.4：动手前先落回滚快照（当前实况按 schema 写 undo-<拓扑键>.json）；失败即中止
             do {

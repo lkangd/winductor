@@ -58,6 +58,12 @@ final class RestoringIconDecorator: SnapshotRestoring, @unchecked Sendable {
         return try inner.restore(snapshot: snapshot)
     }
 
+    func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
+        Self.runOnMain { [icon] in icon.showRestoringIcon() }
+        defer { Self.runOnMain { [icon] in icon.showNormalIcon() } }
+        return try inner.restore(snapshot: snapshot, preserveUndo: preserveUndo)
+    }
+
     /// 图标属 UI 状态：恢复管线现跑在后台队列（自动路径调度队列 / 手动路径 restoreEnqueue），
     /// NSStatusItem 换图必须主线程（防跨线程 UI 变异）
     private static func runOnMain(_ work: @escaping () -> Void) {
