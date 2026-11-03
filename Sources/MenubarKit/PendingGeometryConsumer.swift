@@ -1,3 +1,4 @@
+import AppKit
 import Core
 import Dispatch
 import Foundation
@@ -26,6 +27,8 @@ final class PendingGeometryConsumer {
     /// 上一次读失败的描述（同一失败只落一行日志，防 2s 轮询刷屏）
     private var lastReadFailure: String?
     private var timer: DispatchSourceTimer?
+    private var spaceObserver: NSObjectProtocol?
+    private var center: NotificationCenter?
     private let queue = DispatchQueue(label: "wlr.pending-geometry")
 
     init(store: DeferredGeometryStore, applier: DeferredGeometryApplier,
@@ -37,16 +40,31 @@ final class PendingGeometryConsumer {
         self.log = log
     }
 
-    /// 启动轮询（app 根装配时调用；与 SnapshotEngine 同生命周期）
-    func start(interval: TimeInterval = 2.0) {
+    /// Space 切换 → 补写的延迟（秒）：切换动画期间新 Space 窗尚未进 AX 树，过早补写只会
+    /// elementInvalid 白耗一次重试额度
+    static let spaceChangeDelay: TimeInterval = 0.35
+
+    /// 启动轮询（app 根装配时调用；与 SnapshotEngine 同生命周期）。
+    /// 除 2s 轮询外，Space 切换时立即补一轮：后台窗正是在用户切过去时才可写，等下一个 2s tick
+    /// 用户会看着窗口迟迟才归位（11-03 实测反馈「能感觉到有些窗口在慢慢恢复」）
+    func start(interval: TimeInterval = 2.0,
+               center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + interval, repeating: interval)
         t.setEventHandler { self.tick() }
         t.resume()
         timer = t
+        self.center = center
+        spaceObserver = center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                           object: nil, queue: nil) { _ in
+            // 串行队列：与 timer tick 不重叠
+            self.queue.asyncAfter(deadline: .now() + Self.spaceChangeDelay) { self.tick() }
+        }
     }
 
     func stop() {
+        if let spaceObserver { center?.removeObserver(spaceObserver) }
+        spaceObserver = nil
         // 先清回调再 cancel：cancel 的源由 GCD 异步回收，回调里的强引用须同步断开
         timer?.setEventHandler(handler: nil)
         timer?.cancel()

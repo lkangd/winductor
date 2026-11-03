@@ -48,3 +48,60 @@ final class SpaceAdapterBoundedReadTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "超时上限应生效")
     }
 }
+
+/// 桥接后归属结算：轮询代替固定 1.2s 等待（恢复提速：实测 5 次桥接串行 = 6s 纯等待）
+final class SpaceAdapterSettleTests: XCTestCase {
+    /// 线程安全的调用计数 reader（spaceIDsBounded 在全局队列上调用 reader）
+    final class CountingReader: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        let respond: (Int) -> [Int64]?
+        init(_ respond: @escaping (Int) -> [Int64]?) { self.respond = respond }
+        func read(_ wid: UInt32) throws -> [Int64] {
+            lock.lock(); calls += 1; let n = calls; lock.unlock()
+            guard let ids = respond(n) else { Thread.sleep(forTimeInterval: 2); return [] }
+            return ids
+        }
+    }
+
+    func testReturnsMovedAsSoonAsAttributionChanges() {
+        let reader = CountingReader { n in n >= 2 ? [9] : [5] }
+        let start = Date()
+        let result = SpaceAdapter.awaitAttributionChange(
+            [1], before: [[5]], settle: 1.2, poll: 0.02, readTimeout: 1, reader: reader.read)
+        XCTAssertEqual(result, .moved)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.6, "归属变更后应立即返回，不等满 settle")
+    }
+
+    func testMultiWindowWaitsUntilEveryWindowChanged() {
+        // wid 1 立即变更，wid 2 第 4 次读才变更：两者都变更才提前返回
+        let r1 = CountingReader { _ in [9] }
+        let r2 = CountingReader { n in n >= 4 ? [9] : [5] }
+        let result = SpaceAdapter.awaitAttributionChange(
+            [1, 2], before: [[5], [5]], settle: 2, poll: 0.02, readTimeout: 1,
+            reader: { $0 == 1 ? try r1.read($0) : try r2.read($0) })
+        XCTAssertEqual(result, .moved)
+    }
+
+    func testPartialChangeAtDeadlineStillCountsAsMoved() {
+        let result = SpaceAdapter.awaitAttributionChange(
+            [1, 2], before: [[5], [5]], settle: 0.2, poll: 0.02, readTimeout: 1,
+            reader: { $0 == 1 ? [9] : [5] })
+        XCTAssertEqual(result, .moved, "与原口径一致：任一窗归属变更即视为生效")
+    }
+
+    func testUnchangedAfterFullSettleIsNoOp() {
+        let start = Date()
+        let result = SpaceAdapter.awaitAttributionChange(
+            [1], before: [[5]], settle: 0.3, poll: 0.02, readTimeout: 1, reader: { _ in [5] })
+        XCTAssertEqual(result, .unchanged)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.3, "no-op 判定须等满 settle")
+    }
+
+    func testReadTimeoutIsUnknown() {
+        let reader = CountingReader { _ in nil }
+        let result = SpaceAdapter.awaitAttributionChange(
+            [1], before: [[5]], settle: 1.2, poll: 0.02, readTimeout: 0.1, reader: reader.read)
+        XCTAssertEqual(result, .unknown(wid: 1))
+    }
+}

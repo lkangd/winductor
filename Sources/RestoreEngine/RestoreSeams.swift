@@ -75,21 +75,38 @@ public extension WindowGeometryWriting {
 public final class AXGeometryWriter: WindowGeometryWriting, @unchecked Sendable {
     private let lock = NSLock()
     private var index: [UInt32: AXUIElement] = [:]
+    /// prepare 时确认「所属 app 的 AX 窗口表已完整读到、却不含它」的窗（非 AX 窗口，写必失败）
+    private var notAXWindows = Set<UInt32>()
 
     public init() {}
 
-    /// 一次遍历所有运行中 app 建 windowID → AX 元素索引（实测：逐窗遍历 44 窗耗时 105s，
-    /// 索引后 L1 全批次降至秒级）；同时给每个 app 元素设 1.5s 消息超时，防单 app 卡顿拖垮整轮
+    /// 只对目标窗的 CG owner pid 建 windowID → AX 元素索引（实测：逐窗遍历 44 窗耗时 105s；
+    /// 全量 app 遍历被无响应 helper 进程拖到 ~4.7s）；每个 app 元素设 1.5s 消息超时，防单 app 卡顿拖垮整轮。
+    /// CG 一个 owner 都查不到时回退全量遍历；个别未命中的窗由 apply 逐窗反查兜底
     public func prepare(windowIDs: [UInt32]) {
+        let owners = AXFacade.owners(of: windowIDs)
+        let pids = Set(owners.values)
+        let built = AXFacade.makeWindowIndex(pids: pids.isEmpty && !windowIDs.isEmpty ? nil : pids,
+                                             timeoutPerApp: 1.5)
+        let missing = Self.notAXWindows(owners: owners, index: Set(built.windows.keys), indexedPIDs: built.indexedPIDs)
         lock.lock()
-        index = AXFacade.makeWindowIndex(timeoutPerApp: 1.5)
+        index = built.windows
+        notAXWindows = missing
         lock.unlock()
+    }
+
+    /// 所属 app 已成功建索引却不在索引里的窗（纯函数，单测用）
+    static func notAXWindows(owners: [UInt32: pid_t], index: Set<UInt32>, indexedPIDs: Set<pid_t>) -> Set<UInt32> {
+        Set(owners.compactMap { wid, pid in indexedPIDs.contains(pid) && !index.contains(wid) ? wid : nil })
     }
 
     public func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
         lock.lock()
         let element = index[windowID]
+        let notAX = notAXWindows.contains(windowID)
         lock.unlock()
+        // 非 AX 窗口：反查同一张 AXWindows 表也找不到，只会白等到限时（实测 L1 尾部 1.5s 全由它们构成）
+        if notAX { throw RestoreEngineError.notAXWindow }
         guard let element else {
             // 索引未命中（prepare 后新出现的窗）：回退逐树反查，保持原语义
             guard let fallback = AXFacade.findWindow(withWindowID: windowID) else {

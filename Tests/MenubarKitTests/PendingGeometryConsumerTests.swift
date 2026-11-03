@@ -22,7 +22,7 @@ final class PendingGeometryConsumerTests: XCTestCase {
                 store: geometryStore,
                 applier: DeferredGeometryApplier(store: geometryStore, displaysProvider: { [] }),
                 adapter: SpaceAdapter(), snapshotEngine: engine)
-            consumer.start(interval: 60)
+            consumer.start(interval: 60, center: NotificationCenter())  // Space 切换观察也须在 stop 时断环
             weakConsumer = consumer
         }
         XCTAssertNotNil(weakConsumer, "启动后的消费轮询必须自持存活（装配处不持有引用）")

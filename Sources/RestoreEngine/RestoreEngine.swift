@@ -37,6 +37,8 @@ public enum RestoreEngineError: Error, Equatable, Sendable {
     case undoSnapshotCorrupt(String)
     /// AX 几何写单窗限时超时（转延迟几何，消费轮询在 app 不忙后补写）
     case axApplyTimeout
+    /// 所属 app 的 AX 窗口表已读到但不含该窗（非 AX 窗口：浏览器气泡/信息栏等辅助条），写必失败
+    case notAXWindow
 }
 
 /// 一次性恢复的结果（spec §6.3：结束产出成功/跳过/失败计数；票 15/16 增量扩展）
@@ -121,6 +123,11 @@ public final class RestoreEngine: @unchecked Sendable {
     private let minimize: WindowMinimizeWriting
     /// 全屏动画等待（§10.3 全屏动画等待 0.5–1s，取上限；测试注入 0 跳过）
     private let fullscreenSettleSeconds: TimeInterval
+    /// 最后一次实际桥接移窗 → L1 几何写的最小间隔（秒）。桥接结算改为轮询归属后不再固定等 1.2s，
+    /// 归属先于窗口帧落定，留一小段让 WindowServer 完成移屏，防 L1 写被随后的移屏覆盖
+    private let postBridgeSettleSeconds: TimeInterval
+    /// 本轮最后一次实际桥接移窗的时刻（L2 串行，只在管线线程读写）
+    private var lastBridgeMoveAt: Date?
     private let displaysProvider: () -> [Displays.Info]
     private let rotationProvider: (CGDirectDisplayID) -> Int
     private let log: LogWriting?
@@ -135,6 +142,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 fullscreen: WindowFullScreenWriting = AXFullScreenWriter(),
                 minimize: WindowMinimizeWriting = AXMinimizeWriter(),
                 fullscreenSettleSeconds: TimeInterval = 1.0,
+                postBridgeSettleSeconds: TimeInterval = 0.3,
                 pipelineDeadlineSeconds: TimeInterval = 90,
                 deferredGeometry: DeferredGeometryStore? = nil,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
@@ -148,6 +156,7 @@ public final class RestoreEngine: @unchecked Sendable {
         self.fullscreen = fullscreen
         self.minimize = minimize
         self.fullscreenSettleSeconds = fullscreenSettleSeconds
+        self.postBridgeSettleSeconds = postBridgeSettleSeconds
         self.pipelineDeadlineSeconds = pipelineDeadlineSeconds
         self.deferredGeometry = deferredGeometry ?? DeferredGeometryStore(directory: store.directory)
         self.displaysProvider = displaysProvider
@@ -253,6 +262,8 @@ public final class RestoreEngine: @unchecked Sendable {
     private func runPipeline(snapshot: Snapshot, mode: RunMode,
                              displays: [Displays.Info]) throws -> PipelineCounts {
         let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
+        // 分段计时（恢复提速：每轮一行 perf，定位瓶颈段）
+        let tStart = Date()
 
         switch mode {
         case .restore:
@@ -326,6 +337,8 @@ public final class RestoreEngine: @unchecked Sendable {
             return true
         }
         var actProcessed = 0
+        lastBridgeMoveAt = nil
+        let tL2 = Date()
         for (offset, item) in actItems.enumerated() {
             if deadlineExceeded(offset, actItems.count) { break }
             // 逐项重查桥接可用性：桥接操作超时降级（runtime no-op）后，剩余项快速跳过，
@@ -333,6 +346,11 @@ public final class RestoreEngine: @unchecked Sendable {
             bridgeMove(item, bridgeOK: bridgeOK && spaces.isBridgeAvailable(), failed: &failed)
             actProcessed += 1
         }
+        if let moved = lastBridgeMoveAt {
+            let remaining = postBridgeSettleSeconds - Date().timeIntervalSince(moved)
+            if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+        }
+        let tPrepare = Date()
         // 一次遍历建 windowID → AX 元素索引（实测逐窗全量遍历 44 窗 105s，索引后秒级）
         geometry.prepare(windowIDs: actItems.compactMap { item in
             guard case .act(let lw, _, _, _, _) = item.action else { return nil }
@@ -344,6 +362,7 @@ public final class RestoreEngine: @unchecked Sendable {
         // 串行 4.6s/项 × N 项把通知拖到分钟级，实测 6 项 = 28s）：8 lanes + 单项 1.5s 限时
         // → 全程上限 ≈ ceil(N/8)×1.5s；超时项转延迟几何（消费轮询补写），通知秒级到达
         var deferredCount = 0
+        let tL1 = Date()
         if !deadlineHit {
             var outcomes = [PlaceOutcome?](repeating: nil, count: actItems.count)
             DispatchQueue.concurrentPerform(iterations: actItems.count) { i in
@@ -355,6 +374,8 @@ public final class RestoreEngine: @unchecked Sendable {
                 case .ok: break
                 case .deferred:
                     deferredCount += 1  // pending 已在 place 内记录（锁内追加）
+                case .skipped:
+                    deferredCount += 1  // 同计 skip（未尝试 ≠ 失败）
                 case .fail:
                     failed.insert(actItems[i].snapshotIndex)
                 }
@@ -364,6 +385,7 @@ public final class RestoreEngine: @unchecked Sendable {
             log?.write("[restore] action=l1-skipped detail=deadline-already-hit count=\(actItems.count)")
         }
 
+        let tL3 = Date()
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
         var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
         if !deadlineHit {
@@ -388,6 +410,10 @@ public final class RestoreEngine: @unchecked Sendable {
                                             + plan.filter(\.isPendingFullscreen).count) : 0
         let skipped = plan.count - actItems.count - l4Items.count + deadlineSkipped + deferredCount
         let pending = plan.filter(\.isPendingFullscreen).count + pending3
+        let tEnd = Date()
+        func ms(_ a: Date, _ b: Date) -> Int { Int((b.timeIntervalSince(a) * 1000).rounded()) }
+        log?.write("[\(mode == .restore ? "restore" : "undo")] perf prep=\(ms(tStart, tL2)) l2=\(ms(tL2, tPrepare)) "
+            + "ax-index=\(ms(tPrepare, tL1)) l1=\(ms(tL1, tL3)) l3l4=\(ms(tL3, tEnd)) total=\(ms(tStart, tEnd))")
         switch mode {
         case .restore:
             log?.write("[restore] done ok=\(actItems.count - failed.count + ok3 + ok4) "
@@ -550,6 +576,7 @@ public final class RestoreEngine: @unchecked Sendable {
             let moved = try spaces.moveWindowsToSpace(windowIDs: [wid], spaceID: targetSpace.spaceID)
             // false = perform 后归属未变更（no-op，适配器已记 [degrade] 并标记该层失效）→ 计失败
             if !moved { failed.insert(item.snapshotIndex) }
+            if moved && lw.spaceID != targetSpace.spaceID { lastBridgeMoveAt = Date() }
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.bridge, wid: wid, app: snap.bundleID,
                 action: .moveToSpace, target: target,
                 before: "space=\(lw.spaceID)", after: "space=\(targetSpace.spaceID)",
@@ -567,6 +594,8 @@ public final class RestoreEngine: @unchecked Sendable {
     /// place 结局（并发执行后由调用方串行合并共享集合）
     private enum PlaceOutcome {
         case ok
+        /// 不尝试也不补写（非 AX 窗口：写必失败，进 pending 只会拖住消费批次）：计 skip
+        case skipped
         /// 转延迟几何（后台窗 / AX 写限时超时）：计 skip，消费轮询在窗口可写后单次补写
         case deferred
         case fail
@@ -632,6 +661,13 @@ public final class RestoreEngine: @unchecked Sendable {
             // 限时内未确认：转延迟几何计 skip（消费轮询在 app 不忙后补写；被弃线程的写若最终
             // 成功则窗口已就位，consumer 补写同值无害）
             return recordPending("ax-apply-timeout")
+        case .failure(RestoreEngineError.notAXWindow):
+            // 立即放弃且不进 pending：实测这批窗（Chrome 363×89/1920×46 辅助条、Things alpha=0 条）
+            // 每轮补写 3/3 必败，每次 ~4.7s 拖住整个消费批次，同批的 WeCom 因此迟到十几秒（11-03）
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
+                action: .position, target: snap.displayUUID, before: "-", after: "-", result: .skip,
+                reason: "not-ax-window"))
+            return .skipped
         case .failure(AXFacadeError.elementInvalid):
             // writer 内部已带元素重建重试，仍元素失效：计 fail，pending 兜底（可见后补写）
             return recordPending("elementInvalid-after-retry")

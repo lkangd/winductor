@@ -19,6 +19,7 @@ import Foundation
 //   [restore] detail wid=<cgwindowid> app=<bundleID> action=<action> error=<error> （失败详情独立行，§6.3；
 //             幂等达标变体后缀 detail=already-at-target）
 //   [undo]    action=load path=<文件名> result=ok detail=<…>                      （撤销入口读回滚快照自检）
+//   [restore|undo] perf prep=<ms> l2=<ms> ax-index=<ms> l1=<ms> l3l4=<ms> total=<ms> （管线分段计时，紧邻 done 行之前）
 // 逐窗口行的注册扩展键（restoreLine 尾部可选追加，接在冻结字段之后）：
 //   skip 行可附 reason=<跳过原因> 与 detail=<补充详情>；wid=0 = 未配对实况窗（规划期无 cgwindowid 可引）。
 // 文件 sink：落盘行前缀 ISO8601 时间戳；目录延迟创建（首次写入才建，

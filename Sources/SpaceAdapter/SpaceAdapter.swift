@@ -328,27 +328,55 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
             log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "bridge-timeout",
                       detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s"))
         }
-        Thread.sleep(forTimeInterval: settleSeconds)
-
-        var changed = false
-        var verifyUnknown = false
-        for (i, wid) in wids.enumerated() {
-            guard let ids = Self.spaceIDsBounded(wid, timeout: Self.bridgeReadTimeoutSeconds,
-                                                 reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) else {
-                // 校验读取超时：归属未知 → 按已迁移处理（op 未抛错即大概率成功），落观测日志
-                log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "verify-timeout",
-                          detail: "wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s assume-moved"))
-                verifyUnknown = true
-                break
-            }
-            if ids != before[i] { changed = true }
-        }
-        if verifyUnknown { return true }
-        if !changed {
+        // 轮询结算（实测：固定 1.2s 等待 × 串行桥接 = 5 窗 6s 纯等待，用户可见窗口逐个归位）：
+        // 全部窗归属变更即返回；未变更则等满 settleSeconds 再判 no-op（原口径不变）
+        switch Self.awaitAttributionChange(wids, before: before, settle: settleSeconds,
+                                           poll: Self.settlePollSeconds, readTimeout: Self.bridgeReadTimeoutSeconds,
+                                           reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) {
+        case .moved:
+            return true
+        case .unknown(let wid):
+            // 校验读取超时：归属未知 → 按已迁移处理（op 未抛错即大概率成功），落观测日志
+            log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "verify-timeout",
+                      detail: "wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s assume-moved"))
+            return true
+        case .unchanged:
             markRuntimeNoOp(detail: "attribution unchanged after perform wids=\(wids) target=\(spaceID)")
             return false
         }
-        return true
+    }
+
+    /// 桥接后归属结算结局
+    enum SettleResult: Equatable {
+        /// 全部窗归属已变更（提前返回），或到时任一窗已变更
+        case moved
+        /// 等满 settle 仍无一窗变更（no-op 特征）
+        case unchanged
+        /// 某窗归属读取超时（未知）
+        case unknown(wid: UInt32)
+    }
+
+    /// 归属结算轮询间隔（秒）
+    static let settlePollSeconds: TimeInterval = 0.05
+
+    /// 轮询各窗归属直到全部变更或 settle 到时（reader 注入便于单测）
+    static func awaitAttributionChange(
+        _ wids: [UInt32], before: [[Int64]], settle: TimeInterval, poll: TimeInterval,
+        readTimeout: TimeInterval, reader: @escaping (UInt32) throws -> [Int64]
+    ) -> SettleResult {
+        let deadline = Date().addingTimeInterval(settle)
+        var changed = Array(repeating: false, count: wids.count)
+        while true {
+            Thread.sleep(forTimeInterval: min(poll, max(0, deadline.timeIntervalSinceNow)))
+            for (i, wid) in wids.enumerated() where !changed[i] {
+                guard let ids = spaceIDsBounded(wid, timeout: readTimeout, reader: reader) else {
+                    return .unknown(wid: wid)
+                }
+                if ids != before[i] { changed[i] = true }
+            }
+            if changed.allSatisfy({ $0 }) { return .moved }
+            if Date() >= deadline { return changed.contains(true) ? .moved : .unchanged }
+        }
     }
 
     /// 桥接操作执行器（spike moveto 实测形态）：

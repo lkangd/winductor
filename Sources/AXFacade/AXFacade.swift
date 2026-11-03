@@ -89,21 +89,48 @@ public enum AXFacade {
     }
 
     /// 一次遍历建 windowID → AX 元素索引（L1 批量摆位用；逐窗全量遍历实测 105s，索引后秒级）。
-    /// timeoutPerApp：给每个 app 元素设消息超时（秒），防止单 app 卡顿拖住整轮。
-    public static func makeWindowIndex(timeoutPerApp: Float? = nil) -> [UInt32: AXUIElement] {
+    /// pids：只查这些进程（nil = 全部运行中 app）。全量遍历会撞上 WebKit 等无响应 helper 进程，
+    /// 实测 prepare 稳定吃掉 4.6–5.4s（11-03 四轮日志）；调用方按 CG owner pid 收窄。
+    /// timeoutPerApp：每个 app 元素的消息超时（秒），防单 app 卡顿拖住整轮。
+    /// 各 pid 并发查询（不同 app 的 AX 读互不依赖），整轮上限 ≈ 单 app 超时。
+    /// indexedPIDs = AXWindows 读成功的进程：其 CG 窗不在 windows 里 = 非 AX 窗口（Chrome 气泡/信息栏等
+    /// 辅助条，实测 363×89、1920×46），写几何必失败，调用方可直接放弃不再反查
+    public static func makeWindowIndex(pids: Set<pid_t>? = nil, timeoutPerApp: Float? = nil)
+        -> (windows: [UInt32: AXUIElement], indexedPIDs: Set<pid_t>) {
+        let targets = pids.map(Array.init) ?? NSWorkspace.shared.runningApplications
+            .filter { $0.processIdentifier > 0 && $0.activationPolicy != .prohibited }
+            .map(\.processIdentifier)
+        let lock = NSLock()
         var index: [UInt32: AXUIElement] = [:]
-        for app in NSWorkspace.shared.runningApplications
-        where app.processIdentifier > 0 && app.activationPolicy != .prohibited {
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            if let t = timeoutPerApp {
-                AXUIElementSetMessagingTimeout(appElement, t)
-            }
-            guard let wins = try? windows(ofApplication: app.processIdentifier) else { continue }
+        var indexed = Set<pid_t>()
+        DispatchQueue.concurrentPerform(iterations: targets.count) { i in
+            // 超时须经 windows(ofApplication:) 传入：只对设置它的那个 app 元素对象生效
+            guard let wins = try? windows(ofApplication: targets[i], messagingTimeout: timeoutPerApp) else { return }
+            var local: [UInt32: AXUIElement] = [:]
             for w in wins {
-                if let wid = try? windowID(of: w) { index[wid] = w }
+                if let wid = try? windowID(of: w) { local[wid] = w }
             }
+            lock.lock(); index.merge(local) { a, _ in a }; indexed.insert(targets[i]); lock.unlock()
         }
-        return index
+        return (index, indexed)
+    }
+
+    /// windowID → CG owner pid（一次 CGWindowList 读）；查不到的窗不在结果里
+    public static func owners(of windowIDs: [UInt32]) -> [UInt32: pid_t] {
+        let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        return owners(of: windowIDs, in: info)
+    }
+
+    /// owners 的纯函数核心（windowInfo = CGWindowListCopyWindowInfo 字典数组）
+    public static func owners(of windowIDs: [UInt32], in windowInfo: [[String: Any]]) -> [UInt32: pid_t] {
+        let wanted = Set(windowIDs)
+        var out: [UInt32: pid_t] = [:]
+        for dict in windowInfo {
+            guard let wid = (dict[kCGWindowNumber as String] as? NSNumber)?.uint32Value, wanted.contains(wid),
+                  let pid = (dict[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid > 0 else { continue }
+            out[wid] = pid
+        }
+        return out
     }
 
     // MARK: - 几何读写（AXPosition / AXSize）
