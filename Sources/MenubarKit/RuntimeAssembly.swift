@@ -22,12 +22,14 @@ public enum RuntimeAssembly {
                                           storeDirectory: URL = SnapshotStore.defaultDirectory,
                                           spaces: SpaceProviding? = nil,
                                           log: LogWriting? = nil,
-                                          notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default]) -> SnapshotEngine {
+                                          notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
+                                          visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil) -> SnapshotEngine {
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: storeDirectory, log: log),
             spaces: spaces,
             log: log,
-            notificationCenters: notificationCenters
+            notificationCenters: notificationCenters,
+            visibilityTransitionHandler: visibilityTransitionHandler
         )
         engine.readinessGate = { [monitor] in monitor.status.isReady }
         return engine
@@ -55,11 +57,19 @@ public enum RuntimeAssembly {
         // spec §7.5 加速器分工：引擎只接屏幕事件（.default）；应用启退 + Space 切换由装配件
         // WorkspaceEventAccelerator 接 NSWorkspace 中心（引擎无 Space 切换内置观察，见引擎文件头），
         // 随门控协调器同启同停。
+        // 后台窗延迟几何：restore 时 AX 不可见（非可见 Space）的窗记 pending；
+        // poller 检测到变可见时由 applier 补写一次（每窗单次，一次性语义保留形态）
+        let deferredApplier = DeferredGeometryApplier(store: DeferredGeometryStore(directory: storeDirectory),
+                                                      displaysProvider: { Displays.active() },
+                                                      log: collector)
         let snapshotEngine = makeSnapshotEngine(gatedBy: monitor,
                                                 storeDirectory: storeDirectory,
                                                 spaces: adapter,
                                                 log: collector,
-                                                notificationCenters: [.default])
+                                                notificationCenters: [.default],
+                                                visibilityTransitionHandler: { [deferredApplier] wids in
+                                                    for wid in wids { deferredApplier.applyIfPending(windowID: wid) }
+                                                })
         let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
         let restoreEngine = RestoreEngine(store: store,
                                           spaces: SpaceAdapterBridge(adapter),

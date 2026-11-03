@@ -220,3 +220,31 @@ final class SnapshotEngineTests: XCTestCase {
         log.all.filter { $0.contains("action=write") && $0.contains("result=ok") }.count
     }
 }
+
+// MARK: - 可见性迁移（后台窗延迟几何消费口）
+
+extension SnapshotEngineTests {
+    /// 上轮不可见 → 本轮可见的窗口集合回调给 handler；首采样只建基线不触发
+    func testVisibilityTransitionHandlerCalledForNewlyVisibleWindows() throws {
+        let sample = { onscreen in
+            CGWindowSample(windowID: 9, pid: 1, bundleID: "com.t", title: nil,
+                           bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: onscreen)
+        }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wlr-snapshotengine-\\(UUID().uuidString)")
+        var calls: [[UInt32]] = []
+        let engine = SnapshotEngine(
+            store: SnapshotStore(directory: dir), spaces: nil, log: nil,
+            enumerator: FakeEnumerator([
+                [sample(false)],
+                [sample(true)],
+            ]),
+            notificationCenters: [],
+            visibilityTransitionHandler: { calls.append($0) })
+
+        _ = engine.pollNow()  // 首采样：建立基线
+        XCTAssertEqual(calls.count, 0, "首采样不触发迁移")
+        _ = engine.pollNow()  // off → on
+        XCTAssertEqual(calls, [[9]], "变为可见的窗口集合回调")
+    }
+}

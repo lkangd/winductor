@@ -1,4 +1,5 @@
 @testable import Core
+import AXFacade  // AxFacadeError.elementInvalid：后台窗延迟几何触发条件
 import RestoreEngine
 import SpaceAdapter  // SpaceAdapterError.layerUnavailable：L2 层失效连坐分类（票 15）
 import SnapshotEngine
@@ -931,5 +932,67 @@ extension RestorePipelineTests {
         XCTAssertTrue(log.all.contains { $0.contains("action=deadline") }, "死线触发要落日志")
         XCTAssertEqual(report.okCount + report.skipCount + report.failCount,
                        3, "计数闭合不丢条目：ok 1 + 死线跳过 1 + 缺席 skip 1")
+    }
+}
+
+// MARK: - 后台窗延迟几何（实测缺陷：AX 树只含可见 Space 窗，后台窗几何写 elementInvalid）
+
+extension RestorePipelineTests {
+    /// L1 写后台窗报 elementInvalid → pending 落盘（延迟单次应用的数据源）
+    func testBackgroundWindowGeometryDeferredToPendingFile() throws {
+        let dir = try makeTempDir()
+        let deferred = DeferredGeometryStore(directory: dir)
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4,
+                         onscreen: false),  // 后台窗：AX 不可见
+        ]
+        let geometry = FakeGeometry()
+        geometry.error = AXFacadeError.elementInvalid
+        let deferredStore = DeferredGeometryStore(directory: dir)
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: FakeBridge(
+                entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+                byWindow: [101: 5]),
+            enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: geometry, deferredGeometry: deferredStore,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        _ = try engine.restore(snapshot: snapshot)
+
+        let entries = deferred.load()
+        XCTAssertEqual(entries.count, 1, "后台窗几何写失败 → pending 落盘")
+        XCTAssertEqual(entries.first?.windowID, 101)
+        XCTAssertEqual(entries.first?.displayUUID, "A-uuid")
+        XCTAssertTrue(log.all.contains { $0.contains("deferred-record") }, "落观测日志")
+    }
+
+    /// Applier：命中 pending 补写一次（一次性消费，重复调用不二次写）
+    func testDeferredGeometryApplierConsumesPendingOnce() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = FakeGeometry()
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy())
+
+        XCTAssertTrue(applier.applyIfPending(windowID: 7), "命中 pending")
+        XCTAssertEqual(geometry.calls.count, 1)
+        XCTAssertFalse(applier.applyIfPending(windowID: 7), "一次性消费，不重复应用")
+        XCTAssertTrue(store.load().isEmpty, "消费后清空")
     }
 }

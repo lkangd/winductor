@@ -26,6 +26,10 @@ public final class SnapshotEngine {
     /// 就绪门（票 18 接两项授权检查；默认恒就绪）。未就绪 = 照常轮询但零落盘。
     public var readinessGate: () -> Bool = { true }
 
+    /// 窗口「变为可见」迁移回调（后台窗延迟几何消费口；测试注入）
+    private let visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)?
+    /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
+    private var lastOnscreenByWID: [UInt32: Bool] = [:]
     private let store: SnapshotStore
     private let composer: SnapshotComposer
     private let enumerator: WindowEnumerating
@@ -52,7 +56,8 @@ public final class SnapshotEngine {
                 pollInterval: TimeInterval = SnapshotEngineConstants.pollInterval,
                 pollTolerance: TimeInterval = SnapshotEngineConstants.pollTolerance,
                 debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
-                notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default]) {
+                notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
+                visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil) {
         // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
         // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
         // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
@@ -65,6 +70,7 @@ public final class SnapshotEngine {
         self.pollInterval = pollInterval
         self.pollTolerance = pollTolerance
         self.debounceInterval = debounceInterval
+        self.visibilityTransitionHandler = visibilityTransitionHandler
     }
 
     deinit { stop() }
@@ -114,13 +120,25 @@ public final class SnapshotEngine {
     @discardableResult
     public func pollNow() -> Bool {
         let fingerprint = WindowFingerprint(displays: displaysProvider(), windows: enumerator.sample())
+        // 可见性迁移（后台窗延迟几何消费口）：上轮不可见 → 本轮可见的窗口集合
+        let onscreenNow = fingerprint.windows.filter(\.isOnscreen).map(\.windowID)
         lock.lock()
+        let hadLastOnscreen = !lastOnscreenByWID.isEmpty
+        var newlyVisible: [UInt32] = []
+        if hadLastOnscreen {
+            let seen = Set(onscreenNow)
+            newlyVisible = lastOnscreenByWID.filter { $0.value == false && seen.contains($0.key) }
+                .map(\.key).sorted()
+        }
+        for w in fingerprint.windows { lastOnscreenByWID[w.windowID] = w.isOnscreen }
         if fingerprint == lastFingerprint {
             lock.unlock()
+            if !newlyVisible.isEmpty { visibilityTransitionHandler?(newlyVisible) }
             return false  // 无变化不写盘
         }
         lastFingerprint = fingerprint
         lock.unlock()
+        if !newlyVisible.isEmpty { visibilityTransitionHandler?(newlyVisible) }
         guard readinessGate() else {
             log?.write("[snapshot] action=poll result=skip detail=not-ready 检出变化但未就绪，零落盘（票 18 接线）")
             return true

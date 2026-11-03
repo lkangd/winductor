@@ -1,3 +1,4 @@
+import AXFacade
 import Core
 import CoreGraphics
 import Foundation
@@ -80,6 +81,8 @@ public struct LiveRestoreWindow: Equatable, Sendable {
     /// 所属屏归一比例坐标（spec §7.2）
     public let x: Double, y: Double, w: Double, h: Double
     public let minimized: Bool
+    /// 是否在可见 Space（后台窗 AX 不可见，几何写会 elementInvalid → 走延迟几何）
+    public let isOnscreen: Bool
 }
 
 public final class RestoreEngine: @unchecked Sendable {
@@ -90,6 +93,10 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 管线死线（秒）：超时剩余条目计 skip、通知照发——无论系统级楔死拖慢哪层，通知计数必须有界到达
     private let pipelineDeadlineSeconds: TimeInterval
     private let geometry: WindowGeometryWriting
+    /// 后台窗延迟几何（AX 树不含非可见 Space 窗 → elementInvalid 的补救路径）
+    private let deferredGeometry: DeferredGeometryStore
+    /// 本轮 pending（runPipeline 开始清零，结束整写替换 pending 文件）
+    private var runPendingGeometry: [PendingGeometryEntry] = []
     /// L3 全屏写（AXFullScreen；票 15）
     private let fullscreen: WindowFullScreenWriting
     /// L4 最小化写（AXMinimized；票 15）
@@ -111,6 +118,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 minimize: WindowMinimizeWriting = AXMinimizeWriter(),
                 fullscreenSettleSeconds: TimeInterval = 1.0,
                 pipelineDeadlineSeconds: TimeInterval = 90,
+                deferredGeometry: DeferredGeometryStore? = nil,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 rotationProvider: @escaping (CGDirectDisplayID) -> Int = Displays.rotation,
                 log: LogWriting? = nil) {
@@ -123,6 +131,7 @@ public final class RestoreEngine: @unchecked Sendable {
         self.minimize = minimize
         self.fullscreenSettleSeconds = fullscreenSettleSeconds
         self.pipelineDeadlineSeconds = pipelineDeadlineSeconds
+        self.deferredGeometry = deferredGeometry ?? DeferredGeometryStore(directory: store.directory)
         self.displaysProvider = displaysProvider
         self.rotationProvider = rotationProvider
         self.log = log
@@ -271,10 +280,14 @@ public final class RestoreEngine: @unchecked Sendable {
         // Pass L2（§6.8 先桥接移窗：屏 + Space 一步到位）→ Pass L1（AX 几何摆位）
         // → Pass L3（全屏最后）→ Pass L4（最小化恢复）—— §6.8 顺序铁律
         let bridgeOK = spaces.isBridgeAvailable() && !entries.isEmpty
+        // 可见窗优先：用户看得见的窗先恢复；后台窗（AX 不可见，几何走延迟应用）排尾部，
+        // 楔死/死线发生时牺牲的是不可见项
         let actItems = plan.filter(\.canAct)
+            .sorted { !$0.liveIsOnscreen && $1.liveIsOnscreen }
         var failed = Set<Int>()
         // 管线死线：无论哪层被系统级楔死拖慢，通知计数必须有界到达（用户实测通知迟到数分钟）
         let deadline = Date().addingTimeInterval(pipelineDeadlineSeconds)
+        runPendingGeometry = []
         var deadlineHit = false
         func deadlineExceeded(_ processed: Int, _ total: Int) -> Bool {
             if Date() < deadline { return false }
@@ -337,6 +350,11 @@ public final class RestoreEngine: @unchecked Sendable {
                 + "skip=\(skipped + skip3 + skip4) fail=\(failed.count + fail3 + fail4) "
                 + "pending=\(pending) matched=\(outcome.matches.count) untouched=\(outcome.unmatchedLiveIndexes.count)")
         }
+        // 本轮 pending 整写替换（一次性语义：上轮未消费的 pending 作废）
+        deferredGeometry.save(runPendingGeometry)
+        if !runPendingGeometry.isEmpty {
+            log?.write("[restore] action=deferred-pending result=ok detail=\(runPendingGeometry.count) entries")
+        }
         return PipelineCounts(
             okCount: actItems.count - failed.count + ok3 + ok4,
             skipCount: skipped + skip3 + skip4,
@@ -364,6 +382,16 @@ public final class RestoreEngine: @unchecked Sendable {
             case pendingFullscreen(live: LiveRestoreWindow)
         }
         let snapshotIndex: Int
+        /// 实况窗是否在可见 Space（可见窗优先恢复：用户看得见 + AX 可写几何）
+        var liveIsOnscreen: Bool {
+            switch action {
+            case .act(let live, _, _, _, _), .restoreMinimized(let live, _, _),
+                 .pendingFullscreen(let live):
+                return live.isOnscreen
+            case .unmatched, .skip:
+                return true
+            }
+        }
         let snapshotWindow: SnapshotWindow
         let action: Action
 
@@ -509,6 +537,16 @@ public final class RestoreEngine: @unchecked Sendable {
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
                 action: .position, target: "\(snap.displayUUID) rot=\(current)",
                 before: before, after: after, result: .ok))
+        } catch AXFacadeError.elementInvalid {
+            // 后台窗（非可见 Space）AX 不可见：记 pending，poller 检测到变可见时延迟单次应用
+            // （每窗只写一次，无重试循环；一次性语义的保留形态，spec §6.3 精神）
+            runPendingGeometry.append(PendingGeometryEntry(
+                windowID: wid, displayUUID: snap.displayUUID, x: rx, y: ry, w: rw, h: rh))
+            failed.insert(item.snapshotIndex)
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
+                action: .position, target: "\(snap.displayUUID) rot=\(current)",
+                before: before, after: after, result: .fail))
+            log?.write("[restore] deferred-record wid=\(wid) detail=background-window-ax-invisible")
         } catch {
             // 「AX 权限不足」等写失败：单轮 best-effort，计 fail 不中断（本票验收行为之一）
             failed.insert(item.snapshotIndex)
@@ -773,7 +811,8 @@ public final class RestoreEngine: @unchecked Sendable {
                 y: clamp01(Double(sample.bounds.minY - bounds.minY) / Double(bounds.height)),
                 w: clamp01(Double(sample.bounds.width) / Double(bounds.width)),
                 h: clamp01(Double(sample.bounds.height) / Double(bounds.height)),
-                minimized: minimized))
+                minimized: minimized,
+                isOnscreen: sample.isOnscreen))
         }
         return out
     }

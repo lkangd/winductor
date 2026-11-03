@@ -304,11 +304,13 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         guard isLayerAvailable(.bridge) else { throw SpaceAdapterError.layerUnavailable(.bridge) }
         var before: [[Int64]] = []
         for wid in wids {
+            // 读取超时：不级联跳过（标记层失效会让整轮剩余项丢失 Space 恢复，实测后果更差）；
+            // 归属未知 → 抛错，引擎按单窗 fail 计数继续
             guard let ids = Self.spaceIDsBounded(wid, timeout: Self.bridgeReadTimeoutSeconds,
                                                  reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) else {
-                markRuntimeNoOp(reason: "bridge-timeout",
-                                detail: "space-read wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s")
-                throw SpaceAdapterError.layerUnavailable(.bridge)
+                log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "bridge-timeout",
+                          detail: "space-read wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s"))
+                throw SpaceAdapterError.slsFailed("space-read timeout wid=\(wid)")
             }
             before.append(ids)
         }
@@ -321,22 +323,27 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         case .completed(let issue):
             if let issue { throw SpaceAdapterError.bridgedOpFailed(issue) }
         case .timedOut:
-            markRuntimeNoOp(reason: "bridge-timeout",
-                            detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s")
+            // 超时不标记层失效（级联跳过实测让整轮剩余项丢 Space 恢复）；服务端迁移通常最终完成，
+            // 下方归属校验以实测为准；总量由引擎管线死线兜底
+            log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "bridge-timeout",
+                      detail: "wids=\(wids) target=\(spaceID) waited=\(Int(Self.bridgeOpTimeoutSeconds))s"))
         }
         Thread.sleep(forTimeInterval: settleSeconds)
 
         var changed = false
+        var verifyUnknown = false
         for (i, wid) in wids.enumerated() {
             guard let ids = Self.spaceIDsBounded(wid, timeout: Self.bridgeReadTimeoutSeconds,
                                                  reader: spaceReader ?? { [weak self] in try self!.spaceIDs(windowID: $0) }) else {
-                markRuntimeNoOp(reason: "bridge-timeout",
-                                detail: "verify-read wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s")
-                changed = false
+                // 校验读取超时：归属未知 → 按已迁移处理（op 未抛错即大概率成功），落观测日志
+                log?.write(StructuredLog.degradeLine(layer: SpaceLayer.bridge.layerNumber, reason: "verify-timeout",
+                          detail: "wid=\(wid) waited=\(Int(Self.bridgeReadTimeoutSeconds))s assume-moved"))
+                verifyUnknown = true
                 break
             }
             if ids != before[i] { changed = true }
         }
+        if verifyUnknown { return true }
         if !changed {
             markRuntimeNoOp(detail: "attribution unchanged after perform wids=\(wids) target=\(spaceID)")
             return false
