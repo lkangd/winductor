@@ -366,16 +366,24 @@ public final class TriggerChain: @unchecked Sendable {
             scheduleNextSpaceSample()
             return
         }
+        // 显示器几何纳入稳定判据（实测缺陷：插线后显示器全局排列（CG bounds）仍在重排，
+        // L1 按中间态 bounds 写全局坐标 → 布局稳定后窗口集体偏移、左缘露壁纸）：
+        // 总签名 = Space 列表 + 各屏全局几何，两轮一致才开火
+        let displaySignature = displaysProvider()
+            .map { "\($0.uuid)#\(Int($0.bounds.minX)),\(Int($0.bounds.minY)),\(Int($0.bounds.width))x\(Int($0.bounds.height))" }
+            .sorted()
+            .joined(separator: ",")
+        let stableSignature = signature + [displaySignature]
         let signatureText = signature.joined(separator: ",")
         let isFirstSample = (lastSpaceSignature == nil)
-        let matchesPrevious = (lastSpaceSignature == signature)
+        let matchesPrevious = (lastSpaceSignature == stableSignature)
         // 结构门槛：持有拔屏前基线时，除连续两轮一致外还要求 Space 结构与基线一致——
         // 插回后 macOS 重排 Space 需要数十秒，过早开火会把窗口移进重排中间态（实测缺陷）
         let structureReady = pendingHomeStructure == nil || Set(signature) == pendingHomeStructure
         // 连续一致计数：与上一轮一致 +1，变化重计为 1；达到 2 即「连续两轮不变」
         let roundNow = matchesPrevious ? round : 1
         consecutiveSamples = roundNow
-        lastSpaceSignature = signature
+        lastSpaceSignature = stableSignature
 
         if matchesPrevious && roundNow >= 2 && structureReady {
             // 连续两轮不变（且结构与基线一致）→ 触发一次性恢复（spec §6.2 → §6.3，无重试循环）
