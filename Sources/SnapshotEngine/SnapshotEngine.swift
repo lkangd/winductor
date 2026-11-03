@@ -28,6 +28,14 @@ public final class SnapshotEngine {
 
     /// 窗口「变为可见」迁移回调（后台窗延迟几何消费口；测试注入）
     private let visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)?
+    /// 轮询挂起（恢复管线运行期间置位：避免 poller 的 SLS 采样与管线 SLS 读并发冲突，
+    /// 实测并发下 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip）
+    private var pollSuspended = false
+    private let suspendLock = NSLock()
+    public var pollingSuspended: Bool {
+        get { suspendLock.lock(); defer { suspendLock.unlock() }; return pollSuspended }
+        set { suspendLock.lock(); pollSuspended = newValue; suspendLock.unlock() }
+    }
     /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
     private var lastOnscreenByWID: [UInt32: Bool] = [:]
     private let store: SnapshotStore
@@ -119,6 +127,7 @@ public final class SnapshotEngine {
     /// 返回是否检出变化。有变化且已就绪 → 排定防抖落盘（连续变化自动合并）。
     @discardableResult
     public func pollNow() -> Bool {
+        if pollingSuspended { return false }  // 恢复管线独占 SLS 期间暂停采样
         let fingerprint = WindowFingerprint(displays: displaysProvider(), windows: enumerator.sample())
         // 可见性迁移（后台窗延迟几何消费口）：上轮不可见 → 本轮可见的窗口集合
         let onscreenNow = fingerprint.windows.filter(\.isOnscreen).map(\.windowID)

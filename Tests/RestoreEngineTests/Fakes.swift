@@ -23,6 +23,10 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var moveReturnsFalse = false
     /// 置 true = tryMoveMinimized 返回 false（模拟最小化窗直移不可行，走 §6.5 回退路径）
     var minimizedDirectMoveFails = false
+    /// >0 = managedSpaces 前 N 次调用抛错（模拟 poller 并发 SLS 冲突：undo 快照与
+    /// 管线 Space 清单两次读都可能失败，重试才成功）
+    var managedSpacesFailures = 0
+    /// 置 true = pollNow 风格挂起（pollingSuspended 验证用，SnapshotEngine 侧测试独立）
     /// 非 nil = 第 N 次 moveWindowsToSpace 后把 bridgeAvailable 翻 false（模拟桥接超时降级，实测缺陷）
     var degradeBridgeAfterMoves: Int?
     /// 每次桥接移动的阻塞钩子（模拟 WindowServer 楔死，测管线死线）
@@ -37,7 +41,13 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         self.bridgeAvailable = bridgeAvailable
     }
 
-    func managedSpaces() throws -> [SpaceEntry] { entries }
+    func managedSpaces() throws -> [SpaceEntry] {
+        if managedSpacesFailures > 0 {
+            managedSpacesFailures -= 1
+            throw SpaceAdapterError.slsFailed("concurrent poller")
+        }
+        return entries
+    }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
 
     /// 降级阶梯层可用性（spec §6.1/§10.2；bridge 沿用 bridgeAvailable 注入口）

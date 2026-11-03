@@ -261,7 +261,17 @@ public final class RestoreEngine: @unchecked Sendable {
             liveWindows: live.map { LiveWindow(cgWindowID: $0.cgWindowID, bundleID: $0.bundleID,
                                                title: $0.title, x: $0.x, y: $0.y, w: $0.w, h: $0.h,
                                                minimized: $0.minimized) })
-        let entries = (try? spaces.managedSpaces()) ?? []
+        // Space 清单读取失败曾用 try? 静默吞掉 → entries 空 → 整轮 L2 skip（11-03 实测）：
+        // 现显式记录并重试一次（同轮单次重试，非循环）；生产失败源 = poller 并发 SLS 冲突
+        var entries = (try? spaces.managedSpaces()) ?? []
+        if entries.isEmpty {
+            log?.write("[restore] action=space-list result=retry detail=first-read-empty-or-failed")
+            Thread.sleep(forTimeInterval: 0.3)
+            entries = (try? spaces.managedSpaces()) ?? []
+            if entries.isEmpty {
+                log?.write("[restore] action=space-list result=failed detail=L2-will-skip-L1-proceeds")
+            }
+        }
 
         // 撤销第一段（票 16 §8.6/§5.2）：实况窗卡在后台全屏 Space（kind=4，spec §5.1）时
         // 后台退出全屏不可达、桥接/几何写对它无效（桥接 no-op 还会毒化 L2 运行时标记），先摘出计 pending
@@ -516,6 +526,22 @@ public final class RestoreEngine: @unchecked Sendable {
         guard case .act(let lw, _, _, let targetDisplay, let capturedOrientation) = item.action else { return }
         let snap = item.snapshotWindow
         let wid = lw.cgWindowID
+
+        // 后台窗（非可见 Space）事前判定：AX 树不含它，打 AX 写只会 4.7s 超时后 elementInvalid
+        //（实测 13 项 fail × 4.7s = 61s，通知被拖到分钟级）→ 直接进延迟几何，计 skip（未尝试 ≠ 失败）
+        if !lw.isOnscreen {
+            let swap0 = (capturedOrientation % 180) != (rotationProvider(targetDisplay.id) % 180)
+            runPendingGeometry.append(PendingGeometryEntry(
+                windowID: wid, displayUUID: snap.displayUUID,
+                x: swap0 ? snap.y : snap.x, y: swap0 ? snap.x : snap.y,
+                w: swap0 ? snap.h : snap.w, h: swap0 ? snap.w : snap.h))
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
+                action: .position, target: snap.displayUUID, before: "-", after: "-",
+                result: .skip))
+            log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position "
+                + "error=offscreen-deferred detail=non-visible-space-pending-geometry")
+            return
+        }
         let bounds = targetDisplay.bounds
 
         // 旋转处理（spec §6.6/§7.2）：捕获角与当前角轴向一致直接比例恢复；

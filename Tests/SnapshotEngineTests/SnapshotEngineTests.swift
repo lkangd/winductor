@@ -248,3 +248,23 @@ extension SnapshotEngineTests {
         XCTAssertEqual(calls, [[9]], "变为可见的窗口集合回调")
     }
 }
+
+extension SnapshotEngineTests {
+    /// 恢复管线运行期间挂起轮询（poller 的 SLS 采样与管线 SLS 读并发冲突的根治）
+    func testPollingSuspendedSkipsSampling() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wlr-snapshotengine-\(UUID().uuidString)")
+        let fake = FakeEnumerator([[CGWindowSample(windowID: 1, pid: 1, bundleID: "com.t", title: nil,
+                                                   bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: true)]])
+        let engine = SnapshotEngine(store: SnapshotStore(directory: dir), spaces: nil, log: nil,
+                                    enumerator: fake, notificationCenters: [])
+
+        engine.pollingSuspended = true
+        XCTAssertFalse(engine.pollNow(), "挂起期间不采样")
+        XCTAssertEqual(fake.callCount, 0, "enumerator 未被调用")
+
+        engine.pollingSuspended = false
+        XCTAssertTrue(engine.pollNow())
+        XCTAssertEqual(fake.callCount, 1, "解除挂起后恢复采样")
+    }
+}

@@ -978,9 +978,54 @@ extension RestorePipelineTests {
         XCTAssertEqual(entries.count, 1, "后台窗几何写失败 → pending 落盘")
         XCTAssertEqual(entries.first?.windowID, 101)
         XCTAssertEqual(entries.first?.displayUUID, "A-uuid")
-        XCTAssertTrue(log.all.contains { $0.contains("deferred-record") }, "落观测日志")
+        XCTAssertTrue(log.all.contains { $0.contains("offscreen-deferred") }, "落观测日志")
+        XCTAssertTrue(log.all.contains { $0.contains("wid=101") && $0.contains("action=position") && $0.contains("result=skip") },
+                      "后台窗 L1 计 skip（未尝试 ≠ 失败）")
+        XCTAssertTrue(geometry.calls.isEmpty, "不打 AX 写（4.7s/项超时的来源，实测 13 项 = 61s）")
     }
 
+    /// poller 并发冲突导致 SLS 清单首读失败 → 重试一次即成功，L2 不再整轮 skip（11-03 实测）
+    func testSpaceListFirstReadFailureRetriesOnceAndRestoresL2() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "B-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 201, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [201: 6])
+        bridge.managedSpacesFailures = 2  // undo 快照读 + 管线首读都失败，重试即成功
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: FakeGeometry(), displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertTrue(log.all.contains { $0.contains("action=space-list") && $0.contains("result=retry") },
+                      "首读失败落观测日志; lines=\(log.all.joined(separator: " | "))")
+        XCTAssertFalse(log.all.contains { $0.contains("result=failed detail=L2-will-skip") },
+                       "重试成功不应落终局失败日志")
+        let bridgeLine = log.all.first { $0.contains("wid=201") && $0.contains("move-to-space") }
+        XCTAssertNotNil(bridgeLine, "重试成功后 L2 正常执行")
+        XCTAssertFalse(bridgeLine?.contains("result=skip") ?? true, "L2 不再整轮 skip")
+        _ = report
+    }
+}
+
+extension RestorePipelineTests {
     /// Applier：命中 pending 补写一次（一次性消费，重复调用不二次写）
     func testDeferredGeometryApplierConsumesPendingOnce() throws {
         let dir = try makeTempDir()

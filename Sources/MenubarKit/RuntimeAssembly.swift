@@ -74,18 +74,22 @@ public enum RuntimeAssembly {
         let restoreEngine = RestoreEngine(store: store,
                                           spaces: SpaceAdapterBridge(adapter),
                                           log: collector)
+        // 恢复/撤销期间暂停 SnapshotEngine 轮询（poller 的高频 SLS 采样与管线 SLS 读并发冲突，
+        // 实测导致 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip，11-03 生产复现 + DebugCLI 无
+        // poller 复测即愈）；完成后自动恢复轮询
+        let pollPausing = PollPausingRestorer(base: restoreEngine, snapshotEngine: snapshotEngine)
         let capabilityProbe = SpaceAdapterCapabilityProbe(adapter: adapter)
 
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
         let refreshBox = MenuRefreshBox()
         let menuCoordinator = MenuRestoreCoordinator(
             store: store,
-            restorer: restoreEngine,
+            restorer: pollPausing,
             spaces: ManagedSpaceListProvider(adapter),
             scheduler: DispatchTriggerScheduler(),
             log: collector,
             degradeCollector: collector,
-            undo: restoreEngine,
+            undo: pollPausing,
             icon: statusItem,
             notifier: notifier,
             loginItem: loginItem,
