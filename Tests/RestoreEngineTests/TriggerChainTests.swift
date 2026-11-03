@@ -311,6 +311,34 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(triggerResults(spy.all).last, "unchanged")
     }
 
+    func testFastReplugWithinDebounceStillRestores() throws {
+        // 实测缺陷（11-03）：拔→插回都落在 1.5s 防抖静默期内，插回事件重置计时，
+        // settle 只看到 unchanged → 被误判为「无变化零动作」（A2/A3 分支吞掉真实拔插）。
+        // 期望：静默期内见过非基线拓扑 → 按「回到基线」处理，补记 baseline-hold 并完整触发恢复。
+        let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
+        let scheduler = FakeTriggerScheduler(clock: clock)
+        let spy = LogSpy()
+        let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
+        let spaces = FakeSpaceLists(queue: [["A-uuid#1#0", "B-uuid#1#0"], ["A-uuid#1#0", "B-uuid#1#0"]])
+        let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
+        let box = DisplayBox([displayA, displayB])
+        let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
+                                 displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
+                                 log: spy, degradeCollector: nil, onNotice: { _ in })
+
+        box.set([displayA])            // 拔出
+        chain.screenParametersChanged()  // 事件 1（防抖重排，不 settle）
+        box.set([displayA, displayB])  // 快速插回
+        chain.screenParametersChanged()  // 事件 2（重置计时）
+        scheduler.runUntilIdle()       // settle 时已回到基线
+
+        let steps = triggerSteps(spy.all)
+        XCTAssertTrue(steps.contains("baseline-hold"), "快速拔插补记 baseline-hold（冻结恢复源）")
+        XCTAssertTrue(steps.contains("topology-match"), "不再被零动作分支吞掉")
+        XCTAssertTrue(steps.contains("restore-start"), "完整触发恢复")
+        XCTAssertEqual(restorer.snapshots.count, 1)
+    }
+
     func testShrunkenSetOnlyUpdatesBaselineThenPlugBackTriggers() throws {
         // A4：拔出（集合变小）只更新基线不干预；随后插回（集合变大且精确匹配）→ 完整链触发
         let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))

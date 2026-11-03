@@ -132,6 +132,8 @@ public final class TriggerChain: @unchecked Sendable {
     private var phase: Phase = .idle
     /// 最近一次判定的屏幕 UUID 集合基线（链建立时初始化；每次 settle 后更新）
     private var settledUUIDs: Set<String> = []
+    /// 防抖静默期内是否见过非基线拓扑（快速拔→插回的痕迹；settle 消费即清零）
+    private var sawDivergenceDuringDebounce = false
     /// 进行中的 Space 稳定判据目标集合（防抖被新事件重置后恢复判据用）
     private var stabilizationTarget: Set<String>?
     /// 稳定判据通过后待恢复的快照与拓扑键
@@ -203,6 +205,10 @@ public final class TriggerChain: @unchecked Sendable {
         // 防抖：新事件取消挂起回调、重排 1.5s 计时（spec §6.2 新事件重置）
         scheduler.cancelScheduled()
         phase = .debouncing
+        // 快速拔插痕迹：静默期内见过非基线拓扑（拔出瞬间）。settle 时即使已回到基线，
+        // 也按「回到基线拓扑」处理而非零动作——否则拔插循环被 A2/A3 分支误吞（11-03 实测）
+        let currentAtEvent = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
+        if currentAtEvent != settledUUIDs { sawDivergenceDuringDebounce = true }
         log?.write(chainLine(step: "event", detail: "didChangeScreenParameters"))
         stateLock.unlock()
         scheduler.schedule(after: TriggerChainConstants.debounceQuietPeriod) { [weak self] in
@@ -220,6 +226,8 @@ public final class TriggerChain: @unchecked Sendable {
         }
         let current = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
         let baseline = settledUUIDs
+        let sawDivergence = sawDivergenceDuringDebounce
+        sawDivergenceDuringDebounce = false
 
         // 防抖静默期结束：先落 debounce-settle 行（时间戳链第 2 环），再按集合变化分岔。
         // resume=stability：稳定判据进行中来了新事件（插拔二段事件常见），
@@ -238,10 +246,24 @@ public final class TriggerChain: @unchecked Sendable {
                 sampleSpaceStability()
                 return
             }
-            // 无拓扑变化事件（睡眠唤醒/锁屏解锁/分辨率微调）→ 零动作（spec §6.2，A2/A3）
-            phase = .idle
-            stateLock.unlock()
-            return
+            guard sawDivergence else {
+                // 无拓扑变化事件（睡眠唤醒/锁屏解锁/分辨率微调）→ 零动作（spec §6.2，A2/A3）
+                phase = .idle
+                stateLock.unlock()
+                return
+            }
+            // 快速拔→插回（同处静默期，插回事件重置了防抖）：按「回到基线拓扑」处理。
+            // 补记 baseline-hold（returnHome 已存在则保留更早的拔屏前冻结点，不现读覆盖）
+            if returnHome == nil {
+                let held = store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
+                returnHome = ReturnHome(
+                    uuids: baseline,
+                    snapshot: held,
+                    structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
+                log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
+                                     detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted())) fast-replug"))
+            }
+            // 落到下方共用恢复路径（current==baseline 直达匹配段）
         }
         if current.count < baseline.count {
             // 拔出（集合变小）：只更新基线不干预（spec §6.2，A4）；
