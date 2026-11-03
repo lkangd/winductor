@@ -1071,6 +1071,46 @@ extension RestorePipelineTests {
                       "后台窗落 pending 观测日志")
     }
 
+    /// AX 写限时：单窗写超过 1.5s → 转延迟几何计 skip（不再拖死整轮，通知秒级），消费轮询兜底补写
+    func testSlowAXApplyTimesOutToPending() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.slow", title: "Slow", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 401, bundleID: "com.t.slow", title: "Slow",
+                         displayOrigin: aOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [401: 5])
+        bridge.activeSpaces = [5]  // 活跃窗（走 L1 AX 写路径）
+        let geometry = FakeGeometry()
+        geometry.applyDelay = 2.5  // 超过 1.5s 限时
+        let log = LogSpy()
+        let dir = try makeTempDir()
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: try makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: geometry, deferredGeometry: DeferredGeometryStore(directory: dir),
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        let report = try engine.restore(snapshot: snapshot)
+
+        XCTAssertTrue(log.all.contains { $0.contains("ax-apply-timeout") }, "超时转延迟几何落日志")
+        XCTAssertEqual(report.skipCount, 1, "超时计 skip（未尝试 ≠ 失败）")
+        XCTAssertTrue(log.all.contains { $0.contains("wid=401") && $0.contains("result=skip") },
+                      "L1 skip 行")
+    }
+
     /// Applier：命中 pending 补写一次（一次性消费，重复调用不二次写）
     func testDeferredGeometryApplierConsumesPendingOnce() throws {
         let dir = try makeTempDir()

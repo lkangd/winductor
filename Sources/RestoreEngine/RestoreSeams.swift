@@ -99,8 +99,21 @@ public final class AXGeometryWriter: WindowGeometryWriting, @unchecked Sendable 
             try AXFacade.setSize(fallback, size)
             return
         }
-        try AXFacade.setPosition(element, position)
-        try AXFacade.setSize(element, size)
+        do {
+            try AXFacade.setPosition(element, position)
+            try AXFacade.setSize(element, size)
+        } catch AXFacadeError.elementInvalid {
+            // 索引过期（恢复中窗口被 macOS/用户移动 → AX 元素句柄失效，实测 4.6s 超时 elementInvalid）：
+            // 反查重建元素重试一次（单次，非循环），成功后刷新索引
+            guard let fresh = AXFacade.findWindow(withWindowID: windowID) else {
+                throw AXFacadeError.elementInvalid
+            }
+            try AXFacade.setPosition(fresh, position)
+            try AXFacade.setSize(fresh, size)
+            lock.lock()
+            index[windowID] = fresh
+            lock.unlock()
+        }
     }
 }
 

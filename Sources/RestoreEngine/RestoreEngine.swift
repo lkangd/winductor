@@ -16,6 +16,11 @@ import SpaceAdapter
 //   未运行应用不启动、快照外窗口/应用不动、粘性窗与无归属辅助窗不入恢复集合（spec §5.3）。
 
 /// 引擎无法启动的错误（逐窗口问题不 throw，走 best-effort 日志 + 计数，spec §6.3）
+/// 单窗 AX 写限时执行的跨线程结果盒（泛型函数内不可嵌套类，同 SpaceAdapter.BoundedResultBox 口径）
+private final class PlaceBox: @unchecked Sendable {
+    var value: Result<Void, Error>?
+}
+
 public enum RestoreEngineError: Error, Equatable, Sendable {
     case noActiveDisplay
     /// 回滚快照写失败：无撤销保险不动手，整个恢复中止（spec §7.4「恢复中途崩溃撤销必须在」）
@@ -24,6 +29,8 @@ public enum RestoreEngineError: Error, Equatable, Sendable {
     case undoSnapshotMissing
     /// 撤销入口禁用：回滚快照损坏/版本拒用（解析失败已按 §7.4 隔离挪开，下次恢复重写；票 16）
     case undoSnapshotCorrupt(String)
+    /// AX 几何写单窗限时超时（转延迟几何，消费轮询在 app 不忙后补写）
+    case axApplyTimeout
 }
 
 /// 一次性恢复的结果（spec §6.3：结束产出成功/跳过/失败计数；票 15/16 增量扩展）
@@ -92,6 +99,8 @@ public final class RestoreEngine: @unchecked Sendable {
     private let ax: WindowAXProbing
     /// 管线死线（秒）：超时剩余条目计 skip、通知照发——无论系统级楔死拖慢哪层，通知计数必须有界到达
     private let pipelineDeadlineSeconds: TimeInterval
+    /// L1 单窗 AX 写限时（秒）：插屏后各 app AX 响应变慢（实测 4.6s/项），限时转延迟几何保通知秒级
+    private static let axApplyTimeoutSeconds: TimeInterval = 1.5
     private let geometry: WindowGeometryWriting
     /// 后台窗延迟几何（AX 树不含非可见 Space 窗 → elementInvalid 的补救路径）
     private let deferredGeometry: DeferredGeometryStore
@@ -322,10 +331,27 @@ public final class RestoreEngine: @unchecked Sendable {
         })
         // 后台窗精准判定数据源：各屏活跃 Space（一次 SLS 读；窗不在任一活跃 Space = AX 不可见）
         let activeSpaceIDs = (try? spaces.activeSpaceIDs()) ?? []
-        for (offset, item) in actItems.enumerated() {
-            if deadlineHit || deadlineExceeded(offset, actItems.count) { break }
-            place(item, failed: &failed, activeSpaceIDs: activeSpaceIDs)
-            actProcessed += 1
+        // L1 并发执行（不同窗口不同 app 的 AX 写天然可并发；插屏后各 app AX 响应变慢，
+        // 串行 4.6s/项 × N 项把通知拖到分钟级，实测 6 项 = 28s）：8 lanes + 单项 1.5s 限时
+        // → 全程上限 ≈ ceil(N/8)×1.5s；超时项转延迟几何（消费轮询补写），通知秒级到达
+        var deferredCount = 0
+        if !deadlineHit {
+            var outcomes = [PlaceOutcome?](repeating: nil, count: actItems.count)
+            DispatchQueue.concurrentPerform(iterations: actItems.count) { i in
+                outcomes[i] = place(actItems[i], activeSpaceIDs: activeSpaceIDs)
+            }
+            for (i, outcome) in outcomes.enumerated() {
+                switch outcome ?? .fail {
+                case .ok: break
+                case .deferred:
+                    deferredCount += 1  // pending 已在 place 内记录（并发安全：互不重叠的 wid）
+                case .fail:
+                    failed.insert(actItems[i].snapshotIndex)
+                }
+                actProcessed += 1
+            }
+        } else {
+            log?.write("[restore] action=l1-skipped detail=deadline-already-hit count=\(actItems.count)")
         }
 
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
@@ -350,7 +376,7 @@ public final class RestoreEngine: @unchecked Sendable {
         // 死线未处理项计入跳过（未尝试 ≠ 失败；一次性结算防跨层重复计数）
         let deadlineSkipped = deadlineHit ? (actItems.count - actProcessed + l4Items.count
                                             + plan.filter(\.isPendingFullscreen).count) : 0
-        let skipped = plan.count - actItems.count - l4Items.count + deadlineSkipped
+        let skipped = plan.count - actItems.count - l4Items.count + deadlineSkipped + deferredCount
         let pending = plan.filter(\.isPendingFullscreen).count + pending3
         switch mode {
         case .restore:
@@ -528,67 +554,82 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - Pass L1：AX 几何摆位（比例坐标 × 所属屏 CGDisplayBounds，spec §7.2）
 
-    private func place(_ item: PlanItem, failed: inout Set<Int>, activeSpaceIDs: Set<Int64>) {
-        guard case .act(let lw, _, _, let targetDisplay, let capturedOrientation) = item.action else { return }
+    /// place 结局（并发执行后由调用方串行合并共享集合）
+    private enum PlaceOutcome {
+        case ok
+        /// 转延迟几何（后台窗 / AX 写限时超时）：计 skip，消费轮询在窗口可写后单次补写
+        case deferred
+        case fail
+    }
+
+    /// 单窗 AX 写限时执行（超时弃线程；AX 写在系统侧最终会完成或失败，弃线程不影响正确性）
+    private func boundedApply(_ apply: @escaping () throws -> Void, timeout: TimeInterval) -> Result<Void, Error> {
+        let box = PlaceBox()
+        let t = Thread { box.value = Result { try apply() } }
+        t.stackSize = 1 << 20
+        t.start()
+        let deadline = Date().addingTimeInterval(timeout)
+        while box.value == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        return box.value ?? .failure(RestoreEngineError.axApplyTimeout)
+    }
+
+    private func place(_ item: PlanItem, activeSpaceIDs: Set<Int64>) -> PlaceOutcome {
+        guard case .act(let lw, _, _, let targetDisplay, let capturedOrientation) = item.action else { return .ok }
         let snap = item.snapshotWindow
         let wid = lw.cgWindowID
 
-        // 后台窗事前判定（精准口径）：窗不在任一屏的活跃 Space → AX 树不含它，打 AX 写只会
-        // 4.7s 超时后 elementInvalid（实测 13 项 × 4.7s = 61s，通知拖到分钟级）→ 直接进延迟几何，
-        // 计 skip（未尝试 ≠ 失败）。isOnscreen（CG 口径）兜底最小化以外的残余场景。
-        // activeSpaceIDs 为空 = 数据源不可用（fake/异常），判定禁用退回 isOnscreen 口径
-        if !lw.isOnscreen
-            || (!activeSpaceIDs.isEmpty && !activeSpaceIDs.contains(lw.spaceID)) {
-            let swap0 = (capturedOrientation % 180) != (rotationProvider(targetDisplay.id) % 180)
-            runPendingGeometry.append(PendingGeometryEntry(
-                windowID: wid, displayUUID: snap.displayUUID,
-                x: swap0 ? snap.y : snap.x, y: swap0 ? snap.x : snap.y,
-                w: swap0 ? snap.h : snap.w, h: swap0 ? snap.w : snap.h))
-            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
-                action: .position, target: snap.displayUUID, before: "-", after: "-",
-                result: .skip))
-            log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position "
-                + "error=offscreen-deferred detail=non-visible-space-pending-geometry")
-            return
-        }
-        let bounds = targetDisplay.bounds
-
-        // 旋转处理（spec §6.6/§7.2）：捕获角与当前角轴向一致直接比例恢复；
-        // 跨竖横（90/270 对 0/180）按轴向互换 best-effort
         let current = rotationProvider(targetDisplay.id)
         let swap = (capturedOrientation % 180) != (current % 180)
         let rx = swap ? snap.y : snap.x
         let ry = swap ? snap.x : snap.y
         let rw = swap ? snap.h : snap.w
         let rh = swap ? snap.w : snap.h
+
+        func recordPending(_ why: String) -> PlaceOutcome {
+            let entry = PendingGeometryEntry(
+                windowID: wid, displayUUID: snap.displayUUID, x: rx, y: ry, w: rw, h: rh)
+            runPendingGeometry.append(entry)
+            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
+                action: .position, target: snap.displayUUID, before: "-", after: "-", result: .skip))
+            log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position "
+                + "error=\(why) detail=deferred-pending")
+            return .deferred
+        }
+
+        // 后台窗事前判定（精准口径）：窗不在任一屏的活跃 Space → AX 树不含它，打 AX 写只会
+        // 4.7s 超时后 elementInvalid（实测 13 项 × 4.7s = 61s）→ 直接进延迟几何，
+        // 计 skip（未尝试 ≠ 失败）。isOnscreen（CG 口径）兜底；activeSpaceIDs 空 = 数据源不可用，判定禁用
+        if !lw.isOnscreen
+            || (!activeSpaceIDs.isEmpty && !activeSpaceIDs.contains(lw.spaceID)) {
+            return recordPending("offscreen-deferred")
+        }
+
+        let bounds = targetDisplay.bounds
         let position = CGPoint(x: bounds.minX + CGFloat(rx) * bounds.width,
                                y: bounds.minY + CGFloat(ry) * bounds.height)
         let size = CGSize(width: CGFloat(rw) * bounds.width, height: CGFloat(rh) * bounds.height)
         let before = Self.ratioString(x: lw.x, y: lw.y, w: lw.w, h: lw.h)
         let after = Self.ratioString(x: rx, y: ry, w: rw, h: rh)
+        let targetLine = "\(snap.displayUUID) rot=\(current)"
 
-        do {
-            try geometry.apply(windowID: wid, position: position, size: size)
+        switch boundedApply({ try self.geometry.apply(windowID: wid, position: position, size: size) },
+                            timeout: Self.axApplyTimeoutSeconds) {
+        case .success:
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
-                action: .position, target: "\(snap.displayUUID) rot=\(current)",
-                before: before, after: after, result: .ok))
-        } catch AXFacadeError.elementInvalid {
-            // 后台窗（非可见 Space）AX 不可见：记 pending，poller 检测到变可见时延迟单次应用
-            // （每窗只写一次，无重试循环；一次性语义的保留形态，spec §6.3 精神）
-            runPendingGeometry.append(PendingGeometryEntry(
-                windowID: wid, displayUUID: snap.displayUUID, x: rx, y: ry, w: rw, h: rh))
-            failed.insert(item.snapshotIndex)
+                action: .position, target: targetLine, before: before, after: after, result: .ok))
+            return .ok
+        case .failure(RestoreEngineError.axApplyTimeout):
+            // 限时内未确认：转延迟几何计 skip（消费轮询在 app 不忙后补写；被弃线程的写若最终
+            // 成功则窗口已就位，consumer 补写同值无害）
+            return recordPending("ax-apply-timeout")
+        case .failure(AXFacadeError.elementInvalid):
+            // writer 内部已带元素重建重试，仍元素失效：计 fail，pending 兜底（可见后补写）
+            return recordPending("elementInvalid-after-retry")
+        case .failure(let error):
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
-                action: .position, target: "\(snap.displayUUID) rot=\(current)",
-                before: before, after: after, result: .fail))
-            log?.write("[restore] deferred-record wid=\(wid) detail=background-window-ax-invisible")
-        } catch {
-            // 「AX 权限不足」等写失败：单轮 best-effort，计 fail 不中断（本票验收行为之一）
-            failed.insert(item.snapshotIndex)
-            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
-                action: .position, target: "\(snap.displayUUID) rot=\(current)",
-                before: before, after: after, result: .fail))
-            logDetail(wid: wid, app: snap.bundleID, action: .position, error: error)
+                action: .position, target: targetLine, before: before, after: after, result: .fail))
+            log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position error=\(error)")
+            return .fail
         }
     }
 

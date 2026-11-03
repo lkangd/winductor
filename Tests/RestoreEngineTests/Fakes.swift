@@ -25,6 +25,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var minimizedDirectMoveFails = false
     /// 非 nil = activeSpaceIDs 返回该集合（活跃 Space 判定测试）
     var activeSpaces: Set<Int64>?
+    /// >0 = apply 前睡眠秒数（AX 写限时测试：睡 > 1.5s 触发 ax-apply-timeout）
+    var applyDelay: TimeInterval?
     /// >0 = managedSpaces 前 N 次调用抛错（模拟 poller 并发 SLS 冲突：undo 快照与
     /// 管线 Space 清单两次读都可能失败，重试才成功）
     var managedSpacesFailures = 0
@@ -92,10 +94,13 @@ final class FakeGeometry: WindowGeometryWriting, @unchecked Sendable {
     private(set) var calls: [Call] = []
     private(set) var prepareCalls = 0
     var error: Error?
+    /// >0 = apply 前睡眠秒数（AX 写限时测试：睡过 1.5s 上限触发 ax-apply-timeout）
+    var applyDelay: TimeInterval?
 
     func prepare(windowIDs: [UInt32]) { prepareCalls += 1 }
 
     func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
+        if let d = applyDelay { Thread.sleep(forTimeInterval: d) }  // 限时测试：睡过 boundedApply 上限
         calls.append(Call(windowID: windowID, position: position, size: size))
         if let error { throw error }
     }
