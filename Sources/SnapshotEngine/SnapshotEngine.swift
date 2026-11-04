@@ -18,8 +18,6 @@ public enum SnapshotEngineConstants {
     public static let pollTolerance: TimeInterval = 0.5
     /// 落盘防抖（spec §10.3，04 #8）
     public static let writeDebounce: TimeInterval = 1.0
-    /// 辅助窗排除边长（px，与 VerifyCLI/spike 同口径）
-    static let minWindowEdge: Double = 40
 }
 
 public final class SnapshotEngine {
