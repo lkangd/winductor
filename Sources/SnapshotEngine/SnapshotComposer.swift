@@ -81,7 +81,6 @@ public struct SnapshotComposer: Sendable {
                 }
                 continue
             }
-            func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
             // 待补写窗：只在已就位目标屏时覆盖几何（屏归属仍按实况，未就位不伪造）
             let override = geometryOverrides[window.windowID].flatMap { $0.displayUUID == display.uuid ? $0 : nil }
             drafts.append(Draft(
@@ -89,10 +88,10 @@ public struct SnapshotComposer: Sendable {
                 title: window.title ?? "",
                 displayUUID: display.uuid ?? "",
                 spaceIndex: entry?.index ?? 1,
-                x: override.map { clamp01($0.x) } ?? lw.x,
-                y: override.map { clamp01($0.y) } ?? lw.y,
-                w: override.map { clamp01($0.w) } ?? lw.w,
-                h: override.map { clamp01($0.h) } ?? lw.h,
+                x: override.map { LiveWindowLocator.clampRatio($0.x) } ?? lw.x,
+                y: override.map { LiveWindowLocator.clampRatio($0.y) } ?? lw.y,
+                w: override.map { LiveWindowLocator.clampRatio($0.w) } ?? lw.w,
+                h: override.map { LiveWindowLocator.clampRatio($0.h) } ?? lw.h,
                 minimized: minimized))
         }
 

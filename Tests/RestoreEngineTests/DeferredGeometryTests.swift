@@ -58,6 +58,73 @@ final class DeferredGeometryTests: XCTestCase {
         XCTAssertEqual(Array(module.geometryOverrides().keys), [7])
     }
 
+    /// 补写 AX 写阻塞超过排空上限，管线照常开工并写下目标：旧补写迟到返回记 stale、不消费不计失败；
+    /// 管线为该窗补记 pending，下一轮补写重写管线目标 ⇒ 最终几何 = 管线结果（不跳回旧 pending）
+    func testPipelineGeometryWinsOverDeferredApplyStillInFlightAfterDrainTimeout() throws {
+        try assertPipelineGeometryWinsOverStaleDeferredApply(oldWriteReturnsDuringPipelineWrite: false)
+    }
+
+    /// 旧补写在管线 L1 写之后落地、并在 L1 写返回前已注销在途：管线须在写前就认出在途
+    func testPipelineGeometryWinsWhenStaleDeferredApplyFinishesDuringPipelineWrite() throws {
+        try assertPipelineGeometryWinsOverStaleDeferredApply(oldWriteReturnsDuringPipelineWrite: true)
+    }
+
+    private func assertPipelineGeometryWinsOverStaleDeferredApply(oldWriteReturnsDuringPipelineWrite: Bool) throws {
+        let session = SkyLightSession(drainTimeout: 0.1)
+        let bridge = FakeBridge(entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+                                byWindow: [101: 5])
+        bridge.activeSpaces = [5]
+        let deferredWriter = FakeGeometry(), pipelineWriter = FakeGeometry(), log = LogSpy()
+        let applyEntered = DispatchSemaphore(value: 0), releaseApply = DispatchSemaphore(value: 0)
+        deferredWriter.onApply = { applyEntered.signal(); releaseApply.wait() }
+        let dir = try makeTempDir()
+        let module = DeferredGeometry(directory: dir, spaces: bridge, session: session, writer: deferredWriter,
+                                      displaysProvider: { World.displays() }, log: log, frameReader: { _ in nil })
+        module.replacePending([PendingGeometryEntry(windowID: 101, displayUUID: "A-uuid", x: 0.5, y: 0.5, w: 0.2, h: 0.2)])
+
+        let staleTickDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { module.tick(); staleTickDone.signal() }
+        applyEntered.wait()
+        if oldWriteReturnsDuringPipelineWrite {
+            pipelineWriter.onApply = { releaseApply.signal(); staleTickDone.wait() }
+        }
+
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                       World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                           display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let engine = RestoreEngine(
+            store: SnapshotStore(directory: dir),
+            spaces: bridge,
+            enumerator: FakeEnumerator([World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                                                     displayOrigin: .zero, displaySize: CGSize(width: 1000, height: 1000),
+                                                     x: 0.3, y: 0.3, w: 0.4, h: 0.4)]),
+            ax: FakeAX(), geometry: pipelineWriter, session: session, deferredGeometry: module,
+            displaysProvider: { World.displays() }, rotationProvider: World.rotationProvider([:]), log: log)
+        _ = try engine.restore(snapshot: snapshot)
+
+        let target = FakeGeometry.Call(windowID: 101, position: CGPoint(x: 100, y: 100), size: CGSize(width: 400, height: 400))
+        XCTAssertEqual(pipelineWriter.calls, [target], "排空超时后管线照常写目标")
+
+        if !oldWriteReturnsDuringPipelineWrite {
+            releaseApply.signal()
+            XCTAssertEqual(staleTickDone.wait(timeout: .now() + 2), .success)
+        }
+        XCTAssertTrue(log.all.contains("[restore] deferred wid=101 result=stale detail=pipeline-started-during-apply"),
+                      "实际：\(log.all)")
+        XCTAssertEqual(module.geometryOverrides()[101],
+                       WindowGeometryOverride(displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                       "管线为在途窗补记本轮目标，旧补写不得消费它")
+
+        deferredWriter.onApply = nil
+        module.tick()
+        XCTAssertEqual(deferredWriter.calls.last, target, "下一轮补写重写管线目标，盖过迟到的旧写")
+        XCTAssertNil(module.geometryOverrides()[101])
+    }
+
     /// 可见性迁移（poller 回调）：补写投到模块队列异步执行，不拖住轮询（AX 写 + 回读可达秒级）
     func testWindowsBecameVisibleAppliesAsynchronously() throws {
         let geometry = FakeGeometry()

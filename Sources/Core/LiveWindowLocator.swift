@@ -37,15 +37,17 @@ public enum LiveWindowLocator {
                 ?? nearestCenter(sample.bounds, in: displays) else { return nil }
             let b = display.bounds
             guard let uuid = display.uuid, !uuid.isEmpty, b.width > 0, b.height > 0 else { return nil }
-            func clamp01(_ v: CGFloat) -> Double { min(max(Double(v), 0), 1) }
             return LocatedWindow(
                 sample: sample, display: display, space: space,
-                x: clamp01((sample.bounds.minX - b.minX) / b.width),
-                y: clamp01((sample.bounds.minY - b.minY) / b.height),
-                w: clamp01(sample.bounds.width / b.width),
-                h: clamp01(sample.bounds.height / b.height))
+                x: clampRatio(Double((sample.bounds.minX - b.minX) / b.width)),
+                y: clampRatio(Double((sample.bounds.minY - b.minY) / b.height)),
+                w: clampRatio(Double(sample.bounds.width / b.width)),
+                h: clampRatio(Double(sample.bounds.height / b.height)))
         }
     }
+
+    /// 比例几何夹 [0,1]：快照记录、实况定位、延迟补写共用同一口径
+    public static func clampRatio(_ v: Double) -> Double { min(max(v, 0), 1) }
 
     /// bounds 交集面积最大者（displays 已按左→右排序，同积取先者）
     private static func largestIntersection(_ bounds: CGRect, in displays: [Displays.Info]) -> Displays.Info? {

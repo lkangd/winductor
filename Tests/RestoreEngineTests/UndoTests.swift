@@ -96,6 +96,35 @@ final class UndoPipelineTests: XCTestCase {
             log: world.log)
     }
 
+    /// 撤销排在一条恢复后面（不同队列同时开跑）：须读到该恢复在独占内刚写的回滚快照，而非排队前的旧文件
+    func testQueuedUndoReadsUndoSnapshotWrittenByPrecedingPipeline() throws {
+        let world = makeWorld()
+        let session = SkyLightSession()
+        let engine = RestoreEngine(
+            store: world.store, spaces: world.bridge, enumerator: MutableEnumerator(world.initialSamples),
+            ax: world.ax, geometry: world.geometry, session: session, fullscreen: world.fullscreen,
+            minimize: FakeMinimize(), fullscreenSettleSeconds: 0, displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: world.log)
+        let url = undoURL(world.store)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stale = Snapshot(capturedAt: Date(), topology: world.snapshot.topology, spaces: world.snapshot.spaces, windows: [])
+        try SnapshotStore.atomicWrite(try stale.encoded(), to: url)
+
+        let generation = session.exclusiveGeneration
+        let undoDone = expectation(description: "undo finished")
+        session.exclusive("restore") {
+            DispatchQueue.global().async {
+                do { _ = try engine.undo() } catch { XCTFail("撤销失败：\(error)") }
+                undoDone.fulfill()
+            }
+            while session.exclusiveGeneration == generation + 1 { Thread.sleep(forTimeInterval: 0.01) }
+            try? SnapshotStore.atomicWrite(try! world.snapshot.encoded(), to: url)
+        }
+        wait(for: [undoDone], timeout: 3)
+        XCTAssertTrue(world.log.all.contains { $0.hasPrefix("[undo] action=load") && $0.contains("detail=windows=1") },
+                      "撤销应读到排队期间更新的回滚快照，实际：\(world.log.all)")
+    }
+
     // MARK: 入口安全（spec §7.4「仅文件存在时可用」；票面「缺失/损坏入口禁用不崩溃」）
 
     func testUndoWithoutUndoFileIsDisabledWithExplicitError() throws {

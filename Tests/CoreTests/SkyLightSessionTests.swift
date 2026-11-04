@@ -93,6 +93,75 @@ final class SkyLightSessionTests: XCTestCase {
         XCTAssertTrue(log.items[0].hasPrefix("[undo] action=exclusive-drain result=timeout detail=shared-in-flight=1"),
                       "实际：\(log.items)")
     }
+
+    /// 两个 shared（写盘 compose / pending 补写）可同时运行，但 SLS 读段互斥：后进者等前者读完
+    func testConcurrentSharedSerializeOnlyTheirSLSReads() {
+        let session = SkyLightSession()
+        let firstReading = DispatchSemaphore(value: 0), releaseFirst = DispatchSemaphore(value: 0)
+        let secondDone = expectation(description: "second shared finished")
+        let order = LockedLog()
+        DispatchQueue.global().async {
+            _ = session.shared {
+                session.slsRead {
+                    firstReading.signal()
+                    releaseFirst.wait()
+                    order.append("first-read-end")
+                }
+            }
+        }
+        firstReading.wait()
+        DispatchQueue.global().async {
+            _ = session.shared {
+                order.append("second-body")
+                session.slsRead { order.append("second-read") }
+            }
+            secondDone.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(order.items, ["second-body"], "shared 体照常并发，SLS 读段等前者")
+        releaseFirst.signal()
+        wait(for: [secondDone], timeout: 2)
+        XCTAssertEqual(order.items, ["second-body", "first-read-end", "second-read"])
+    }
+
+    func testSerializingReadsWrapsEverySpaceRead() {
+        let session = SkyLightSession()
+        let base = ReadLockProbe(session: session)
+        let spaces = session.serializingReads(of: base)
+        XCTAssertEqual(try spaces.managedSpaces(), [])
+        XCTAssertEqual(try spaces.spaceIDsByWindowID(), [:])
+        XCTAssertEqual(base.heldDuringReads.items, ["held", "held"])
+    }
+
+    /// 每次独占请求代次 +1（在途 AX 写返回后据此判过期）；shared 不改代次
+    func testExclusiveGenerationAdvancesPerExclusiveRequest() {
+        let session = SkyLightSession()
+        let start = session.exclusiveGeneration
+        _ = session.shared { 1 }
+        XCTAssertEqual(session.exclusiveGeneration, start)
+        session.exclusive("restore") {
+            XCTAssertEqual(session.exclusiveGeneration, start + 1, "进入独占即已递增（排队期间也算）")
+        }
+        session.exclusive("undo") {}
+        XCTAssertEqual(session.exclusiveGeneration, start + 2)
+    }
+}
+
+/// 读时探测 SLS 读锁是否被持有：另一线程的 slsRead 0.1s 内进不来 = 本次读在锁内
+private final class ReadLockProbe: SpaceProviding, @unchecked Sendable {
+    let session: SkyLightSession
+    let heldDuringReads = LockedLog()
+    init(session: SkyLightSession) { self.session = session }
+
+    private func probe() {
+        let entered = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { self.session.slsRead { _ = entered.signal() } }
+        let otherEntered = entered.wait(timeout: .now() + 0.1) == .success
+        heldDuringReads.append(otherEntered ? "free" : "held")
+    }
+
+    func managedSpaces() throws -> [SpaceEntry] { probe(); return [] }
+    func spaceIDsByWindowID() throws -> [UInt32: Int64] { probe(); return [:] }
 }
 
 private final class LockedLog: LogWriting, @unchecked Sendable {

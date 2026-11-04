@@ -182,13 +182,12 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 打乱的恢复结果，重写会让「撤销」回到乱序态而非首轮恢复前）
     @discardableResult
     public func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
-        let displays = displaysProvider()
-        guard !displays.isEmpty else {
-            log?.write("[restore] abort reason=no-active-display")
-            throw RestoreEngineError.noActiveDisplay
+        // 拓扑在独占内读取：排队等前一条管线期间可能插拔屏
+        let counts = try session.exclusive("restore") { () throws -> PipelineCounts in
+            let displays = try activeDisplays(label: "restore")
+            return try runPipelineExclusive(snapshot: snapshot, mode: .restore, displays: displays,
+                                            preserveUndo: preserveUndo)
         }
-        let counts = try runPipeline(snapshot: snapshot, mode: .restore, displays: displays,
-                                     preserveUndo: preserveUndo)
         return RestoreReport(
             okCount: counts.okCount, skipCount: counts.skipCount, failCount: counts.failCount,
             matchedCount: counts.matchedCount, untouchedLiveCount: counts.untouchedLiveCount,
@@ -202,18 +201,27 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 回滚快照撤销后保留（§7.4），重复撤销幂等无害。
     /// 抛错 = 入口禁用（回滚快照缺失/损坏，spec §7.4）或无显示器。
     public func undo() throws -> UndoReport {
-        let displays = displaysProvider()
-        guard !displays.isEmpty else {
-            log?.write("[undo] abort reason=no-active-display")
-            throw RestoreEngineError.noActiveDisplay
+        // 回滚快照在独占内读取：排在恢复之后的撤销须读到该恢复刚写的回滚快照，而非上一轮的
+        let (counts, undoURL) = try session.exclusive("undo") { () throws -> (PipelineCounts, URL) in
+            let displays = try activeDisplays(label: "undo")
+            let loaded = try readUndoSnapshot(displays: displays, quarantineOnCorrupt: true)
+            return (try runPipelineExclusive(snapshot: loaded.snapshot, mode: .undo, displays: displays,
+                                             preserveUndo: false), loaded.url)
         }
-        let loaded = try readUndoSnapshot(displays: displays, quarantineOnCorrupt: true)
-        let counts = try runPipeline(snapshot: loaded.snapshot, mode: .undo, displays: displays)
         return UndoReport(
             okCount: counts.okCount, skipCount: counts.skipCount, failCount: counts.failCount,
             matchedCount: counts.matchedCount, untouchedLiveCount: counts.untouchedLiveCount,
-            undoSnapshotURL: loaded.url,
+            undoSnapshotURL: undoURL,
             fullscreenPendingCount: counts.fullscreenPendingCount)
+    }
+
+    private func activeDisplays(label: String) throws -> [Displays.Info] {
+        let displays = displaysProvider()
+        guard !displays.isEmpty else {
+            log?.write("[\(label)] abort reason=no-active-display")
+            throw RestoreEngineError.noActiveDisplay
+        }
+        return displays
     }
 
     /// 菜单「撤销上次恢复」可用性（spec §7.4/§8.2；票 19 接线）：回滚快照存在且可解析才可用
@@ -273,13 +281,7 @@ public final class RestoreEngine: @unchecked Sendable {
         let undoSnapshotURL: URL
     }
 
-    private func runPipeline(snapshot: Snapshot, mode: RunMode,
-                             displays: [Displays.Info], preserveUndo: Bool = false) throws -> PipelineCounts {
-        try session.exclusive(mode == .restore ? "restore" : "undo") {
-            try runPipelineExclusive(snapshot: snapshot, mode: mode, displays: displays, preserveUndo: preserveUndo)
-        }
-    }
-
+    /// 调用方须持有 session.exclusive（拓扑与回滚快照也须在独占内读取）
     private func runPipelineExclusive(snapshot: Snapshot, mode: RunMode,
                                       displays: [Displays.Info], preserveUndo: Bool) throws -> PipelineCounts {
         let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
@@ -673,12 +675,22 @@ public final class RestoreEngine: @unchecked Sendable {
         let before = Self.ratioString(x: lw.x, y: lw.y, w: lw.w, h: lw.h)
         let after = Self.ratioString(x: rx, y: ry, w: rw, h: rh)
         let targetLine = "\(snap.displayUUID) rot=\(current)"
+        // 写前查：旧补写可在本次写之后落地并注销，写后再查会漏（独占期间新补写不会开写，写前查即完整）
+        let deferredInFlight = deferredGeometry.isApplying(windowID: wid)
 
         switch boundedApply({ try self.geometry.apply(windowID: wid, position: position, size: size) },
                             timeout: Self.axApplyTimeoutSeconds) {
         case .success:
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.geometry, wid: wid, app: snap.bundleID,
                 action: .position, target: targetLine, before: before, after: after, result: .ok))
+            if deferredInFlight {
+                // 排空超时后仍在途的旧补写会在本次写之后落地：记 pending 让下一轮补写重写本轮目标
+                let entry = PendingGeometryEntry(
+                    windowID: wid, displayUUID: snap.displayUUID, x: rx, y: ry, w: rw, h: rh)
+                l1Lock.lock(); runPendingGeometry.append(entry); l1Lock.unlock()
+                log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=position "
+                    + "error=deferred-in-flight detail=reassert-pending")
+            }
             return .ok
         case .failure(RestoreEngineError.axApplyTimeout):
             // 限时内未确认：转延迟几何计 skip（消费轮询在 app 不忙后补写；被弃线程的写若最终

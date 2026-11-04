@@ -27,15 +27,21 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
                 frameReader: (@Sendable (UInt32) -> CGRect?)? = nil) {
         store = DeferredGeometryStore(directory: directory)
         applier = DeferredGeometryApplier(store: store, writer: writer, displaysProvider: displaysProvider,
-                                          log: log, frameReader: frameReader)
+                                          log: log, frameReader: frameReader, session: session)
         self.spaces = spaces
         self.session = session
         self.log = log
     }
 
     /// 本轮恢复的 pending 整写替换（一次性语义：上轮未消费的 pending 作废）
-    public func replacePending(_ entries: [PendingGeometryEntry]) {
+    func replacePending(_ entries: [PendingGeometryEntry]) {
         store.save(entries)
+    }
+
+    /// 该窗有补写在途（只在排空超时后会与管线重叠）：管线须在自己写它之前查，若在途则写后再记一条 pending，
+    /// 由下一轮补写在迟到的旧写之后重写本轮目标（补写队列串行，下一轮必在旧写返回之后）
+    func isApplying(windowID: UInt32) -> Bool {
+        applier.isApplying(windowID: windowID)
     }
 
     public func geometryOverrides() -> [UInt32: WindowGeometryOverride] {
@@ -48,7 +54,7 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
     public func windowsBecameVisible(_ windowIDs: [UInt32]) {
         queue.async { [self] in
             _ = session.shared {
-                for wid in windowIDs { applier.applyIfPending(windowID: wid) }
+                for wid in windowIDs where !session.shouldYield { applier.applyIfPending(windowID: wid) }
             }
         }
     }
@@ -104,8 +110,9 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
         let active: Set<Int64>
         let byWindow: [UInt32: Int64]
         do {
-            active = try spaces.activeSpaceIDs()
-            byWindow = try spaces.spaceIDsByWindowID()
+            (active, byWindow) = try session.slsRead {
+                (try spaces.activeSpaceIDs(), try spaces.spaceIDsByWindowID())
+            }
             lastReadFailure = nil
         } catch {
             let failure = "\(error)"
@@ -205,6 +212,9 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
     private let elementInvalidRetryInterval: TimeInterval
     /// 回读容差（pt；终端类 app 按字符格对齐尺寸，小偏差不算失败）
     static let readBackTolerance: CGFloat = 10
+    /// 独占代次源：AX 写期间管线开工（排空超时后照常开始）→ 本次结果过期，不消费不计失败
+    private let session: SkyLightSession
+    private let inFlight = LockedWindowIDs()
 
     public init(store: DeferredGeometryStore,
                 writer: WindowGeometryWriting = AXGeometryWriter(),
@@ -212,11 +222,13 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
                 log: LogWriting? = nil,
                 frameReader: (@Sendable (UInt32) -> CGRect?)? = nil,
                 readBackDelay: TimeInterval? = nil,
-                elementInvalidRetryInterval: TimeInterval? = nil) {
+                elementInvalidRetryInterval: TimeInterval? = nil,
+                session: SkyLightSession = SkyLightSession()) {
         self.store = store
         self.writer = writer
         self.displaysProvider = displaysProvider
         self.log = log
+        self.session = session
         // 注入 reader（测试）不等待；生产 AX 回读前留 0.3s、elementInvalid 重试间隔 0.15s
         self.readBackDelay = readBackDelay ?? (frameReader == nil ? 0.3 : 0)
         self.elementInvalidRetryInterval = elementInvalidRetryInterval ?? (frameReader == nil ? 0.15 : 0)
@@ -266,11 +278,25 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
         }
     }
 
+    func isApplying(windowID: UInt32) -> Bool {
+        inFlight.contains(windowID)
+    }
+
     private enum Attempt { case noPending, handled, axMissing }
 
     /// deferAXMissing = true：窗未进 AX 树不记失败，交调用方下一轮重试
     private func attempt(windowID: UInt32, deferAXMissing: Bool) -> Attempt {
+        // 登记与取代次先于读 pending：管线据登记决定是否重申，晚登记会让它漏掉这次写
+        inFlight.append(windowID)
+        defer { inFlight.remove(windowID) }
+        let generation = session.exclusiveGeneration
+        if session.shouldYield { return .handled }
         guard let entry = store.load().first(where: { $0.windowID == windowID }) else { return .noPending }
+        func isStale() -> Bool {
+            guard session.exclusiveGeneration != generation else { return false }
+            log?.write("[restore] deferred wid=\(windowID) result=stale detail=pipeline-started-during-apply")
+            return true
+        }
         func isSameEntry(_ e: PendingGeometryEntry) -> Bool {
             e.windowID == entry.windowID && e.displayUUID == entry.displayUUID
                 && e.x == entry.x && e.y == entry.y && e.w == entry.w && e.h == entry.h
@@ -292,14 +318,21 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
             retryOrDrop("no-active-display")
             return .handled
         }
-        func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
-        let position = CGPoint(x: display.bounds.minX + CGFloat(clamp01(entry.x)) * display.bounds.width,
-                               y: display.bounds.minY + CGFloat(clamp01(entry.y)) * display.bounds.height)
-        let size = CGSize(width: CGFloat(clamp01(entry.w)) * display.bounds.width,
-                          height: CGFloat(clamp01(entry.h)) * display.bounds.height)
+        func ratio(_ v: Double) -> CGFloat { CGFloat(LiveWindowLocator.clampRatio(v)) }
+        let position = CGPoint(x: display.bounds.minX + ratio(entry.x) * display.bounds.width,
+                               y: display.bounds.minY + ratio(entry.y) * display.bounds.height)
+        let size = CGSize(width: ratio(entry.w) * display.bounds.width,
+                          height: ratio(entry.h) * display.bounds.height)
+        if isStale() { return .handled }
         do {
-            try writer.apply(windowID: windowID, position: position, size: size)
+            do {
+                try writer.apply(windowID: windowID, position: position, size: size)
+            } catch {
+                if isStale() { return .handled }
+                throw error
+            }
             if readBackDelay > 0 { Thread.sleep(forTimeInterval: readBackDelay) }
+            if isStale() { return .handled }
             if let actual = frameReader(windowID) {
                 let t = Self.readBackTolerance
                 let fits = abs(actual.minX - position.x) <= t && abs(actual.minY - position.y) <= t
@@ -331,12 +364,17 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
     }
 }
 
-/// 批量补写轮内收集「仍缺」的窗（concurrentPerform 并发 append）
+/// 并发安全的 wid 表：批量补写轮内收集「仍缺」的窗 / 在途补写登记（与管线 L1 线程并发读）
 private final class LockedWindowIDs: @unchecked Sendable {
     private let lock = NSLock()
     private var _items: [UInt32] = []
     var items: [UInt32] { lock.lock(); defer { lock.unlock() }; return _items }
     func append(_ wid: UInt32) { lock.lock(); _items.append(wid); lock.unlock() }
+    func contains(_ wid: UInt32) -> Bool { lock.lock(); defer { lock.unlock() }; return _items.contains(wid) }
+    func remove(_ wid: UInt32) {
+        lock.lock(); defer { lock.unlock() }
+        if let i = _items.firstIndex(of: wid) { _items.remove(at: i) }
+    }
 }
 
 /// concurrentPerform 闭包内调用非 Sendable 的让出判定（判定只读 SkyLightSession.shouldYield，线程安全）

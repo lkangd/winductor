@@ -22,6 +22,8 @@ import Foundation
 //   [restore|undo] perf prep=<ms> l2=<ms> ax-index=<ms> l1=<ms> l3l4=<ms> total=<ms> （管线分段计时，紧邻 done 行之前）
 //   [restore|undo] action=exclusive-drain result=timeout detail=shared-in-flight=<n> waited=<ms>ms
 //                                                       （独占前在途 shared 未排空即开始，SkyLightSession）
+//   [restore] deferred wid=<cgwindowid> result=stale detail=pipeline-started-during-apply
+//                                                       （补写 AX 写期间管线开工：不消费不计失败）
 // 逐窗口行的注册扩展键（restoreLine 尾部可选追加，接在冻结字段之后）：
 //   skip 行可附 reason=<跳过原因> 与 detail=<补充详情>；wid=0 = 未配对实况窗（规划期无 cgwindowid 可引）。
 // 文件 sink：落盘行前缀 ISO8601 时间戳；目录延迟创建（首次写入才建，

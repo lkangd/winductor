@@ -64,7 +64,8 @@ public final class SnapshotEngine {
         // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
         self.notificationCenters = notificationCenters
         self.store = store
-        self.composer = SnapshotComposer(spaces: spaces, ax: ax)
+        // 写盘 compose 与 pending 补写同为 shared 可并发，SLS 读须经 session 串行
+        self.composer = SnapshotComposer(spaces: spaces.map(session.serializingReads), ax: ax)
         self.enumerator = enumerator
         self.displaysProvider = displaysProvider
         self.log = log

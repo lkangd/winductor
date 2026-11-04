@@ -163,6 +163,8 @@ final class SnapshotStoreTests: XCTestCase {
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: [aUUID, bUUID])
         XCTAssertEqual(SnapshotStore.displayUUIDs(inTopologyKey: key)?.sorted(), [aUUID, bUUID])
         XCTAssertNil(SnapshotStore.displayUUIDs(inTopologyKey: "short-fake-key"), "非冻结格式拒拆")
+        let notUUID = String(repeating: "x", count: 36)
+        XCTAssertNil(SnapshotStore.displayUUIDs(inTopologyKey: "\(aUUID)-\(notUUID)"), "段长对但不是 UUID：拒拆")
     }
 }
 
