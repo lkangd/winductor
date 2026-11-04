@@ -134,17 +134,8 @@ public final class TriggerChain: @unchecked Sendable {
     private let degradeCollector: DegradeCollectingLog?
     /// 手动异步入口的管线执行器（默认后台串行队列；菜单路径不阻塞主线程）
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
-    /// 拔屏前基线（shrank 时冻结）：回到该拓扑集合才允许自动恢复，且恢复源用冻结时的快照内容
-    /// （实测缺陷：插回后 poller 会把 macOS 中间态重排写进 live 快照，恢复若在触发时现读
-    /// 就是垃圾基线；中间态拓扑也可能精确命中过期快照触发全量垃圾恢复，如 2 屏键）
-    private struct ReturnHome {
-        let uuids: Set<String>
-        let snapshot: Snapshot?
-        let structure: Set<String>   // displayUUID#index#kind 集合（与运行时签名同构）
-    }
-    /// 按拓扑分键的冻结点（多段拔屏 3→2→1 时每段各冻结一份，后段不覆盖外层：
-    /// 实测缺陷 11-03 03:54——单槽被第二段降级为 2 屏，插回 3 屏只能现读被 poller 中间态污染的 live-3）
-    private var returnHomes: [Set<String>: ReturnHome] = [:]
+    /// 冻结点账本：拔屏冻结拔屏前快照，插回时选恢复源 / 拦中间态（stateLock 保护）
+    private var ledger: ReturnHomeLedger
     /// 本轮稳定判据是否要求签名与基线结构一致（持有基线内容时为真；防止 Space 重排未完成时开火）
     private var pendingHomeStructure: Set<String>?
     /// 通知投递接缝（票 19：接 UNUserNotificationCenter；测试收集断言）
@@ -183,9 +174,6 @@ public final class TriggerChain: @unchecked Sendable {
     private var lastAutoRestore: AutoRestoreRecord?
     /// 进行中的稳定判据是否为余震重放（开火时保留回滚快照、不重复通知）
     private var pendingIsReapply = false
-    /// 事件串首个事件到达时的基线 live 快照（idle → debouncing 时读取）。冻结点取它而非 settle 时现读：
-    /// 实测 11-03 09:08 拔屏开始后在途写盘把中途态落进 live-<拔屏前拓扑>，settle 现读冻结了垃圾
-    private var burstBaseline: (uuids: Set<String>, snapshot: Snapshot?)?
     /// 本次防抖按余震预判走了短静默期（settle 时预判落空则补足普通静默期）
     private var debouncedAsAftershock = false
 
@@ -223,6 +211,7 @@ public final class TriggerChain: @unchecked Sendable {
         self.degradeCollector = degradeCollector
         self.restoreEnqueue = restoreEnqueue
         self.onNotice = onNotice
+        self.ledger = ReturnHomeLedger(store: store)
         // 基线：链建立时的屏幕集合（app 启动即建链；此后第一次插回事件即判「变大」）
         stateLock.lock()
         settledUUIDs = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
@@ -231,38 +220,14 @@ public final class TriggerChain: @unchecked Sendable {
         seedReturnHomesAtLaunch()
     }
 
-    /// 少屏状态下启动（拔屏开会时 app 重启 / 登录启动）：内存冻结点为空，插回时中间拓扑会精确命中
-    /// 陈旧快照被当正常拓扑恢复（实测事故 11-03 07:39）。按磁盘上「当前集合的极大超集拓扑」重建冻结点：
-    /// 当前缺屏 ⇒ 这些拓扑自拔屏后不可能被 poller 写过 = 拔屏前内容。非极大超集（如 3 屏的 2 屏子集）
-    /// 不冻结 = 视为中间拓扑。
+    /// 少屏状态下启动：按磁盘上当前集合的极大超集拓扑重建冻结点（见 ReturnHomeLedger.seedAtLaunch）
     private func seedReturnHomesAtLaunch() {
-        let current = settledUUIDs
-        guard !current.isEmpty else { return }
-        let supersets = liveTopologies().filter { current.isSubset(of: $0) && $0.count > current.count }
-        let maximal = supersets.filter { candidate in
-            !supersets.contains { candidate.isSubset(of: $0) && $0.count > candidate.count }
-        }
-        for uuids in maximal {
-            let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(uuids))
-            let held = store.loadLive(topologyKey: key)
-            stateLock.lock()
-            returnHomes[uuids] = ReturnHome(uuids: uuids, snapshot: held,
-                                            structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
-            stateLock.unlock()
+        stateLock.lock()
+        let seeded = ledger.seedAtLaunch(current: settledUUIDs)
+        stateLock.unlock()
+        for (uuids, held) in seeded {
             log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
-                                 detail: "key=\(key) launch-seed"))
-        }
-    }
-
-    /// 快照目录里 live- 文件反拆出的拓扑集合（键格式见 uuids(inTopologyKey:)）
-    private func liveTopologies() -> [Set<String>] {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: store.directory,
-                                                                         includingPropertiesForKeys: nil) else { return [] }
-        return files.compactMap { file -> Set<String>? in
-            let name = file.deletingPathExtension().lastPathComponent
-            guard file.pathExtension == "json", name.hasPrefix("live-"),
-                  let uuids = Self.uuids(inTopologyKey: String(name.dropFirst("live-".count))) else { return nil }
-            return Set(uuids)
+                                 detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: Array(uuids))) launch-seed"))
         }
     }
 
@@ -286,8 +251,7 @@ public final class TriggerChain: @unchecked Sendable {
         // 防抖：新事件取消挂起回调、重排 1.5s 计时（spec §6.2 新事件重置）
         scheduler.cancelScheduled()
         if phase == .idle {
-            burstBaseline = (settledUUIDs, store.loadLive(
-                topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: settledUUIDs.sorted())))
+            ledger.burstStarted(baseline: settledUUIDs)
         }
         phase = .debouncing
         // 快速拔插痕迹：静默期内见过非基线拓扑（拔出瞬间）。settle 时即使已回到基线，
@@ -340,12 +304,7 @@ public final class TriggerChain: @unchecked Sendable {
         }
         let sawDivergence = sawDivergenceDuringDebounce
         sawDivergenceDuringDebounce = false
-        // 冻结源：事件串起点的基线快照（同一基线集合才可用；否则回退现读）
-        let burstHeld = burstBaseline.flatMap { $0.uuids == baseline ? $0 : nil }
-        burstBaseline = nil
-        func heldBaseline() -> Snapshot? {
-            burstHeld.map(\.snapshot) ?? store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))
-        }
+        ledger.settle(baseline: baseline)
 
         // 防抖静默期结束：先落 debounce-settle 行（时间戳链第 2 环），再按集合变化分岔。
         // resume=stability：稳定判据进行中来了新事件（插拔二段事件常见），
@@ -394,12 +353,7 @@ public final class TriggerChain: @unchecked Sendable {
             }
             // 快速拔→插回（同处静默期，插回事件重置了防抖）：按「回到基线拓扑」处理。
             // 补记 baseline-hold（该拓扑已有冻结点则保留更早的拔屏前内容，不现读覆盖）
-            if returnHomes[baseline] == nil {
-                let held = heldBaseline()
-                returnHomes[baseline] = ReturnHome(
-                    uuids: baseline,
-                    snapshot: held,
-                    structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
+            if case .frozen(let held) = ledger.fastReplugged(to: baseline) {
                 log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
                                      detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted())) fast-replug"))
             }
@@ -407,12 +361,8 @@ public final class TriggerChain: @unchecked Sendable {
         }
         if current.count < baseline.count {
             // 拔出（集合变小）：只更新基线不干预（spec §6.2，A4）；
-            // 同时冻结拔屏前基线（集合 + 快照内容 + Space 结构），回到该集合才自动恢复
-            let held = heldBaseline()
-            returnHomes[baseline] = ReturnHome(
-                uuids: baseline,
-                snapshot: held,
-                structure: held.map { Self.structureSignature(from: $0.spaces) } ?? [])
+            // 同时冻结拔屏前基线快照，回到该集合才自动恢复
+            let held = ledger.unplugged(from: baseline)
             settledUUIDs = current
             stabilizationTarget = nil
             lastAutoRestore = nil
@@ -429,26 +379,22 @@ public final class TriggerChain: @unchecked Sendable {
         lastAutoRestore = nil
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
         var homeSnapshot: Snapshot?
-        if !returnHomes.isEmpty {
-            if let home = returnHomes[current] {
-                // 回到某段拔屏前拓扑：恢复源用冻结内容（防触发时现读被 poller 重写的中间态）
-                homeSnapshot = home.snapshot
-            } else {
-                // 插回 home 的超集（如 app 在 2 屏启动后接第 3 屏）：放行，快照源回退现存拓扑匹配
-                let homeCounts = returnHomes.keys.map(\.count)
-                let isSupersetOfHome = returnHomes.keys.contains { $0.isSubset(of: current) && current.count > $0.count }
-                if !isSupersetOfHome {
-                    phase = .idle
-                    log?.write(chainLine(step: "return-home-guard", result: "skip",
-                                         detail: "matched=\(key) home-displays=\(homeCounts.max() ?? 0) current-displays=\(current.count)"))
-                    stateLock.unlock()
-                    return
-                }
-                log?.write(chainLine(step: "return-home-guard", result: "pass",
-                                     detail: "superset-of-home home=\(homeCounts.max() ?? 0) current=\(current.count)"))
-            }
-            // ⊆ current 的冻结点已被本次回归取代（下次拔屏重新冻结）；⊋ current 的外层冻结点保留待回归
-            returnHomes = returnHomes.filter { !$0.key.isSubset(of: current) }
+        switch ledger.returnTo(current) {
+        case .unguarded:
+            break
+        case .home(let held):
+            // 回到某段拔屏前拓扑：恢复源用冻结内容（防触发时现读被 poller 重写的中间态）
+            homeSnapshot = held
+        case .supersetOfHome(let homeDisplays):
+            // 插回 home 的超集（如 app 在 2 屏启动后接第 3 屏）：放行，快照源回退现存拓扑匹配
+            log?.write(chainLine(step: "return-home-guard", result: "pass",
+                                 detail: "superset-of-home home=\(homeDisplays) current=\(current.count)"))
+        case .intermediate(let homeDisplays):
+            phase = .idle
+            log?.write(chainLine(step: "return-home-guard", result: "skip",
+                                 detail: "matched=\(key) home-displays=\(homeDisplays) current-displays=\(current.count)"))
+            stateLock.unlock()
+            return
         }
         guard let snapshot = homeSnapshot ?? matchSnapshot(for: current, key: key) else {
             // 拓扑部分匹配（插回后仍少一屏）：不自动恢复（spec §6.2，A5；提示通知见 emitPartialTopology）
