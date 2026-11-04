@@ -11,3 +11,5 @@ build/
 DerivedData/
 .worktrees/
 materials/
+.code-review/
+.claude/code-review.local.md
