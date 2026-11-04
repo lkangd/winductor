@@ -186,10 +186,12 @@ func main() {
     let adapter = SpaceAdapter()
     var spaceIDByWindow: [UInt32: Int64] = [:]
     var spaceEntries: [SpaceEntry] = []
+    var slsAvailable = false
     if let byWindow = try? adapter.spaceIDsByWindowID(),
        let entries = try? adapter.managedSpaces() {
         spaceIDByWindow = byWindow
         spaceEntries = entries
+        slsAvailable = true
     }
 
     // 实时枚举：CG 全量（与 app 同一份 Core 采样）→ 屏归属 + 比例几何（Core.LiveWindowLocator）+ AX 配对
@@ -225,7 +227,7 @@ func main() {
         + "displays=\(snapshot.topology.count) spaces=\(snapshot.spaces.count) windows=\(snapshot.windows.count)")
     print("实时: 当前拓扑 key=\(topologyKey.prefix(24))… 屏=\(displays.count) "
         + "CG 窗口(layer0)=\(cgWindows.count) AX 配对=\(axByWid.count) 参与匹配=\(liveWindows.count)")
-    print("授权: 辅助功能=✓ 屏幕录制=✓  Space 归属=\(spaceEntryByWindowID.isEmpty ? "无法核验（本进程无 SLS 授权）" : "\(spaceEntryByWindowID.count) 窗口可查")")
+    print("授权: 辅助功能=✓ 屏幕录制=✓  Space 归属=\(slsAvailable ? "\(spaceEntryByWindowID.count) 窗口可查" : "无法核验（本进程无 SLS 授权）")")
     print(String(repeating: "-", count: 72))
 
     var pass = 0, fail = 0, skip = 0
@@ -238,7 +240,8 @@ func main() {
         switch result.verdict {
         case .skip(let reason):
             skip += 1
-            print("SKIP  \(head)  原因=\(skipReasonText(reason))")
+            let note = live.map { titleNote(result, snapshotWindow, $0) } ?? ""
+            print("SKIP  \(head)\(note)  原因=\(skipReasonText(reason))")
         case .pass:
             pass += 1
             guard let live else { continue }

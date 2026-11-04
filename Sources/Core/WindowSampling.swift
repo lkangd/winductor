@@ -4,8 +4,9 @@ import Foundation
 
 // WindowSampling.swift — CG 窗口采样（spec §7.5）。快照引擎轮询环、恢复引擎实况收集、
 // VerifyCLI 实时枚举共用这一份（verify 要能对引擎产出的快照做同口径枚举比对）。
-// 本文件是「轮询环零 AX」的结构性保证：只依赖 CoreGraphics/Foundation，
-// 采样仅读 CGWindowListCopyWindowInfo(.optionAll)（kCGWindowName 随调用免费返回）。
+// 本文件是「轮询环零 AX」的结构性保证：不调用任何 AX API，采样仅读
+// CGWindowListCopyWindowInfo(.optionAll)（kCGWindowName 随调用免费返回）；
+// AppKit 只用于 NSRunningApplication 的 bundleID 兜底。
 // 候选过滤口径：
 //   layer == 0、windowID ≠ 0、边长 ≥ 40px（辅助窗排除，05 spike：cmuxterm 24×24 不入快照）、
 //   bundleID 取 CG 字典键、缺了再 NSRunningApplication(pid) 兜底、空 bundleID 排除。

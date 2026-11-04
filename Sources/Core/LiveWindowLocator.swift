@@ -16,7 +16,7 @@ public struct LocatedWindow: Equatable, Sendable {
     public let sample: CGWindowSample
     /// 归属屏
     public let display: Displays.Info
-    /// 所属 Space；SLS 无归属（粘性/辅助窗）或 Space 数据不可用时为 nil
+    /// 所属 Space；SLS 无归属（粘性/辅助窗）、Space 数据不可用或其所属屏不在当前拓扑时为 nil
     public let space: SpaceEntry?
     /// 归属屏整块 bounds 上的归一比例坐标（spec §7.2）
     public let x: Double, y: Double, w: Double, h: Double
@@ -28,8 +28,11 @@ public enum LiveWindowLocator {
                               spaceEntries: [SpaceEntry]) -> [LocatedWindow] {
         let spaceByID = Dictionary(spaceEntries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
         return samples.compactMap { sample in
-            let space = spaceIDByWindow[sample.windowID].flatMap { spaceByID[$0] }
-            guard let display = space.flatMap({ s in displays.first(where: { $0.uuid == s.displayUUID }) })
+            let slsSpace = spaceIDByWindow[sample.windowID].flatMap { spaceByID[$0] }
+            let spaceDisplay = slsSpace.flatMap { s in displays.first(where: { $0.uuid == s.displayUUID }) }
+            // Space 所属屏不在当前拓扑 = 陈旧归属：连 Space 一起丢弃，防「兜底屏 + 旧 Space index」错配
+            let space = spaceDisplay == nil ? nil : slsSpace
+            guard let display = spaceDisplay
                 ?? largestIntersection(sample.bounds, in: displays)
                 ?? nearestCenter(sample.bounds, in: displays) else { return nil }
             let b = display.bounds

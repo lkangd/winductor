@@ -859,15 +859,6 @@ final class TriggerChainTests: XCTestCase {
                        true, "非精确匹配在日志标注 best-effort")
     }
 
-    func testTopologyKeyRoundTripParsesFixedWidthUUIDSegments() throws {
-        // 拓扑键反拆：36 字符段 + "-" 连接（SnapshotStore 冻结格式）无歧义还原 UUID 集合
-        let aUUID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
-        let bUUID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: [aUUID, bUUID])
-        XCTAssertEqual(TriggerChain.uuids(inTopologyKey: key)?.sorted(), [aUUID, bUUID])
-        XCTAssertNil(TriggerChain.uuids(inTopologyKey: "short-fake-key"), "非冻结格式拒拆")
-    }
-
     // MARK: - 周期 6：稳定判据中的新事件（插拔二段事件）不中断链；恢复中事件忽略
 
     func testEventDuringStabilizingResumesStabilityAfterDebounce() throws {

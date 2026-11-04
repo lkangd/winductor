@@ -155,6 +155,15 @@ final class SnapshotStoreTests: XCTestCase {
     func testLoadLiveOnEmptyDirectoryReturnsNil() {
         XCTAssertNil(store.loadLive(topologyKey: "nonexistent"))
     }
+
+    /// 拓扑键反拆：36 字符段 + "-" 连接（冻结格式）无歧义还原 UUID 集合
+    func testTopologyKeyRoundTripParsesFixedWidthUUIDSegments() {
+        let aUUID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let bUUID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        let key = SnapshotStore.topologyKey(forDisplayUUIDs: [aUUID, bUUID])
+        XCTAssertEqual(SnapshotStore.displayUUIDs(inTopologyKey: key)?.sorted(), [aUUID, bUUID])
+        XCTAssertNil(SnapshotStore.displayUUIDs(inTopologyKey: "short-fake-key"), "非冻结格式拒拆")
+    }
 }
 
 /// 测试 spy：只捕获日志行，不写盘

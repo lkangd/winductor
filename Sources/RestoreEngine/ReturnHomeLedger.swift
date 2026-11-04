@@ -58,7 +58,7 @@ struct ReturnHomeLedger {
         return files.compactMap { file -> Set<String>? in
             let name = file.deletingPathExtension().lastPathComponent
             guard file.pathExtension == "json", name.hasPrefix("live-"),
-                  let uuids = TriggerChain.uuids(inTopologyKey: String(name.dropFirst("live-".count))) else { return nil }
+                  let uuids = SnapshotStore.displayUUIDs(inTopologyKey: String(name.dropFirst("live-".count))) else { return nil }
             return Set(uuids)
         }
     }

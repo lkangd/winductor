@@ -670,7 +670,7 @@ public final class TriggerChain: @unchecked Sendable {
                 guard let dash = rest.firstIndex(of: "-") else { continue }
                 key = String(rest[rest.index(after: dash)...])
             } else { continue }
-            guard let k = key, let uuids = Self.uuids(inTopologyKey: k) else { continue }
+            guard let k = key, let uuids = SnapshotStore.displayUUIDs(inTopologyKey: k) else { continue }
             candidates.append((k, uuids))
         }
         // 重叠最多 → 屏幕更少 → 键字典序
@@ -688,27 +688,6 @@ public final class TriggerChain: @unchecked Sendable {
             }
         }
         return nil
-    }
-
-    /// 拓扑键反拆 UUID 集合：键 = 36 字符 UUID 段（段内含连字符）以 "-" 连接，段长恒定可无歧义反拆
-    ///（SnapshotStore 文件头注释冻结的格式）
-    static func uuids(inTopologyKey key: String) -> [String]? {
-        let segments = (key.count + 1) / 37
-        guard segments >= 1, key.count == segments * 37 - 1 else { return nil }
-        var uuids: [String] = []
-        var index = key.startIndex
-        for i in 0..<segments {
-            if i > 0 {
-                guard key[index] == "-" else { return nil }
-                index = key.index(after: index)
-            }
-            guard let end = key.index(index, offsetBy: 36, limitedBy: key.endIndex) else {
-                return nil
-            }
-            uuids.append(String(key[index..<end]))
-            index = end
-        }
-        return uuids
     }
 
     // MARK: - 通知与日志

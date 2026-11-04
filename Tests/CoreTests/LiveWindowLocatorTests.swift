@@ -30,6 +30,17 @@ final class LiveWindowLocatorTests: XCTestCase {
         XCTAssertEqual(located.first?.space, spaceA)
     }
 
+    /// SLS 报的 Space 所属屏已不在当前拓扑（拔屏后 SLS 尚未跟上）：按 frame 兜底定屏，且不得带出
+    /// 该陈旧 Space（否则快照会记成「兜底屏 UUID + 旧 Space 的 index」）
+    func testSpaceOnAbsentDisplayIsDroppedWithFrameFallback() {
+        let gone = SpaceEntry(spaceID: 30, displayUUID: "GONE-uuid", index: 3, kind: 0)
+        let located = LiveWindowLocator.locate(
+            samples: [sample(1, CGRect(x: 100, y: 100, width: 200, height: 200))],
+            displays: displays, spaceIDByWindow: [1: 30], spaceEntries: [spaceA, spaceB, gone])
+        XCTAssertEqual(located.map(\.display.uuid), ["A-uuid"])
+        XCTAssertNil(located.first?.space)
+    }
+
     /// 无 Space 归属：跨屏窗按 frame 交集面积最大者定屏（A 交 100×1000，B 交 400×500）
     func testWithoutSpaceLargestIntersectionWins() {
         let located = locate([sample(1, CGRect(x: 900, y: 0, width: 1500, height: 1000))])

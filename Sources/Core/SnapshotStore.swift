@@ -87,6 +87,27 @@ public struct SnapshotStore: Sendable {
         uuids.sorted().joined(separator: "-")
     }
 
+    /// 拓扑键反拆 UUID 集合：键 = 36 字符 UUID 段（段内含连字符）以 "-" 连接，段长恒定可无歧义反拆；
+    /// 非该格式返回 nil
+    public static func displayUUIDs(inTopologyKey key: String) -> [String]? {
+        let segments = (key.count + 1) / 37
+        guard segments >= 1, key.count == segments * 37 - 1 else { return nil }
+        var uuids: [String] = []
+        var index = key.startIndex
+        for i in 0..<segments {
+            if i > 0 {
+                guard key[index] == "-" else { return nil }
+                index = key.index(after: index)
+            }
+            guard let end = key.index(index, offsetBy: 36, limitedBy: key.endIndex) else {
+                return nil
+            }
+            uuids.append(String(key[index..<end]))
+            index = end
+        }
+        return uuids
+    }
+
     public func liveURL(topologyKey: String) -> URL {
         directory.appendingPathComponent("live-\(topologyKey).json")
     }
