@@ -1,11 +1,126 @@
+import AppKit
 import AXFacade
 import Core
 import CoreGraphics
 import Foundation
+import SnapshotEngine
 
 // DeferredGeometry.swift — 后台窗延迟几何（实测缺陷：AX 树只暴露可见 Space 的窗口，
 // 恢复时后台窗几何写报 elementInvalid；一次性语义的保留形态 = 每窗延迟单次应用：
 // restore 时记录 pending，poller 检测到该窗变为可见时由 Applier 补写一次，之后不再管）。
+
+/// 延迟几何模块：记录（恢复管线）、快照覆盖（SnapshotEngine 写盘）、可见即补写（自驱轮询 + 可见性迁移）。
+/// 内部：DeferredGeometryStore（pending 文件）+ DeferredGeometryApplier（AX 补写/回读/重试）。
+public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
+    private let store: DeferredGeometryStore
+    private let applier: DeferredGeometryApplier
+    private let spaces: SpaceBridge
+    private let session: SkyLightSession
+    private let log: LogWriting?
+    /// 补写串行队列（轮询 tick、Space 切换补一轮、可见性迁移共用）
+    private let queue = DispatchQueue(label: "winductor.deferred-geometry")
+
+    public init(directory: URL, spaces: SpaceBridge, session: SkyLightSession,
+                writer: WindowGeometryWriting = AXGeometryWriter(),
+                displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
+                log: LogWriting? = nil,
+                frameReader: (@Sendable (UInt32) -> CGRect?)? = nil) {
+        store = DeferredGeometryStore(directory: directory)
+        applier = DeferredGeometryApplier(store: store, writer: writer, displaysProvider: displaysProvider,
+                                          log: log, frameReader: frameReader)
+        self.spaces = spaces
+        self.session = session
+        self.log = log
+    }
+
+    /// 本轮恢复的 pending 整写替换（一次性语义：上轮未消费的 pending 作废）
+    public func replacePending(_ entries: [PendingGeometryEntry]) {
+        store.save(entries)
+    }
+
+    public func geometryOverrides() -> [UInt32: WindowGeometryOverride] {
+        Dictionary(store.load().map {
+            ($0.windowID, WindowGeometryOverride(displayUUID: $0.displayUUID, x: $0.x, y: $0.y, w: $0.w, h: $0.h))
+        }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// 单窗补写（单次尝试不快速重试）；与轮询消费同一串行队列，批次互不重叠
+    public func windowsBecameVisible(_ windowIDs: [UInt32]) {
+        queue.async { [self] in
+            _ = session.shared {
+                for wid in windowIDs { applier.applyIfPending(windowID: wid) }
+            }
+        }
+    }
+
+    /// Space 切换 → 补写的延迟（秒）：只避开切换动画最初一段；仍未进 AX 树的窗由 Applier 的
+    /// elementInvalid 快速重试兜住（不耗失败额度），不必为保守再多等
+    static let spaceChangeDelay: TimeInterval = 0.15
+
+    private var timer: DispatchSourceTimer?
+    private var spaceObserver: NSObjectProtocol?
+    private var center: NotificationCenter?
+
+    /// 启动自驱消费（app 根装配时调用）：2s 轮询 + Space 切换即补一轮（11-03 实测反馈
+    /// 「能感觉到有些窗口在慢慢恢复」）。timer 回调强持有自身（实测缺陷 11-03：曾用 [weak self]，
+    /// 装配处只有局部变量时随函数返回释放，pending 从未被消费），stop() 断环释放。
+    public func start(interval: TimeInterval = 2.0,
+                      center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + interval, repeating: interval)
+        t.setEventHandler { self.tick(source: "timer") }
+        t.resume()
+        timer = t
+        self.center = center
+        spaceObserver = center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                           object: nil, queue: nil) { _ in
+            self.queue.asyncAfter(deadline: .now() + Self.spaceChangeDelay) { self.tick(source: "space-change") }
+        }
+    }
+
+    public func stop() {
+        if let spaceObserver { center?.removeObserver(spaceObserver) }
+        spaceObserver = nil
+        // 先清回调再 cancel：cancel 的源由 GCD 异步回收，回调里的强引用须同步断开
+        timer?.setEventHandler(handler: nil)
+        timer?.cancel()
+        timer = nil
+    }
+
+    /// 单轮消费（pending 空 / 管线独占时零成本返回）。
+    /// CGWindowList 的 isOnscreen 对跨 Space 后台窗恒为 true，可见性迁移在跨 Space 场景永不触发
+    /// （11-03 实测：WeChat 记 pending 后一直「可见」却再无补写时机），故以「窗当前 Space ∈ 任一屏活跃 Space」
+    /// 判定可写。source 只进日志（space-change / timer）：实测量「切 Space → 补写」延迟
+    func tick(source: String = "timer") {
+        _ = session.shared { tickShared(source: source) }
+    }
+
+    /// 上一次读失败的描述（同一失败只落一行日志，防 2s 轮询刷屏；只在串行队列/单测线程访问）
+    private var lastReadFailure: String?
+
+    private func tickShared(source: String) {
+        let pending = store.load()
+        guard !pending.isEmpty else { return }
+        let active: Set<Int64>
+        let byWindow: [UInt32: Int64]
+        do {
+            active = try spaces.activeSpaceIDs()
+            byWindow = try spaces.spaceIDsByWindowID()
+            lastReadFailure = nil
+        } catch {
+            let failure = "\(error)"
+            if failure != lastReadFailure {
+                log?.write("[restore] action=deferred-consume result=fail detail=space-read \(failure) pending=\(pending.count)")
+                lastReadFailure = failure
+            }
+            return
+        }
+        let eligible = pending.map(\.windowID).filter { byWindow[$0].map(active.contains) ?? false }
+        guard !eligible.isEmpty, !session.shouldYield else { return }
+        log?.write("[restore] action=deferred-consume source=\(source) eligible=\(eligible.count) pending=\(pending.count)")
+        applier.applyPending(windowIDs: eligible, shouldYield: { [session] in session.shouldYield })
+    }
+}
 
 /// 单条延迟几何：windowID + 目标屏 + 归一比例坐标（快照口径）
 public struct PendingGeometryEntry: Codable, Equatable, Sendable {

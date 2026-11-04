@@ -26,6 +26,14 @@ public struct WindowGeometryOverride: Equatable, Sendable {
     }
 }
 
+/// 延迟几何端口（生产实现 = RestoreEngine.DeferredGeometry；SnapshotEngine 不依赖 RestoreEngine）
+public protocol DeferredGeometryPort: AnyObject, Sendable {
+    /// 待补写窗的快照几何覆盖（windowID → 目标几何）
+    func geometryOverrides() -> [UInt32: WindowGeometryOverride]
+    /// poller 检出「上轮不可见 → 本轮可见」的窗口（补写时机之一；实现方异步处理，不阻塞轮询）
+    func windowsBecameVisible(_ windowIDs: [UInt32])
+}
+
 public struct SnapshotComposer: Sendable {
     private let spaces: SpaceProviding?
     private let ax: WindowAXProbing

@@ -205,7 +205,8 @@ final class SnapshotEngineTests: XCTestCase {
     private func makeEngine(_ enumerator: FakeEnumerator, ax: WindowAXProbing = FakeAXProber(),
                             pollInterval: TimeInterval = 3600, debounceInterval: TimeInterval = 3600,
                             notificationCenters: [NotificationCenter]? = nil,
-                            session: SkyLightSession = SkyLightSession()) -> SnapshotEngine {
+                            session: SkyLightSession = SkyLightSession(),
+                            deferredGeometry: DeferredGeometryPort? = nil) -> SnapshotEngine {
         let display = fakeDisplay("AAAA-1111-1111-1111-111111111111")
         return SnapshotEngine(
             store: SnapshotStore(directory: root, log: log),
@@ -220,6 +221,7 @@ final class SnapshotEngineTests: XCTestCase {
             pollTolerance: 0.5,
             debounceInterval: debounceInterval,
             notificationCenters: notificationCenters ?? [NotificationCenter()],
+            deferredGeometry: deferredGeometry,
             session: session)
     }
 
@@ -251,28 +253,30 @@ final class SnapshotEngineTests: XCTestCase {
 // MARK: - 可见性迁移（后台窗延迟几何消费口）
 
 extension SnapshotEngineTests {
-    /// 上轮不可见 → 本轮可见的窗口集合回调给 handler；首采样只建基线不触发
-    func testVisibilityTransitionHandlerCalledForNewlyVisibleWindows() throws {
-        let sample = { onscreen in
-            CGWindowSample(windowID: 9, pid: 1, bundleID: "com.t", title: nil,
-                           bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: onscreen)
-        }
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("winductor-snapshotengine-\\(UUID().uuidString)")
-        var calls: [[UInt32]] = []
-        let engine = SnapshotEngine(
-            store: SnapshotStore(directory: dir), spaces: nil, log: nil,
-            enumerator: FakeEnumerator([
-                [sample(false)],
-                [sample(true)],
-            ]),
-            notificationCenters: [],
-            visibilityTransitionHandler: { calls.append($0) })
+    /// 上轮不可见 → 本轮可见的窗口集合交给延迟几何端口；首采样只建基线不触发
+    func testNewlyVisibleWindowsReportedToDeferredGeometry() throws {
+        let deferred = FakeDeferredGeometry()
+        let engine = makeEngine(FakeEnumerator([sample(id: 9, bundleID: "com.t", title: "t", onscreen: false)],
+                                               [sample(id: 9, bundleID: "com.t", title: "t", onscreen: true)]),
+                                deferredGeometry: deferred)
 
         _ = engine.pollNow()  // 首采样：建立基线
-        XCTAssertEqual(calls.count, 0, "首采样不触发迁移")
+        XCTAssertEqual(deferred.becameVisible.count, 0, "首采样不触发迁移")
         _ = engine.pollNow()  // off → on
-        XCTAssertEqual(calls, [[9]], "变为可见的窗口集合回调")
+        XCTAssertEqual(deferred.becameVisible, [[9]], "变为可见的窗口集合回调")
+    }
+
+    /// 待补写窗写盘按延迟几何目标记录（同屏时；见 SnapshotComposer）
+    func testWriteAppliesDeferredGeometryOverrides() throws {
+        let deferred = FakeDeferredGeometry()
+        deferred.overrides = [1: WindowGeometryOverride(displayUUID: "AAAA-1111-1111-1111-111111111111",
+                                                        x: 0.5, y: 0.5, w: 0.25, h: 0.25)]
+        let engine = makeEngine(FakeEnumerator([sample(id: 1, bundleID: "com.t", title: "t")]),
+                                deferredGeometry: deferred)
+        XCTAssertTrue(engine.pollNow())
+        engine.writePendingNow()
+        let w = try XCTUnwrap(decodeLive().windows.first)
+        XCTAssertEqual([w.x, w.y, w.w, w.h], [0.5, 0.5, 0.25, 0.25])
     }
 }
 

@@ -24,10 +24,8 @@ public final class SnapshotEngine {
     /// 就绪门（票 18 接两项授权检查；默认恒就绪）。未就绪 = 照常轮询但零落盘。
     public var readinessGate: () -> Bool = { true }
 
-    /// 窗口「变为可见」迁移回调（后台窗延迟几何消费口；测试注入）
-    private let visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)?
-    /// 写盘时的几何覆盖源（生产：pending 延迟几何；见 SnapshotComposer.compose）
-    private let geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])?
+    /// 延迟几何：写盘时的几何覆盖源 + 「变为可见」迁移的接收方（生产 = RestoreEngine.DeferredGeometry）
+    private let deferredGeometry: DeferredGeometryPort?
     /// 恢复管线独占期间采样与写盘一律跳过（写盘 compose 读 SLS，采样触发的迁移补写写 AX）
     private let session: SkyLightSession
     /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
@@ -59,8 +57,7 @@ public final class SnapshotEngine {
                 pollTolerance: TimeInterval = SnapshotEngineConstants.pollTolerance,
                 debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
                 notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
-                visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
-                geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil,
+                deferredGeometry: DeferredGeometryPort? = nil,
                 session: SkyLightSession = SkyLightSession()) {
         // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
         // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
@@ -74,8 +71,7 @@ public final class SnapshotEngine {
         self.pollInterval = pollInterval
         self.pollTolerance = pollTolerance
         self.debounceInterval = debounceInterval
-        self.visibilityTransitionHandler = visibilityTransitionHandler
-        self.geometryOverrides = geometryOverrides
+        self.deferredGeometry = deferredGeometry
         self.session = session
     }
 
@@ -143,12 +139,12 @@ public final class SnapshotEngine {
         for w in fingerprint.windows { lastOnscreenByWID[w.windowID] = w.isOnscreen }
         if fingerprint == lastFingerprint {
             lock.unlock()
-            if !newlyVisible.isEmpty { visibilityTransitionHandler?(newlyVisible) }
+            if !newlyVisible.isEmpty { deferredGeometry?.windowsBecameVisible(newlyVisible) }
             return false  // 无变化不写盘
         }
         lastFingerprint = fingerprint
         lock.unlock()
-        if !newlyVisible.isEmpty { visibilityTransitionHandler?(newlyVisible) }
+        if !newlyVisible.isEmpty { deferredGeometry?.windowsBecameVisible(newlyVisible) }
         guard readinessGate() else {
             log?.write("[snapshot] action=poll result=skip detail=not-ready 检出变化但未就绪，零落盘（票 18 接线）")
             return true
@@ -198,7 +194,7 @@ public final class SnapshotEngine {
             return
         }
         let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date(),
-                                        geometryOverrides: geometryOverrides?() ?? [:])
+                                        geometryOverrides: deferredGeometry?.geometryOverrides() ?? [:])
         let key = SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
         // 采样（SLS/AX，插拔中可达数秒）期间显示器变了 → 内容是拔插中途态，键却是起点拓扑：丢弃。
         // 实测 11-03 09:08:16：拔屏开始 2.2s 后这样一份写盘落进 live-3，0.3s 后被冻结为拔屏前基线，

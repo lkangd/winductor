@@ -65,6 +65,14 @@ final class FakeSpaces: SpaceProviding, @unchecked Sendable {
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
 }
 
+/// 延迟几何端口 fake：预置覆盖；记录可见性迁移回调
+final class FakeDeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
+    var overrides: [UInt32: WindowGeometryOverride] = [:]
+    private(set) var becameVisible: [[UInt32]] = []
+    func geometryOverrides() -> [UInt32: WindowGeometryOverride] { overrides }
+    func windowsBecameVisible(_ windowIDs: [UInt32]) { becameVisible.append(windowIDs) }
+}
+
 /// 日志捕获（照 CoreTests 的 LogSpy 口径）
 final class LogSpy: LogWriting, @unchecked Sendable {
     private let lock = NSLock()

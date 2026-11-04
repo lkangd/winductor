@@ -23,16 +23,14 @@ public enum RuntimeAssembly {
                                           spaces: SpaceProviding? = nil,
                                           log: LogWriting? = nil,
                                           notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
-                                          visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
-                                          geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil,
+                                          deferredGeometry: DeferredGeometryPort? = nil,
                                           session: SkyLightSession = SkyLightSession()) -> SnapshotEngine {
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: storeDirectory, log: log),
             spaces: spaces,
             log: log,
             notificationCenters: notificationCenters,
-            visibilityTransitionHandler: visibilityTransitionHandler,
-            geometryOverrides: geometryOverrides,
+            deferredGeometry: deferredGeometry,
             session: session
         )
         engine.readinessGate = { [monitor] in monitor.status.isReady }
@@ -64,40 +62,24 @@ public enum RuntimeAssembly {
         // spec §7.5 加速器分工：引擎只接屏幕事件（.default）；应用启退 + Space 切换由装配件
         // WorkspaceEventAccelerator 接 NSWorkspace 中心（引擎无 Space 切换内置观察，见引擎文件头），
         // 随门控协调器同启同停。
-        // 后台窗延迟几何：restore 时 AX 不可见（非可见 Space）的窗记 pending；
-        // poller 检测到变可见时由 applier 补写一次（每窗单次，一次性语义保留形态）
-        let deferredStore = DeferredGeometryStore(directory: storeDirectory)
-        let deferredApplier = DeferredGeometryApplier(store: deferredStore,
-                                                      displaysProvider: { Displays.active() },
-                                                      log: collector)
+        // 后台窗延迟几何：恢复记录、快照覆盖、可见即补写同在一个模块（自驱轮询随 app 生命周期）
+        let bridge = SpaceAdapterBridge(adapter)
+        let deferredGeometry = DeferredGeometry(directory: storeDirectory, spaces: bridge,
+                                                session: session, log: collector)
         let snapshotEngine = makeSnapshotEngine(gatedBy: monitor,
                                                 storeDirectory: storeDirectory,
                                                 spaces: adapter,
                                                 log: collector,
                                                 notificationCenters: [.default],
-                                                visibilityTransitionHandler: { [deferredApplier] wids in
-                                                    for wid in wids { deferredApplier.applyIfPending(windowID: wid) }
-                                                },
-                                                // 待补写窗按 pending 目标记进 live：防 macOS 中间态（躲 Dock 缩高）
-                                                // 在补写前被采样、下次拔屏冻结成恢复目标（11-03 ghostty/WeCom）
-                                                geometryOverrides: { [deferredStore] in
-                                                    Dictionary(deferredStore.load().map {
-                                                        ($0.windowID, WindowGeometryOverride(displayUUID: $0.displayUUID,
-                                                                                             x: $0.x, y: $0.y, w: $0.w, h: $0.h))
-                                                    }, uniquingKeysWith: { a, _ in a })
-                                                },
+                                                deferredGeometry: deferredGeometry,
                                                 session: session)
         let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
         let restoreEngine = RestoreEngine(store: store,
-                                          spaces: SpaceAdapterBridge(adapter),
+                                          spaces: bridge,
                                           session: session,
+                                          deferredGeometry: deferredGeometry,
                                           log: collector)
-        // 后台窗延迟几何的消费轮询：CG isOnscreen 对跨 Space 窗恒 true，迁移事件永不触发；
-        // 改为 2s 轮询「pending ∩ 活跃 Space」消费（管线独占期间让出）
-        let pendingConsumer = PendingGeometryConsumer(
-            store: deferredStore,
-            applier: deferredApplier, adapter: adapter, session: session, log: collector)
-        pendingConsumer.start()
+        deferredGeometry.start()
         let capabilityProbe = SpaceAdapterCapabilityProbe(adapter: adapter)
 
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填

@@ -113,7 +113,7 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 管线全程独占 SkyLight（与 poller 写盘 / pending 补写互斥；多条管线串行）
     private let session: SkyLightSession
     /// 后台窗延迟几何（AX 树不含非可见 Space 窗 → elementInvalid 的补救路径）
-    private let deferredGeometry: DeferredGeometryStore
+    private let deferredGeometry: DeferredGeometry
     /// 本轮 pending（runPipeline 开始清零，结束整写替换 pending 文件）
     private var runPendingGeometry: [PendingGeometryEntry] = []
     /// L1 并发 lanes 共享状态锁（runPendingGeometry / outcomes）：无锁并发 append 实测堆损坏崩溃，
@@ -147,7 +147,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 fullscreenSettleSeconds: TimeInterval = 1.0,
                 postBridgeSettleSeconds: TimeInterval = 0.3,
                 pipelineDeadlineSeconds: TimeInterval = 90,
-                deferredGeometry: DeferredGeometryStore? = nil,
+                deferredGeometry: DeferredGeometry? = nil,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 rotationProvider: @escaping (CGDirectDisplayID) -> Int = Displays.rotation,
                 log: LogWriting? = nil) {
@@ -162,7 +162,9 @@ public final class RestoreEngine: @unchecked Sendable {
         self.fullscreenSettleSeconds = fullscreenSettleSeconds
         self.postBridgeSettleSeconds = postBridgeSettleSeconds
         self.pipelineDeadlineSeconds = pipelineDeadlineSeconds
-        self.deferredGeometry = deferredGeometry ?? DeferredGeometryStore(directory: store.directory)
+        // 缺省（DebugCLI / 单测）：同目录落 pending 文件，由运行中 app 的延迟几何模块消费
+        self.deferredGeometry = deferredGeometry
+            ?? DeferredGeometry(directory: store.directory, spaces: spaces, session: session, log: log)
         self.displaysProvider = displaysProvider
         self.rotationProvider = rotationProvider
         self.log = log
@@ -446,8 +448,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 + "skip=\(skipped + skip3 + skip4) fail=\(failed.count + fail3 + fail4) "
                 + "pending=\(pending) matched=\(outcome.matches.count) untouched=\(outcome.unmatchedLiveIndexes.count)")
         }
-        // 本轮 pending 整写替换（一次性语义：上轮未消费的 pending 作废）
-        deferredGeometry.save(runPendingGeometry)
+        deferredGeometry.replacePending(runPendingGeometry)
         if !runPendingGeometry.isEmpty {
             log?.write("[restore] action=deferred-pending result=ok detail=\(runPendingGeometry.count) entries")
         }

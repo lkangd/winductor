@@ -968,8 +968,8 @@ extension RestorePipelineTests {
 extension RestorePipelineTests {
     /// L1 写后台窗报 elementInvalid → pending 落盘（延迟单次应用的数据源）
     func testBackgroundWindowGeometryDeferredToPendingFile() throws {
-        let dir = try makeTempDir()
-        let deferred = DeferredGeometryStore(directory: dir)
+        let deferred = DeferredGeometry(directory: try makeTempDir(), spaces: FakeBridge(entries: [], byWindow: [:]),
+                                        session: SkyLightSession())
         let snapshot = Snapshot(
             capturedAt: Date(),
             topology: [
@@ -988,7 +988,6 @@ extension RestorePipelineTests {
         ]
         let geometry = FakeGeometry()
         geometry.error = AXFacadeError.elementInvalid
-        let deferredStore = DeferredGeometryStore(directory: dir)
         let log = LogSpy()
         let engine = RestoreEngine(
             store: SnapshotStore(directory: try makeTempDir()),
@@ -996,16 +995,15 @@ extension RestorePipelineTests {
                 entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
                 byWindow: [101: 5]),
             enumerator: FakeEnumerator(samples), ax: FakeAX(),
-            geometry: geometry, deferredGeometry: deferredStore,
+            geometry: geometry, deferredGeometry: deferred,
             displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
 
         _ = try engine.restore(snapshot: snapshot)
 
-        let entries = deferred.load()
-        XCTAssertEqual(entries.count, 1, "后台窗几何写失败 → pending 落盘")
-        XCTAssertEqual(entries.first?.windowID, 101)
-        XCTAssertEqual(entries.first?.displayUUID, "A-uuid")
+        let overrides = deferred.geometryOverrides()
+        XCTAssertEqual(Array(overrides.keys), [101], "后台窗几何写失败 → pending 落盘")
+        XCTAssertEqual(overrides[101]?.displayUUID, "A-uuid")
         XCTAssertTrue(log.all.contains { $0.contains("offscreen-deferred") }, "落观测日志")
         XCTAssertTrue(log.all.contains { $0.contains("wid=101") && $0.contains("action=position") && $0.contains("result=skip") },
                       "后台窗 L1 计 skip（未尝试 ≠ 失败）")
@@ -1085,7 +1083,7 @@ extension RestorePipelineTests {
         let engine = RestoreEngine(
             store: SnapshotStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
-            geometry: geometry, deferredGeometry: DeferredGeometryStore(directory: try makeTempDir()),
+            geometry: geometry,
             displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
 
@@ -1123,11 +1121,10 @@ extension RestorePipelineTests {
         let geometry = FakeGeometry()
         geometry.applyDelay = 2.5  // 超过 1.5s 限时
         let log = LogSpy()
-        let dir = try makeTempDir()
         let engine = RestoreEngine(
             store: SnapshotStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
-            geometry: geometry, deferredGeometry: DeferredGeometryStore(directory: dir),
+            geometry: geometry,
             displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
 
