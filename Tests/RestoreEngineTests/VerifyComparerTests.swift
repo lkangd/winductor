@@ -90,4 +90,17 @@ final class VerifyComparerTests: XCTestCase {
         XCTAssertEqual(results[0].verdict, .skip(reason: "unmatched"))
         XCTAssertEqual(results[1].verdict, .skip(reason: "app-not-running"))
     }
+
+    /// 标题变了（如文档改名）但几何兜底配上：照常核验，并标出经兜底配对（verify 报告据此注明新旧标题）
+    func testGeometryFallbackMatchIsFlagged() throws {
+        let live = [LiveWindow(cgWindowID: 101, bundleID: "com.t.a", title: "Doc (edited)",
+                               x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: false)]
+        let results = compare(live: live)
+        XCTAssertEqual(results[0].verdict, .pass)
+        XCTAssertEqual(results[0].viaGeometryFallback, true)
+
+        let exact = compare(live: [LiveWindow(cgWindowID: 101, bundleID: "com.t.a", title: "Doc",
+                                              x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: false)])
+        XCTAssertEqual(exact[0].viaGeometryFallback, false)
+    }
 }

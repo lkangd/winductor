@@ -1,4 +1,3 @@
-import Core
 import Foundation
 
 // VerifyComparer.swift — verify 全量比对核心（票 14，spec §9.1）。
@@ -31,16 +30,20 @@ public struct VerifyEntryResult: Equatable, Sendable {
     public let spaceMatched: Bool?
     /// 比例几何最大分量差；未配对为 nil
     public let geometryDelta: Double?
+    /// 经二级几何兜底配对（标题不一致）；未配对为 false
+    public let viaGeometryFallback: Bool
 
     public init(snapshotIndex: Int, verdict: Verdict,
                 liveWindowID: UInt32? = nil, displayMatched: Bool? = nil,
-                spaceMatched: Bool? = nil, geometryDelta: Double? = nil) {
+                spaceMatched: Bool? = nil, geometryDelta: Double? = nil,
+                viaGeometryFallback: Bool = false) {
         self.snapshotIndex = snapshotIndex
         self.verdict = verdict
         self.liveWindowID = liveWindowID
         self.displayMatched = displayMatched
         self.spaceMatched = spaceMatched
         self.geometryDelta = geometryDelta
+        self.viaGeometryFallback = viaGeometryFallback
     }
 }
 
@@ -66,14 +69,15 @@ public enum VerifyComparer {
                 return VerifyEntryResult(snapshotIndex: s, verdict: .skip(reason: reason))
             }
             let live = liveWindows[match.liveIndex]
+            let fallback = match.viaGeometryFallback
             // L4 归票 15（引擎计划同因跳过）：快照 minimized 条目 / 实况最小化窗口按保守「不动」核验为预期跳过
             if snap.minimized {
                 return VerifyEntryResult(snapshotIndex: s, verdict: .skip(reason: "minimized-entry-L4"),
-                                         liveWindowID: live.cgWindowID)
+                                         liveWindowID: live.cgWindowID, viaGeometryFallback: fallback)
             }
             if live.minimized {
                 return VerifyEntryResult(snapshotIndex: s, verdict: .skip(reason: "live-minimized"),
-                                         liveWindowID: live.cgWindowID)
+                                         liveWindowID: live.cgWindowID, viaGeometryFallback: fallback)
             }
 
             var reasons: [String] = []
@@ -81,7 +85,7 @@ public enum VerifyComparer {
                             abs(snap.w - live.w), abs(snap.h - live.h))
             if delta > geometryTolerance { reasons.append("geometry") }
 
-            // 屏幕归属：快照 displayUUID ↔ 实况中心点归属屏 UUID（与 VerifyCLI 枚举同口径）
+            // 屏幕归属：快照 displayUUID ↔ 实况屏归属 UUID（LiveWindowLocator 口径）
             let displayMatched = displayUUIDByWindowID[live.cgWindowID].map { $0 == snap.displayUUID }
             if let matched = displayMatched, !matched { reasons.append("display") }
 
@@ -92,11 +96,11 @@ public enum VerifyComparer {
             if reasons.isEmpty {
                 return VerifyEntryResult(snapshotIndex: s, verdict: .pass, liveWindowID: live.cgWindowID,
                                          displayMatched: displayMatched, spaceMatched: spaceMatched,
-                                         geometryDelta: delta)
+                                         geometryDelta: delta, viaGeometryFallback: fallback)
             }
             return VerifyEntryResult(snapshotIndex: s, verdict: .fail(reasons: reasons), liveWindowID: live.cgWindowID,
                                      displayMatched: displayMatched, spaceMatched: spaceMatched,
-                                     geometryDelta: delta)
+                                     geometryDelta: delta, viaGeometryFallback: fallback)
         }
     }
 }
