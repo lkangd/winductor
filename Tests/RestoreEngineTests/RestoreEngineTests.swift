@@ -1194,13 +1194,147 @@ extension RestorePipelineTests {
         }
         geometry.error = nil
         XCTAssertTrue(applier.applyIfPending(windowID: 7))
-        XCTAssertEqual(geometry.calls.count, DeferredGeometryApplier.maxAttempts)
+        XCTAssertEqual(geometry.calls.count, DeferredGeometryApplier.maxAttempts, "单窗入口不快速重试")
         XCTAssertTrue(store.load().isEmpty, "成功即消费")
 
         store.save([PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
         geometry.error = AXFacadeError.elementInvalid
         for _ in 0..<DeferredGeometryApplier.maxAttempts { applier.applyIfPending(windowID: 8) }
         XCTAssertTrue(store.load().isEmpty, "达上限丢弃（不无限重试）")
+    }
+
+    /// 提速（11-03 09:29 实测）：切到窗所在 Space 后动画期间窗尚未进 AX 树，首写 elementInvalid
+    /// 白耗一次失败额度并要等下一个 2s tick。期望：批量补写按轮重建索引快速重试，不消耗失败额度。
+    func testBatchApplyQuickRetriesAXMissingWindowsWithoutSpendingAttempt() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = FakeGeometry()
+        geometry.error = AXFacadeError.elementInvalid
+        geometry.onApply = { [unowned geometry] in
+            if geometry.calls.count == 2 { geometry.error = nil }  // 第 3 轮时窗已进 AX 树
+        }
+        let log = LogSpy()
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: log,
+                                              frameReader: { _ in nil })
+
+        applier.applyPending(windowIDs: [7], shouldYield: { false })
+
+        XCTAssertEqual(geometry.calls.count, 3)
+        XCTAssertTrue(store.load().isEmpty, "快速重试内成功即消费")
+        XCTAssertFalse(log.all.contains { $0.contains("result=fail") }, "快速重试不计失败")
+    }
+
+    /// 实测回归（11-04 01:52）：Chrome 13 窗逐窗反查 + 每窗快速重试 ≈ 40 次 AX 枚举在 Chrome 主线程串行，
+    /// 整批 19s。期望：每轮只建一次索引（同 app 多窗共用），只重试仍缺的窗；有界，末轮才计一次失败。
+    func testBatchApplyPreparesIndexOncePerRoundAndRetriesOnlyMissingWindows() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 7, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                    PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = WindowFailingGeometry(failing: [8: AXFacadeError.elementInvalid])
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+
+        applier.applyPending(windowIDs: [7, 8], shouldYield: { false })
+
+        let rounds = 1 + DeferredGeometryApplier.elementInvalidQuickRetries
+        XCTAssertEqual(geometry.prepared, [[7, 8]] + Array(repeating: [8], count: rounds - 1),
+                       "每轮一次索引，只含仍缺的窗")
+        XCTAssertEqual(geometry.calls(for: 7), 1, "已写成的窗不再重试")
+        XCTAssertEqual(geometry.calls(for: 8), rounds)
+        XCTAssertEqual(store.load().map(\.windowID), [8])
+        XCTAssertEqual(store.load().first?.failedAttempts, 1, "整批快速重试只计一次失败")
+    }
+
+    /// 其他错误（如 -25200 kAXErrorFailure）不快速重试，直接计失败
+    func testBatchApplyDoesNotQuickRetryOtherErrors() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = WindowFailingGeometry(failing: [8: AXFacadeError.failure(code: -25200)])
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+
+        applier.applyPending(windowIDs: [8], shouldYield: { false })
+
+        XCTAssertEqual(geometry.calls(for: 8), 1)
+        XCTAssertEqual(store.load().first?.failedAttempts, 1)
+    }
+
+    /// 实测缺陷回归（11-03 第三轮 WeCom 缺底部）：串行补写时，排在前面的慢窗（Chrome 每条 ~4.7s）
+    /// 让 WeCom 等到用户下一次拔屏都没轮到。期望：一个慢窗不挡其他窗。
+    func testBatchApplySlowEntryDoesNotBlockOthers() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 1, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                    PendingGeometryEntry(windowID: 2, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let finished = Unchecked([UInt32: Date]())
+        let lock = NSLock()
+        let applier = DeferredGeometryApplier(store: store, writer: FakeGeometry(),
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { wid in
+                                                  if wid == 1 { Thread.sleep(forTimeInterval: 0.6) }  // 慢窗
+                                                  lock.lock(); finished.value[wid] = Date(); lock.unlock()
+                                                  return nil
+                                              })
+        let start = Date()
+
+        applier.applyPending(windowIDs: [1, 2], shouldYield: { false })
+
+        XCTAssertLessThan(finished.value[2]?.timeIntervalSince(start) ?? .infinity, 0.3, "慢窗 1 不得阻塞窗 2")
+        XCTAssertNotNil(finished.value[1])
+    }
+
+    /// 审查 #1：重试轮的等待期间恢复管线开工 → 不再建 AX 索引（与恢复管线争 AX）
+    func testBatchApplyRechecksYieldAfterRetrySleep() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 8, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = WindowFailingGeometry(failing: [8: AXFacadeError.elementInvalid])
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+        var yieldChecks = 0
+        // 第 1 轮：循环入口 + 开工各查一次；第 2 轮入口仍放行，等待后（第 4 次）恢复已开工
+        applier.applyPending(windowIDs: [8], shouldYield: { yieldChecks += 1; return yieldChecks >= 4 })
+
+        XCTAssertEqual(geometry.prepared.count, 1, "等待后先查让出，再建索引")
+    }
+
+    func testBatchApplyYieldsWhenRestoreStarts() throws {
+        let dir = try makeTempDir()
+        let store = DeferredGeometryStore(directory: dir)
+        store.save([PendingGeometryEntry(windowID: 1, displayUUID: "A-uuid", x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let geometry = FakeGeometry()
+        let applier = DeferredGeometryApplier(store: store, writer: geometry,
+                                              displaysProvider: { World.displays() }, log: LogSpy(),
+                                              frameReader: { _ in nil })
+
+        applier.applyPending(windowIDs: [1], shouldYield: { true })
+
+        XCTAssertTrue(geometry.calls.isEmpty, "恢复管线已开始：让出，不补写")
+    }
+}
+
+/// 按窗注入失败的几何写桩（批量补写轮次断言：每轮 prepare 的窗集合 + 每窗写次数）
+private final class WindowFailingGeometry: WindowGeometryWriting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failing: [UInt32: Error]
+    private var _prepared: [[UInt32]] = []
+    private var _calls: [UInt32: Int] = [:]
+    init(failing: [UInt32: Error]) { self.failing = failing }
+    var prepared: [[UInt32]] { lock.lock(); defer { lock.unlock() }; return _prepared }
+    func calls(for wid: UInt32) -> Int { lock.lock(); defer { lock.unlock() }; return _calls[wid] ?? 0 }
+    func prepare(windowIDs: [UInt32]) {
+        lock.lock(); _prepared.append(windowIDs.sorted()); lock.unlock()
+    }
+    func apply(windowID: UInt32, position: CGPoint, size: CGSize) throws {
+        lock.lock(); _calls[windowID, default: 0] += 1; lock.unlock()
+        if let error = failing[windowID] { throw error }
     }
 }
 

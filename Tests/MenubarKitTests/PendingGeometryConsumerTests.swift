@@ -31,25 +31,16 @@ final class PendingGeometryConsumerTests: XCTestCase {
         XCTAssertNil(weakConsumer, "stop 后释放（不泄漏）")
     }
 
-    /// 实测缺陷回归（11-03 第三轮 WeCom 缺底部）：串行补写时，排在前面的慢失败窗（Chrome 每条 ~4.7s）
-    /// 让 WeCom 等到用户下一次拔屏都没轮到。期望：一个慢窗不挡其他窗；只补写窗在活跃 Space 的条目。
-    func testSlowEntryDoesNotBlockOtherEligibleEntries() {
+    /// 只补写窗在活跃 Space 的条目（并发/慢窗不阻塞由 DeferredGeometryApplier.applyPending 负责）
+    func testConsumesOnlyEntriesOnActiveSpaces() {
         let pending = [PendingGeometryEntry(windowID: 1, displayUUID: "A", x: 0, y: 0, w: 1, h: 1),
                        PendingGeometryEntry(windowID: 2, displayUUID: "A", x: 0, y: 0, w: 1, h: 1),
                        PendingGeometryEntry(windowID: 3, displayUUID: "A", x: 0, y: 0, w: 1, h: 1)]
-        let lock = NSLock()
-        var finished: [UInt32: Date] = [:]
-        let start = Date()
+        var batch: [UInt32]?
         PendingGeometryConsumer.consume(pending: pending, activeSpaceIDs: [10],
                                         spaceByWindow: [1: 10, 2: 10, 3: 99],
-                                        shouldYield: { false }) { wid in
-            if wid == 1 { Thread.sleep(forTimeInterval: 0.6) }  // 慢失败窗
-            lock.lock(); finished[wid] = Date(); lock.unlock()
-        }
-        XCTAssertNil(finished[3], "窗不在活跃 Space：不补写")
-        let fast = try? XCTUnwrap(finished[2])
-        XCTAssertLessThan(fast?.timeIntervalSince(start) ?? .infinity, 0.3, "慢窗 1 不得阻塞窗 2")
-        XCTAssertNotNil(finished[1])
+                                        shouldYield: { false }) { batch = $0 }
+        XCTAssertEqual(batch, [1, 2], "窗不在活跃 Space：不补写")
     }
 
     func testYieldsWhenRestoreStarts() {

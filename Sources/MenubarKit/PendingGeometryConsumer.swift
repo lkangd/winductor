@@ -40,9 +40,9 @@ final class PendingGeometryConsumer {
         self.log = log
     }
 
-    /// Space 切换 → 补写的延迟（秒）：切换动画期间新 Space 窗尚未进 AX 树，过早补写只会
-    /// elementInvalid 白耗一次重试额度
-    static let spaceChangeDelay: TimeInterval = 0.35
+    /// Space 切换 → 补写的延迟（秒）：只避开切换动画最初一段；仍未进 AX 树的窗由 Applier 的
+    /// elementInvalid 快速重试兜住（不耗失败额度），不必为保守再多等
+    static let spaceChangeDelay: TimeInterval = 0.15
 
     /// 启动轮询（app 根装配时调用；与 SnapshotEngine 同生命周期）。
     /// 除 2s 轮询外，Space 切换时立即补一轮：后台窗正是在用户切过去时才可写，等下一个 2s tick
@@ -51,14 +51,14 @@ final class PendingGeometryConsumer {
                center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + interval, repeating: interval)
-        t.setEventHandler { self.tick() }
+        t.setEventHandler { self.tick(source: "timer") }
         t.resume()
         timer = t
         self.center = center
         spaceObserver = center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
                                            object: nil, queue: nil) { _ in
             // 串行队列：与 timer tick 不重叠
-            self.queue.asyncAfter(deadline: .now() + Self.spaceChangeDelay) { self.tick() }
+            self.queue.asyncAfter(deadline: .now() + Self.spaceChangeDelay) { self.tick(source: "space-change") }
         }
     }
 
@@ -71,8 +71,9 @@ final class PendingGeometryConsumer {
         timer = nil
     }
 
-    /// 单轮消费（测试直接调用；pending 空 / 管线挂起时零成本返回）
-    func tick() {
+    /// 单轮消费（测试直接调用；pending 空 / 管线挂起时零成本返回）。
+    /// source 只进日志（space-change / timer）：实测量「切 Space → 补写」延迟
+    func tick(source: String = "timer") {
         guard !snapshotEngine.pollingSuspended else { return }
         let pending = store.load()
         guard !pending.isEmpty else { return }
@@ -90,33 +91,28 @@ final class PendingGeometryConsumer {
             }
             return
         }
-        Self.consume(pending: pending, activeSpaceIDs: active, spaceByWindow: byWindow,
-                     shouldYield: { [snapshotEngine] in snapshotEngine.pollingSuspended },
-                     apply: { [applier] wid in _ = applier.applyIfPending(windowID: wid) })
+        let shouldYield = { [snapshotEngine] in snapshotEngine.pollingSuspended }
+        Self.consume(pending: pending, activeSpaceIDs: active, spaceByWindow: byWindow, shouldYield: shouldYield) {
+            log?.write("[restore] action=deferred-consume source=\(source) eligible=\($0.count) pending=\(pending.count)")
+            applier.applyPending(windowIDs: $0, shouldYield: shouldYield)
+        }
     }
 
-    /// 补写调度：只补写窗在活跃 Space 的条目，并发执行——单条 AX 写可阻塞数秒（实测 Chrome 失败
-    /// 每条 ~4.7s），串行时排在后面的窗（11-03 WeCom）等到用户下次拔屏都轮不到。
-    /// 每条开工前检查让出（恢复管线已开始则不再补写）；阻塞至本批全部返回（下一 tick 不重叠）。
-    static func consume(pending: [PendingGeometryEntry], activeSpaceIDs: Set<Int64>,
-                        spaceByWindow: [UInt32: Int64], shouldYield: () -> Bool,
-                        apply: @escaping @Sendable (UInt32) -> Void) {
-        let eligible = pending.map(\.windowID).filter { wid in
+    /// 窗在任一屏活跃 Space 的 pending 条目（= 用户能看到 = AX 可写）
+    static func eligibleWindowIDs(pending: [PendingGeometryEntry], activeSpaceIDs: Set<Int64>,
+                                  spaceByWindow: [UInt32: Int64]) -> [UInt32] {
+        pending.map(\.windowID).filter { wid in
             spaceByWindow[wid].map(activeSpaceIDs.contains) ?? false
         }
-        guard !eligible.isEmpty, !shouldYield() else { return }
-        withoutActuallyEscaping(shouldYield) { yield in
-            let yieldBox = UncheckedBox(yield)
-            DispatchQueue.concurrentPerform(iterations: eligible.count) { i in
-                if yieldBox.value() { return }
-                apply(eligible[i])
-            }
-        }
     }
-}
 
-/// concurrentPerform 闭包内调用非 Sendable 的让出判定（判定只读 pollingSuspended，线程安全）
-private struct UncheckedBox<T>: @unchecked Sendable {
-    let value: T
-    init(_ value: T) { self.value = value }
+    /// 补写调度：只补写窗在活跃 Space 的条目，整批交 Applier（每轮按 app 建一次 AX 索引、并发写、
+    /// 窗未进 AX 树的短间隔重试）。阻塞至本批返回（下一 tick 不重叠）；恢复管线已开始则让出。
+    static func consume(pending: [PendingGeometryEntry], activeSpaceIDs: Set<Int64>,
+                        spaceByWindow: [UInt32: Int64], shouldYield: () -> Bool,
+                        applyBatch: ([UInt32]) -> Void) {
+        let eligible = eligibleWindowIDs(pending: pending, activeSpaceIDs: activeSpaceIDs, spaceByWindow: spaceByWindow)
+        guard !eligible.isEmpty, !shouldYield() else { return }
+        applyBatch(eligible)
+    }
 }
