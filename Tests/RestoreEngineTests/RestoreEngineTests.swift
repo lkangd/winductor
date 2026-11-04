@@ -563,6 +563,17 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.skipCount, 0)
         XCTAssertEqual(report.failCount, 0)
     }
+
+    func testFullscreenSkipsPreMoveWhenSpaceAlreadyOnTargetDespiteStaleFrame() throws {
+        // 屏归属以 Space 为准（GLOSSARY）：202 的 frame 是过期值仍落在 A，但 SLS 报它已在 B#1(id6)
+        // = 已在目标屏 → 免桥接预移位，直接 AXFullScreen
+        let world = makeFullscreenWorld()
+        world.bridge.byWindow[202] = 6
+        _ = try world.engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[101]], "202 已在目标屏，不得预移位")
+        XCTAssertEqual(world.fs.calls.map(\.windowID), [202])
+    }
 }
 
 extension RestorePipelineTests {

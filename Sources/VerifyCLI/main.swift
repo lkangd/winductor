@@ -89,62 +89,6 @@ private func axWindowsByCGWindowID() -> [UInt32: AxWindowInfo] {
     return out
 }
 
-// MARK: - CG 全量窗口枚举
-
-/// CGWindowList .optionAll 的 layer-0 窗口（含其他 Space / 最小化，spec §7.5）
-private struct CGWindowRecord {
-    let wid: UInt32
-    let bundleID: String
-    let title: String?      // kCGWindowName 需屏幕录制权限，可能为 nil
-    let bounds: CGRect      // 全局坐标
-    let pid: pid_t
-}
-
-// CGWindowList 字典里 bundle ID 的键名（SDK 未导出常量，实测返回字典含此键；macOS 15）
-private let kCGWindowBundleIDKey = "kCGWindowBundleID"
-
-private func enumerateCGWindows() -> [CGWindowRecord] {
-    let raw = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-    var records: [CGWindowRecord] = []
-    for dict in raw {
-        let layer = (dict[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
-        guard layer == 0 else { continue }  // 只取普通窗口层（菜单/Dock 等系统层排除）
-        guard let wid = (dict[kCGWindowNumber as String] as? NSNumber)?.uint32Value, wid != 0 else { continue }
-        guard let boundsDict = dict[kCGWindowBounds as String] as? NSDictionary else { continue }
-        var bounds = CGRect.zero
-        guard CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds),
-              bounds.width >= 40, bounds.height >= 40 else { continue }  // 40px 以下按辅助窗排除（spike: cmuxterm 24×24）
-        let pid = (dict[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
-        var bundleID = dict[kCGWindowBundleIDKey as String] as? String ?? ""
-        if bundleID.isEmpty, let app = NSRunningApplication(processIdentifier: pid) {
-            bundleID = app.bundleIdentifier ?? ""
-        }
-        guard !bundleID.isEmpty else { continue }
-        let title = dict[kCGWindowName as String] as? String
-        records.append(CGWindowRecord(wid: wid, bundleID: bundleID, title: title, bounds: bounds, pid: pid))
-    }
-    return records
-}
-
-/// 窗口中心点归属显示器：包含则取之，否则取中心距离最近者（跨屏窗口兜底）
-private func displayFor(window rect: CGRect, displays: [Displays.Info]) -> Displays.Info? {
-    guard !displays.isEmpty else { return nil }
-    let center = CGPoint(x: rect.midX, y: rect.midY)
-    if let hit = displays.first(where: { $0.bounds.contains(center) }) { return hit }
-    return displays.min {
-        hypot($0.bounds.midX - center.x, $0.bounds.midY - center.y)
-        < hypot($1.bounds.midX - center.x, $1.bounds.midY - center.y)
-    }
-}
-
-private func ratio(_ rect: CGRect, in bounds: CGRect) -> (x: Double, y: Double, w: Double, h: Double) {
-    guard bounds.width > 0, bounds.height > 0 else { return (0, 0, 0, 0) }
-    return (Double((rect.minX - bounds.minX) / bounds.width),
-            Double((rect.minY - bounds.minY) / bounds.height),
-            Double(rect.width / bounds.width),
-            Double(rect.height / bounds.height))
-}
-
 // MARK: - 输出辅助
 
 /// 几何相等容差：与 RestoreEngine.VerifyComparer.geometryTolerance 同值（判定口径对齐，
@@ -229,40 +173,40 @@ func main() {
         exit(2)
     }
 
-    // 实时枚举：CG 全量 + AX 配对 → LiveWindow（比例坐标）
-    let cgWindows = enumerateCGWindows()
+    // Space 数据：经 SpaceAdapter 查 SLS，供屏归属（Space 所属屏优先）与 Space 归属（L2）比对。
+    // 本进程无授权 / SkyLight 符号缺失时查询抛错 → 空表 = 屏归属按 frame 兜底、Space 项「无法核验」，不崩（票面要求）。
+    let adapter = SpaceAdapter()
+    var spaceIDByWindow: [UInt32: Int64] = [:]
+    var spaceEntries: [SpaceEntry] = []
+    if let byWindow = try? adapter.spaceIDsByWindowID(),
+       let entries = try? adapter.managedSpaces() {
+        spaceIDByWindow = byWindow
+        spaceEntries = entries
+    }
+
+    // 实时枚举：CG 全量（与 app 同一份 Core 采样）→ 屏归属 + 比例几何（Core.LiveWindowLocator）+ AX 配对
+    let cgWindows = CGWindowListEnumerator().sample()
+    let located = LiveWindowLocator.locate(samples: cgWindows, displays: displays,
+                                           spaceIDByWindow: spaceIDByWindow, spaceEntries: spaceEntries)
     let axByWid = axWindowsByCGWindowID()
     var liveWindows: [LiveWindow] = []
     var displayUUIDByWindowID: [UInt32: String] = [:]
-    for record in cgWindows {
-        guard let display = displayFor(window: record.bounds, displays: displays) else { continue }
-        let r = ratio(record.bounds, in: display.bounds)
-        let ax = axByWid[record.wid]
-        let title = record.title ?? ax?.title ?? ""
-        liveWindows.append(LiveWindow(cgWindowID: record.wid, bundleID: record.bundleID, title: title,
-                                      x: r.x, y: r.y, w: r.w, h: r.h,
+    var spaceEntryByWindowID: [UInt32: SpaceEntry] = [:]
+    for lw in located {
+        let wid = lw.sample.windowID
+        let ax = axByWid[wid]
+        let title = lw.sample.title ?? ax?.title ?? ""
+        liveWindows.append(LiveWindow(cgWindowID: wid, bundleID: lw.sample.bundleID, title: title,
+                                      x: lw.x, y: lw.y, w: lw.w, h: lw.h,
                                       minimized: ax?.minimized ?? false))
-        if let uuid = display.uuid, !uuid.isEmpty {
-            displayUUIDByWindowID[record.wid] = uuid
-        }
+        displayUUIDByWindowID[wid] = lw.display.uuid
+        spaceEntryByWindowID[wid] = lw.space
     }
 
     // 保守匹配：与 app 共用同一份 Core 代码（spec §7.1 / 08 #1）
     let outcome = ConservativeMatcher.match(snapshotWindows: snapshot.windows, liveWindows: liveWindows)
     let matchBySnapshot = Dictionary(uniqueKeysWithValues: outcome.matches.map { ($0.snapshotIndex, $0) })
     let liveBundleIDs = Set(liveWindows.map(\.bundleID))
-
-    // Space 归属（L2）比对数据：经 SpaceAdapter 查 SLS（窗口 → SpaceEntry）。
-    // 本进程无授权 / SkyLight 符号缺失时查询抛错 → 空表 = 相关项「无法核验」，不崩（票面要求）。
-    let adapter = SpaceAdapter()
-    let spaceEntryByWindowID: [UInt32: SpaceEntry]
-    if let byWindow = try? adapter.spaceIDsByWindowID(),
-       let entries = try? adapter.managedSpaces() {
-        let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { first, _ in first })
-        spaceEntryByWindowID = byWindow.compactMapValues { entryBySpaceID[$0] }
-    } else {
-        spaceEntryByWindowID = [:]
-    }
 
     // 报告
     let dateFormatter = ISO8601DateFormatter()

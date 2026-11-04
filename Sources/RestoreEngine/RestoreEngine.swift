@@ -89,7 +89,7 @@ public struct LiveRestoreWindow: Equatable, Sendable {
     public let cgWindowID: UInt32
     public let bundleID: String
     public let title: String
-    /// 当前所属屏稳定 UUID（中心点归属，与 VerifyCLI 同口径）
+    /// 当前所属屏稳定 UUID（屏归属：Space 所属屏优先，Core.LiveWindowLocator）
     public let displayUUID: String
     /// 当前 Space id64（SLSCopySpacesForWindows 单归属）
     public let spaceID: Int64
@@ -293,13 +293,6 @@ public final class RestoreEngine: @unchecked Sendable {
                 + "detail=windows=\(snapshot.windows.count)")
         }
 
-        // 保守匹配（Core 共用代码，spec §7.1）+ 逐条目行动计划
-        let live = collectLiveWindows(samples: enumerator.sample(), displays: displays)
-        let outcome = ConservativeMatcher.match(
-            snapshotWindows: snapshot.windows,
-            liveWindows: live.map { LiveWindow(cgWindowID: $0.cgWindowID, bundleID: $0.bundleID,
-                                               title: $0.title, x: $0.x, y: $0.y, w: $0.w, h: $0.h,
-                                               minimized: $0.minimized) })
         // Space 清单读取失败曾用 try? 静默吞掉 → entries 空 → 整轮 L2 skip（11-03 实测）：
         // 现显式记录并重试一次（同轮单次重试，非循环）；生产失败源 = poller 并发 SLS 冲突
         var entries = (try? spaces.managedSpaces()) ?? []
@@ -311,6 +304,14 @@ public final class RestoreEngine: @unchecked Sendable {
                 log?.write("[restore] action=space-list result=failed detail=L2-will-skip-L1-proceeds")
             }
         }
+
+        // 保守匹配（Core 共用代码，spec §7.1）+ 逐条目行动计划
+        let live = collectLiveWindows(samples: enumerator.sample(), displays: displays, entries: entries)
+        let outcome = ConservativeMatcher.match(
+            snapshotWindows: snapshot.windows,
+            liveWindows: live.map { LiveWindow(cgWindowID: $0.cgWindowID, bundleID: $0.bundleID,
+                                               title: $0.title, x: $0.x, y: $0.y, w: $0.w, h: $0.h,
+                                               minimized: $0.minimized) })
 
         // 撤销第一段（票 16 §8.6/§5.2）：实况窗卡在后台全屏 Space（kind=4，spec §5.1）时
         // 后台退出全屏不可达、桥接/几何写对它无效（桥接 no-op 还会毒化 L2 运行时标记），先摘出计 pending
@@ -921,32 +922,24 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - 实况收集
 
-    /// CG 采样 → 恢复集合：单 Space 归属（粘性/辅助窗排除）、中心点归属屏、离屏候选读 AX minimized
-    private func collectLiveWindows(samples: [CGWindowSample], displays: [Displays.Info]) -> [LiveRestoreWindow] {
+    /// CG 采样 → 恢复集合：单 Space 归属（粘性/辅助窗排除）、屏归属与比例几何走 Core.LiveWindowLocator、
+    /// 离屏候选读 AX minimized
+    private func collectLiveWindows(samples: [CGWindowSample], displays: [Displays.Info],
+                                    entries: [SpaceEntry]) -> [LiveRestoreWindow] {
         let spaceByWindow = (try? spaces.spaceIDsByWindowID()) ?? [:]
-        var out: [LiveRestoreWindow] = []
-        for sample in samples {
-            guard let spaceID = spaceByWindow[sample.windowID] else { continue }
-            guard let display = Self.display(for: sample.bounds, in: displays),
-                  let uuid = display.uuid, !uuid.isEmpty else { continue }
-            let bounds = display.bounds
-            guard bounds.width > 0, bounds.height > 0 else { continue }
-            var minimized = false
-            if !sample.isOnscreen {
-                minimized = ax.probe(pid: sample.pid, windowID: sample.windowID).minimized
-            }
-            func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
-            out.append(LiveRestoreWindow(
+        let located = LiveWindowLocator.locate(samples: samples, displays: displays,
+                                               spaceIDByWindow: spaceByWindow, spaceEntries: entries)
+        return located.compactMap { lw in
+            let sample = lw.sample
+            guard let spaceID = spaceByWindow[sample.windowID] else { return nil }
+            let minimized = !sample.isOnscreen && ax.probe(pid: sample.pid, windowID: sample.windowID).minimized
+            return LiveRestoreWindow(
                 cgWindowID: sample.windowID, bundleID: sample.bundleID, title: sample.title ?? "",
-                displayUUID: uuid, spaceID: spaceID,
-                x: clamp01(Double(sample.bounds.minX - bounds.minX) / Double(bounds.width)),
-                y: clamp01(Double(sample.bounds.minY - bounds.minY) / Double(bounds.height)),
-                w: clamp01(Double(sample.bounds.width) / Double(bounds.width)),
-                h: clamp01(Double(sample.bounds.height) / Double(bounds.height)),
+                displayUUID: lw.display.uuid ?? "", spaceID: spaceID,
+                x: lw.x, y: lw.y, w: lw.w, h: lw.h,
                 minimized: minimized,
-                isOnscreen: sample.isOnscreen))
+                isOnscreen: sample.isOnscreen)
         }
-        return out
     }
 
     // MARK: - 辅助
@@ -964,17 +957,6 @@ public final class RestoreEngine: @unchecked Sendable {
             abs($0.index - snapshotIndex) < abs($1.index - snapshotIndex)
         }) else { return nil }
         return (nearest, snapshotIndex)
-    }
-
-    /// 窗口归属屏：中心点包含则取之，否则取中心距离最近者（与 VerifyCLI 同口径）
-    static func display(for bounds: CGRect, in displays: [Displays.Info]) -> Displays.Info? {
-        guard !displays.isEmpty else { return nil }
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        if let hit = displays.first(where: { $0.bounds.contains(center) }) { return hit }
-        return displays.min {
-            hypot($0.bounds.midX - center.x, $0.bounds.midY - center.y)
-                < hypot($1.bounds.midX - center.x, $1.bounds.midY - center.y)
-        }
     }
 
     static func ratioString(x: Double, y: Double, w: Double, h: Double) -> String {

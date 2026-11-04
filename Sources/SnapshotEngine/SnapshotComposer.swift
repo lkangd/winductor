@@ -5,7 +5,8 @@ import Foundation
 
 // SnapshotComposer.swift — 快照内容映射（spec §7.3/§7.5）。仅在写盘路径执行。
 // 口径：
-//   - 窗口→displayUUID：Displays.active() 顺序上取 bounds 交集最大者；无交集回退 Space 归属屏
+//   - 窗口→displayUUID + 比例几何：Core.LiveWindowLocator（Space 所属屏优先，无 Space 按 frame 兜底；
+//     归属屏无稳定 UUID 的窗不入快照）
 //   - 窗口→spaceIndex：Core/Seams 的 SpaceProviding 接缝（spaceIDsByWindowID → SpaceEntry.index）；
 //     Space 数据不可用时降级：spaces=[]、spaceIndex=1（几何层仍可恢复，spec §8.5 降级阶梯）
 //   - minimized：仅对离屏候选读 AXMinimized；在屏窗口恒 false
@@ -40,8 +41,9 @@ public struct SnapshotComposer: Sendable {
     public func compose(sample: [CGWindowSample], displays: [Displays.Info], capturedAt: Date,
                         geometryOverrides: [UInt32: WindowGeometryOverride] = [:]) -> Snapshot {
         let entries = loadSpaceEntries()
-        let widToSpaceID = loadSpaceIDsByWindow()
-        let spaceByID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
+        let located = LiveWindowLocator.locate(
+            samples: sample.filter { !$0.bundleID.isEmpty }, displays: displays,
+            spaceIDByWindow: loadSpaceIDsByWindow(), spaceEntries: entries)
 
         var fullscreenBySpaceID: [Int64: String] = [:]
         struct Draft: SiblingSortable {
@@ -54,16 +56,8 @@ public struct SnapshotComposer: Sendable {
         }
         var drafts: [Draft] = []
 
-        for window in sample {
-            guard !window.bundleID.isEmpty else { continue }
-            let entry = widToSpaceID[window.windowID].flatMap { spaceByID[$0] }
-            // 归属以 Space 所有权为权威（SLS），frame 相交仅兜底：非可见 Space 后台窗的
-            // AX frame 是过期值，相交会归错屏（实测：内置屏后台窗被记到中屏，restore 据此移错），
-            // 故先查 window 所在 Space 的所属屏，无 Space 归属才按 frame 定屏。
-            guard let display = displays.first(where: { $0.uuid == entry?.displayUUID })
-                ?? pickDisplay(window.bounds, in: displays) else {
-                continue  // 无 Space 归属且落不到任何屏：无从记录，跳过
-            }
+        for lw in located {
+            let window = lw.sample, display = lw.display, entry = lw.space
             var minimized = false
             var axFullScreen = false
             if !window.isOnscreen || window.bounds == display.bounds {
@@ -79,7 +73,6 @@ public struct SnapshotComposer: Sendable {
                 }
                 continue
             }
-            let w = display.bounds.width, h = display.bounds.height
             func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
             // 待补写窗：只在已就位目标屏时覆盖几何（屏归属仍按实况，未就位不伪造）
             let override = geometryOverrides[window.windowID].flatMap { $0.displayUUID == display.uuid ? $0 : nil }
@@ -88,10 +81,10 @@ public struct SnapshotComposer: Sendable {
                 title: window.title ?? "",
                 displayUUID: display.uuid ?? "",
                 spaceIndex: entry?.index ?? 1,
-                x: override.map { clamp01($0.x) } ?? clamp01((window.bounds.minX - display.bounds.minX) / w),
-                y: override.map { clamp01($0.y) } ?? clamp01((window.bounds.minY - display.bounds.minY) / h),
-                w: override.map { clamp01($0.w) } ?? clamp01(window.bounds.width / w),
-                h: override.map { clamp01($0.h) } ?? clamp01(window.bounds.height / h),
+                x: override.map { clamp01($0.x) } ?? lw.x,
+                y: override.map { clamp01($0.y) } ?? lw.y,
+                w: override.map { clamp01($0.w) } ?? lw.w,
+                h: override.map { clamp01($0.h) } ?? lw.h,
                 minimized: minimized))
         }
 
@@ -127,18 +120,6 @@ public struct SnapshotComposer: Sendable {
     }
 
     // MARK: 内部
-
-    /// bounds 交集最大者（displays 已按左→右排序，同积取先者）
-    private func pickDisplay(_ bounds: CGRect, in displays: [Displays.Info]) -> Displays.Info? {
-        var best: (info: Displays.Info, area: Double)?
-        for info in displays {
-            let inter = info.bounds.intersection(bounds)
-            guard !inter.isNull, inter.width > 0, inter.height > 0 else { continue }
-            let area = Double(inter.width * inter.height)
-            if best == nil || area > best!.area { best = (info, area) }
-        }
-        return best?.info
-    }
 
     /// Space 数据不可用 → 降级为空（spaces=[]、spaceIndex=1，几何层照常）
     private func loadSpaceEntries() -> [SpaceEntry] {
