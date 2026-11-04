@@ -1080,6 +1080,80 @@ final class TriggerChainAftershockTests: XCTestCase {
                        "重放有上限，不构成循环")
     }
 
+    /// 提速（11-03 09:28 实测余震 → 重放纠正 2.7s = 防抖 1.5s + 稳定两轮 0.5s + 恢复）：
+    /// 余震重放走短防抖，且 Space/显示器签名与上次开火时一致即开火（不再等第二轮采样）
+    func testAftershockReapplyFiresAfterShortDebounceWhenSignatureMatchesLastFire() throws {
+        let rig = try makeRig()
+        let before = rig.spy.all.count
+
+        lateEvent(rig, after: 2)
+
+        let lines = Array(rig.spy.all.dropFirst(before))
+        let steps = triggerSteps(lines)
+        let stamps = triggerTimestamps(lines)
+        XCTAssertEqual(steps, ["event", "debounce-settle", "aftershock-reapply", "space-stable",
+                               "restore-start", "restore-done"])
+        let start = try XCTUnwrap(steps.firstIndex(of: "restore-start"))
+        XCTAssertEqual(stamps[start].timeIntervalSince(stamps[0]),
+                       TriggerChainConstants.aftershockDebounceQuietPeriod, accuracy: 0.001,
+                       "余震事件 → 重放开工 = 短防抖，无额外采样轮")
+        XCTAssertEqual(rig.restorer.snapshots.count, 2)
+    }
+
+    /// 余震改了显示器排列（集合不变、bounds 变）：签名与上次开火不一致 → 退回连续两轮判据
+    func testAftershockWithChangedDisplayGeometryFallsBackToTwoRoundStability() throws {
+        let rig = try makeRig()
+        let before = rig.spy.all.count
+        let movedB = Displays.Info(id: 2, bounds: CGRect(x: 1000, y: 0, width: 1000, height: 1000), uuid: "B-uuid")
+        rig.box.set([displayA, movedB])
+
+        lateEvent(rig, after: 2)
+
+        let lines = Array(rig.spy.all.dropFirst(before))
+        let steps = triggerSteps(lines)
+        let stamps = triggerTimestamps(lines)
+        XCTAssertEqual(triggerResults(lines.filter { $0.contains("step=space-stable") }), ["changed", "stable"])
+        let start = try XCTUnwrap(steps.firstIndex(of: "restore-start"))
+        XCTAssertEqual(stamps[start].timeIntervalSince(stamps[0]),
+                       TriggerChainConstants.aftershockDebounceQuietPeriod + TriggerChainConstants.spaceStableInterval,
+                       accuracy: 0.001)
+        XCTAssertEqual(rig.restorer.snapshots.count, 2)
+    }
+
+    /// 短防抖只给余震：恢复后窗内拔屏（集合变化）仍走 1.5s 防抖
+    func testNonAftershockEventInWindowKeepsNormalDebounce() throws {
+        let rig = try makeRig()
+        let before = rig.spy.all.count
+        rig.box.set([displayA])
+
+        lateEvent(rig, after: 1)
+
+        let lines = Array(rig.spy.all.dropFirst(before))
+        let stamps = triggerTimestamps(lines)
+        XCTAssertEqual(Array(triggerSteps(lines).prefix(2)), ["event", "debounce-settle"])
+        XCTAssertEqual(stamps[1].timeIntervalSince(stamps[0]), TriggerChainConstants.debounceQuietPeriod,
+                       accuracy: 0.001)
+    }
+
+    /// 余震预判落空（审查 #2）：事件到达时屏幕源尚未反映新集合 → 预判为余震走短防抖；
+    /// settle 时集合已变 → 补足普通防抖再判定（普通插拔时序不受短防抖影响）
+    func testMissedAftershockPredictionExtendsToNormalDebounce() throws {
+        let rig = try makeRig()
+        let before = rig.spy.all.count
+        rig.clock.set(rig.clock.current.addingTimeInterval(1))
+        rig.chain.screenParametersChanged()   // 屏幕源仍是 {A,B}：预判余震
+        rig.box.set([displayA])                // 防抖期内才反映拔屏
+        rig.scheduler.runUntilIdle()
+
+        let lines = Array(rig.spy.all.dropFirst(before))
+        let steps = triggerSteps(lines)
+        let stamps = triggerTimestamps(lines)
+        XCTAssertEqual(Array(steps.prefix(3)), ["event", "debounce-extend", "debounce-settle"])
+        XCTAssertEqual(stamps[2].timeIntervalSince(stamps[0]), TriggerChainConstants.debounceQuietPeriod,
+                       accuracy: 0.001)
+        XCTAssertTrue(lines[2].contains("result=shrank"))
+    }
+
     func testShrinkClearsAftershockState() throws {
         let rig = try makeRig()
         rig.box.set([displayA])          // 恢复后立刻拔屏

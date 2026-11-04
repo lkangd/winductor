@@ -191,7 +191,7 @@ public final class MenuRestoreCoordinator {
 
     // MARK: 屏幕参数变化（观察者入口；单测直调）
 
-    /// 事件 → 触发链（防抖 1.5s 起）+ 菜单刷新（状态行三态随拓扑切换）
+    /// 事件 → 触发链（防抖 1.5s 起；预判为插屏余震时 0.5s）+ 菜单刷新（状态行三态随拓扑切换）
     func screenParametersDidChange() {
         chain.screenParametersChanged()
         refreshMenuOnMain()

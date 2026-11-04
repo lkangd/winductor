@@ -11,6 +11,7 @@ import Foundation
 // 屏幕源（displaysProvider）、Space 列表（SpaceListProviding）、恢复管线（SnapshotRestoring）、日志 sink。
 // 结构化日志（[trigger] step=… at=…）：时间戳链证明 event → debounce-settle → topology-match
 // → space-stable ×2 → restore-start（票面「日志时间戳链可证明」）。
+// 余震重放（自动恢复后 10s 内集合不变的事件）走提速路径：防抖 0.5s，签名与上次开火一致即单轮开火。
 
 /// 触发链硬编码常量（spec §10.3）
 public enum TriggerChainConstants {
@@ -26,6 +27,9 @@ public enum TriggerChainConstants {
     public static let aftershockWindow: TimeInterval = 10
     /// 单次自动恢复的余震重放上限（不构成重试循环）
     public static let aftershockMaxReapplies = 2
+    /// 余震重放的防抖静默期（秒）：事件到达时即可预判为余震（窗内、集合 == 上次自动恢复集合、无拔插痕迹），
+    /// 不必等普通插拔的 1.5s——实测 09:28 余震打乱窗口到重放纠正 2.7s 中 1.5s 是防抖
+    public static let aftershockDebounceQuietPeriod: TimeInterval = 0.5
 }
 
 /// 触发链时钟接缝（日志 at= 时间戳来源；测试注入虚拟时钟，生产 = 系统时钟）
@@ -167,12 +171,23 @@ public final class TriggerChain: @unchecked Sendable {
     /// 上一轮 Space 规范形签名
     private var lastSpaceSignature: [String]?
     /// 最近一次自动恢复（余震重放的快照来源；拔/插屏、手动恢复即作废）
-    private var lastAutoRestore: (snapshot: Snapshot, key: String, uuids: Set<String>, doneAt: Date, reapplies: Int)?
+    private struct AutoRestoreRecord {
+        let snapshot: Snapshot
+        let key: String
+        let uuids: Set<String>
+        let doneAt: Date
+        var reapplies: Int
+        /// 开火时的稳定签名（Space 列表 + 各屏几何）：余震后首轮采样与之一致即视为已稳定
+        let stableSignature: [String]?
+    }
+    private var lastAutoRestore: AutoRestoreRecord?
     /// 进行中的稳定判据是否为余震重放（开火时保留回滚快照、不重复通知）
     private var pendingIsReapply = false
     /// 事件串首个事件到达时的基线 live 快照（idle → debouncing 时读取）。冻结点取它而非 settle 时现读：
     /// 实测 11-03 09:08 拔屏开始后在途写盘把中途态落进 live-<拔屏前拓扑>，settle 现读冻结了垃圾
     private var burstBaseline: (uuids: Set<String>, snapshot: Snapshot?)?
+    /// 本次防抖按余震预判走了短静默期（settle 时预判落空则补足普通静默期）
+    private var debouncedAsAftershock = false
 
     /// [trigger] 行自带 at= 时间戳（ISO8601 带小数秒），时间戳链不依赖外层 sink 是否加戳
     private static let stampFormatter: ISO8601DateFormatter = {
@@ -279,11 +294,25 @@ public final class TriggerChain: @unchecked Sendable {
         // 也按「回到基线拓扑」处理而非零动作——否则拔插循环被 A2/A3 分支误吞（11-03 实测）
         let currentAtEvent = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
         if currentAtEvent != settledUUIDs { sawDivergenceDuringDebounce = true }
+        // 事件到达即按 settle 的余震判据预判（判据不成立的事件仍走普通 1.5s 防抖）
+        let quietPeriod = !sawDivergenceDuringDebounce && aftershockCandidate(current: currentAtEvent) != nil
+            ? TriggerChainConstants.aftershockDebounceQuietPeriod
+            : TriggerChainConstants.debounceQuietPeriod
+        debouncedAsAftershock = quietPeriod == TriggerChainConstants.aftershockDebounceQuietPeriod
         log?.write(chainLine(step: "event", detail: "didChangeScreenParameters"))
-        stateLock.unlock()
-        scheduler.schedule(after: TriggerChainConstants.debounceQuietPeriod) { [weak self] in
+        // 锁内排程：并发事件入口不得让被取消的旧短防抖在新事件的取消之后才排上
+        scheduler.schedule(after: quietPeriod) { [weak self] in
             self?.settleTopology()
         }
+        stateLock.unlock()
+    }
+
+    /// 余震判据（调用方持 stateLock）：自动恢复刚结束（窗内）、集合未变、重放额度未用尽
+    private func aftershockCandidate(current: Set<String>) -> AutoRestoreRecord? {
+        guard let last = lastAutoRestore, last.uuids == current,
+              clock.now().timeIntervalSince(last.doneAt) <= TriggerChainConstants.aftershockWindow,
+              last.reapplies < TriggerChainConstants.aftershockMaxReapplies else { return nil }
+        return last
     }
 
     // MARK: - 防抖静默期结束：拓扑判定
@@ -296,6 +325,19 @@ public final class TriggerChain: @unchecked Sendable {
         }
         let current = Set(displaysProvider().compactMap(\.uuid).filter { !$0.isEmpty })
         let baseline = settledUUIDs
+        if debouncedAsAftershock {
+            debouncedAsAftershock = false
+            if current != baseline || sawDivergenceDuringDebounce || aftershockCandidate(current: current) == nil {
+                // 余震预判落空（事件时屏幕源尚未反映新集合）：补足普通静默期再判定，普通插拔时序不变
+                log?.write(chainLine(step: "debounce-extend", detail: "aftershock-prediction-missed"))
+                scheduler.schedule(after: TriggerChainConstants.debounceQuietPeriod
+                                       - TriggerChainConstants.aftershockDebounceQuietPeriod) { [weak self] in
+                    self?.settleTopology()
+                }
+                stateLock.unlock()
+                return
+            }
+        }
         let sawDivergence = sawDivergenceDuringDebounce
         sawDivergenceDuringDebounce = false
         // 冻结源：事件串起点的基线快照（同一基线集合才可用；否则回退现读）
@@ -323,9 +365,7 @@ public final class TriggerChain: @unchecked Sendable {
                 return
             }
             guard sawDivergence else {
-                if var last = lastAutoRestore, last.uuids == current,
-                   clock.now().timeIntervalSince(last.doneAt) <= TriggerChainConstants.aftershockWindow,
-                   last.reapplies < TriggerChainConstants.aftershockMaxReapplies {
+                if var last = aftershockCandidate(current: current) {
                     // 插屏余震：自动恢复刚结束，macOS 又发集合不变的屏幕事件并重排窗口 →
                     // 同一快照走稳定判据后重放（L1 覆盖余震的重排；poller 不会把乱序几何固化为基线）
                     last.reapplies += 1
@@ -338,9 +378,11 @@ public final class TriggerChain: @unchecked Sendable {
                     stabilizationTarget = current
                     pendingMatch = (last.snapshot, last.key)
                     pendingIsReapply = true
-                    consecutiveSamples = 0
+                    // 以上次开火签名为第 1 轮：首轮采样仍一致即开火（余震没改 Space/屏幕排列），
+                    // 不一致按「变化」重计、退回连续两轮判据
+                    consecutiveSamples = last.stableSignature == nil ? 0 : 1
                     totalSamples = 0
-                    lastSpaceSignature = nil
+                    lastSpaceSignature = last.stableSignature
                     stateLock.unlock()
                     sampleSpaceStability()
                     return
@@ -502,7 +544,8 @@ public final class TriggerChain: @unchecked Sendable {
             let isReapply = pendingIsReapply
             pendingIsReapply = false
             stateLock.unlock()
-            if let notice = performRestore(trigger: .auto, snapshot: snapshot, key: key, reapply: isReapply),
+            if let notice = performRestore(trigger: .auto, snapshot: snapshot, key: key, reapply: isReapply,
+                                           stableSignature: stableSignature),
                !isReapply {
                 deliver(notice)
             }
@@ -538,8 +581,9 @@ public final class TriggerChain: @unchecked Sendable {
     /// 调恢复引擎单轮管线（§6.8）；结束产出完成通知（§8.5 计数 + [degrade] 附注汇总）。
     /// 返回 nil = 当时已在恢复中（busy，记 ignored 日志）。
     /// reapply = 余震重放：保留回滚快照（undo 仍指向首轮恢复前），调用方不投递通知
+    /// stableSignature = 开火时的稳定签名（存入余震记录，余震重放的首轮比对基准）
     private func performRestore(trigger: RestoreTriggerKind, snapshot: Snapshot, key: String,
-                                reapply: Bool = false) -> RestoreNotice? {
+                                reapply: Bool = false, stableSignature: [String]? = nil) -> RestoreNotice? {
         stateLock.lock()
         guard phase != .restoring else {
             stateLock.unlock()
@@ -560,7 +604,9 @@ public final class TriggerChain: @unchecked Sendable {
         if trigger == .auto, report != nil {
             // 余震窗起点 = 最近一次（含重放）完成时刻；重放计数沿用，上限兜底不成循环
             let reapplies = reapply ? (lastAutoRestore?.reapplies ?? TriggerChainConstants.aftershockMaxReapplies) : 0
-            lastAutoRestore = (snapshot, key, Set(snapshot.topology.map(\.uuid)), clock.now(), reapplies)
+            lastAutoRestore = AutoRestoreRecord(snapshot: snapshot, key: key, uuids: Set(snapshot.topology.map(\.uuid)),
+                                                doneAt: clock.now(), reapplies: reapplies,
+                                                stableSignature: stableSignature)
         } else {
             lastAutoRestore = nil
         }
