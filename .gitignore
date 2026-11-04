@@ -1,2 +1,15 @@
 # Scratch files
 .scratch/
+# SwiftPM build
+.build/
+# App bundles assembled by Scripts/make-app.sh
+build/
+*.app
+# Local tooling
+.codegraph/
+.DS_Store
+DerivedData/
+.worktrees/
+materials/
+.code-review/
+.claude/code-review.local.md
