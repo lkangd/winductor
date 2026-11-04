@@ -55,7 +55,7 @@ final class ScreenCaptureReconfirmGuideTests: XCTestCase {
             "打开快照文件夹",
             "打开日志文件夹",
             "能力状态（占位）",
-            "退出窗口布局恢复器",
+            "退出 Winductor",
         ])
 
         // 状态行仍是最顶部项（原「状态行（占位）」被移除，不再出现）

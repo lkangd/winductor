@@ -31,7 +31,7 @@ public final class StatusItemController {
     public func showPlaceholderIcon() {
         guard let image = NSImage(
             systemSymbolName: Self.placeholderSymbolName,
-            accessibilityDescription: "窗口布局恢复器"
+            accessibilityDescription: "Winductor"
         ) else { return }
         statusItem.button?.image = image
     }

@@ -27,9 +27,9 @@ final class PermissionGuideWindowTests: XCTestCase {
         XCTAssertTrue(texts.contains("先授权，才能开始"))
         XCTAssertTrue(texts.contains("本应用需要两项系统权限才能读取和移动窗口。授权仅用于本机恢复窗口，不上传任何数据。"))
         XCTAssertTrue(texts.contains("① 辅助功能 —— 用于读取和设置窗口位置、最小化与全屏。"))
-        XCTAssertTrue(texts.contains("→ 隐私与安全性 > 辅助功能，打开「窗口布局恢复器」"))
+        XCTAssertTrue(texts.contains("→ 隐私与安全性 > 辅助功能，打开「Winductor」"))
         XCTAssertTrue(texts.contains("② 屏幕与系统录音 —— 用于读取所有屏幕、所有桌面上的窗口列表与标题。"))
-        XCTAssertTrue(texts.contains("→ 隐私与安全性 > 屏幕与系统录音，打开「窗口布局恢复器」"))
+        XCTAssertTrue(texts.contains("→ 隐私与安全性 > 屏幕与系统录音，打开「Winductor」"))
     }
 
     /// 初始态：状态行「检测中……」，【立即重启】隐藏（§8.3「检测中……」→ 齐备才提示重启）

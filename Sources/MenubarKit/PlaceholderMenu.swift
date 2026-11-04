@@ -3,12 +3,12 @@ import AppKit
 // PlaceholderMenu.swift — 占位菜单构建（票 10 骨架；票 19 以真实接线替换占位项）。
 // 结构照 spec §8.2 定稿：状态行 + 立即恢复／撤销上次恢复 + 登录时启动／打开快照文件夹／
 // 打开日志文件夹 + 能力状态行 + 退出。骨架期动作项全部置灰（引擎未接线），
-// 仅「退出窗口布局恢复器」可用（terminate: 响应链）。
+// 仅「退出 Winductor」可用（terminate: 响应链）。
 // 占位文案带「（占位）」后缀，避免展示假状态；票 19 接线后换 §8.2 真实文案。
 
 public enum PlaceholderMenu {
     /// 状态项菜单不显示标题，仅作标识
-    static let title = "窗口布局恢复器"
+    static let title = "Winductor"
 
     /// 构建 §8.2 骨架的占位菜单
     public static func build() -> NSMenu {
@@ -37,7 +37,7 @@ public enum PlaceholderMenu {
 
         // 退出：骨架期唯一活项
         let quit = NSMenuItem(
-            title: "退出窗口布局恢复器",
+            title: "退出 Winductor",
             action: NSSelectorFromString("terminate:"),
             keyEquivalent: "q"
         )

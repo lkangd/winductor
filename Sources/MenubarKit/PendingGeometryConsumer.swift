@@ -29,7 +29,7 @@ final class PendingGeometryConsumer {
     private var timer: DispatchSourceTimer?
     private var spaceObserver: NSObjectProtocol?
     private var center: NotificationCenter?
-    private let queue = DispatchQueue(label: "wlr.pending-geometry")
+    private let queue = DispatchQueue(label: "winductor.pending-geometry")
 
     init(store: DeferredGeometryStore, applier: DeferredGeometryApplier,
          adapter: SpaceAdapter, snapshotEngine: SnapshotEngine, log: LogWriting? = nil) {

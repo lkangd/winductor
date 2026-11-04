@@ -219,7 +219,7 @@ extension XCTestCase {
     /// 隔离临时目录（每个用例独享，用完清理）
     func makeTempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-restoretests-\(UUID().uuidString)")
+            .appendingPathComponent("winductor-restoretests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

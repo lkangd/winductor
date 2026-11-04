@@ -103,7 +103,7 @@ public final class PermissionMonitor {
 
     /// 立即检测一次，并启动每 2s 定时检测（回调投递主线程，供 UI 接线）
     public func start() {
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "wlr.permission-monitor.poll"))
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "winductor.permission-monitor.poll"))
         timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval, leeway: .seconds(1))
         timer.setEventHandler { [weak self] in
             DispatchQueue.main.async { self?.checkNow() }

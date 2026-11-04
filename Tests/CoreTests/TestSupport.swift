@@ -5,7 +5,7 @@ import XCTest
 enum TestSupport {
     static func makeTempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-coretests-\(UUID().uuidString)")
+            .appendingPathComponent("winductor-coretests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

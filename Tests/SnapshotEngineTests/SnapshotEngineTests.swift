@@ -256,7 +256,7 @@ extension SnapshotEngineTests {
                            bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: onscreen)
         }
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-snapshotengine-\\(UUID().uuidString)")
+            .appendingPathComponent("winductor-snapshotengine-\\(UUID().uuidString)")
         var calls: [[UInt32]] = []
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: dir), spaces: nil, log: nil,
@@ -278,7 +278,7 @@ extension SnapshotEngineTests {
     /// 恢复管线运行期间挂起轮询（poller 的 SLS 采样与管线 SLS 读并发冲突的根治）
     func testPollingSuspendedSkipsSampling() throws {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-snapshotengine-\(UUID().uuidString)")
+            .appendingPathComponent("winductor-snapshotengine-\(UUID().uuidString)")
         let fake = FakeEnumerator([[CGWindowSample(windowID: 1, pid: 1, bundleID: "com.t", title: nil,
                                                    bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: true)]])
         let engine = SnapshotEngine(store: SnapshotStore(directory: dir), spaces: nil, log: nil,

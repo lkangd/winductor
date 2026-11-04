@@ -1,5 +1,5 @@
 // swift-tools-version:6.0
-// 窗口布局恢复器 WindowLayoutRestorer — SwiftPM 工程骨架（编排者预置，spec §10.1 模块划分）
+// Winductor — SwiftPM 工程骨架（编排者预置，spec §10.1 模块划分）
 // target 归属与票对应：
 //   Core            ← 票 11（schema/存储/保守匹配/日志；Seams.swift 为编排者冻结的接缝）
 //   AXFacade        ← 票 13
@@ -7,13 +7,13 @@
 //   SnapshotEngine  ← 票 12
 //   RestoreEngine   ← 票 14（15/16/17 增量）
 //   MenubarKit      ← 票 10（19 全量接线）
-//   WindowLayoutRestorer ← 票 10（app 入口）
+//   Winductor       ← 票 10（app 入口）
 //   VerifyCLI       ← 票 11 起步，14/15/16 增量
 //   DebugCLI        ← 票 13 加 list-spaces/move-window；12 可加 snapshot-now；14 加 restore；16 加 undo
 import PackageDescription
 
 let package = Package(
-    name: "WindowLayoutRestorer",
+    name: "Winductor",
     platforms: [.macOS(.v15)],
     targets: [
         // 共享基座：快照 schema、存储原语、保守匹配、结构化日志（app 与 verify 共用同一份，spec §9.1）
@@ -33,7 +33,7 @@ let package = Package(
         .target(name: "MenubarKit", dependencies: ["Core", "SnapshotEngine", "RestoreEngine"]),
         // 菜单栏 agent 应用入口（LSUIElement）
         .executableTarget(
-            name: "WindowLayoutRestorer",
+            name: "Winductor",
             dependencies: ["MenubarKit"]
         ),
         // verify CLI（验证器）：独立可执行，与 app 共享 Core 匹配逻辑

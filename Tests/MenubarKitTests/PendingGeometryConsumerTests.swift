@@ -12,7 +12,7 @@ import SpaceAdapter
 final class PendingGeometryConsumerTests: XCTestCase {
     func testStartedConsumerStaysAliveWithoutExternalOwnerUntilStopped() {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-pending-consumer-\(UUID().uuidString)")
+            .appendingPathComponent("winductor-pending-consumer-\(UUID().uuidString)")
         let geometryStore = DeferredGeometryStore(directory: dir)
         let engine = SnapshotEngine(store: SnapshotStore(directory: dir), spaces: nil,
                                     displaysProvider: { [] }, notificationCenters: [])

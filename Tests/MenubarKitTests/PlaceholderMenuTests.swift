@@ -19,7 +19,7 @@ final class PlaceholderMenuTests: XCTestCase {
             "打开快照文件夹",
             "打开日志文件夹",
             "能力状态（占位）",
-            "退出窗口布局恢复器",
+            "退出 Winductor",
         ])
     }
 
@@ -38,16 +38,16 @@ final class PlaceholderMenuTests: XCTestCase {
     /// 骨架占位项（引擎/设置未接线）一律置灰且不挂动作
     func testPlaceholderItemsAreDisabledWithoutAction() {
         for item in makeMenu().items
-        where !item.isSeparatorItem && item.title != "退出窗口布局恢复器" {
+        where !item.isSeparatorItem && item.title != "退出 Winductor" {
             XCTAssertFalse(item.isEnabled, "占位项应置灰：\(item.title)")
             XCTAssertNil(item.action, "占位项不应挂动作：\(item.title)")
         }
     }
 
-    /// 「退出窗口布局恢复器」必须真实可用（骨架期唯一活项），走 Cocoa terminate: 响应链
+    /// 「退出 Winductor」必须真实可用（骨架期唯一活项），走 Cocoa terminate: 响应链
     func testQuitItemIsEnabledWithTerminateAction() {
         let quit = makeMenu().items.last
-        XCTAssertEqual(quit?.title, "退出窗口布局恢复器")
+        XCTAssertEqual(quit?.title, "退出 Winductor")
         XCTAssertTrue(quit?.isEnabled ?? false)
         XCTAssertEqual(quit?.action, NSSelectorFromString("terminate:"))
     }

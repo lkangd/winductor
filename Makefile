@@ -1,7 +1,7 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-APP := $(ROOT)/build/WindowLayoutRestorer.app
-BIN := $(APP)/Contents/MacOS/WindowLayoutRestorer
-LOG := $(HOME)/Library/Application Support/WindowLayoutRestorer/logs/app.log
+APP := $(ROOT)/build/Winductor.app
+BIN := $(APP)/Contents/MacOS/Winductor
+LOG := $(HOME)/Library/Application Support/Winductor/logs/app.log
 # 实测常用的 app.log 关键行（make log FILTER=... 覆盖）
 FILTER ?= aftershock|debounce-extend|deferred-consume|deferred wid|give-up|structure-changed|topology-changed-while|perf|done ok
 N ?= 50
@@ -41,18 +41,20 @@ check:
 app:
 	bash "$(ROOT)/Scripts/make-app.sh"
 
+# 改名升级期间同时终止旧可执行名，避免旧进程被单实例守卫激活。
 relaunch: test
 	@n=$$(cd "$(ROOT)" && swift run -q DebugCLI list-spaces 2>/dev/null | grep -c '^display'); \
 	if [ "$$n" != "$(DISPLAYS)" ] && [ -z "$(FORCE)" ]; then \
 		echo "当前 $$n 屏，期望 $(DISPLAYS) 屏；确认无误用 FORCE=1 make relaunch"; exit 1; \
 	fi
 	bash "$(ROOT)/Scripts/make-app.sh"
+	pkill -9 -x Winductor 2>/dev/null || true
 	pkill -9 -x WindowLayoutRestorer 2>/dev/null || true
 	sleep 2
 	open "$(APP)"
 	@sleep 2
 	@echo "构建：$$(stat -f %Sm "$(BIN)")"
-	@echo "启动：$$(ps -o lstart= -p $$(pgrep -x WindowLayoutRestorer))"
+	@echo "启动：$$(ps -o lstart= -p $$(pgrep -x Winductor))"
 
 displays:
 	@cd "$(ROOT)" && swift run -q DebugCLI list-spaces 2>/dev/null | grep -c '^display'

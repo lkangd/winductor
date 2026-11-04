@@ -49,11 +49,11 @@ final class SingleInstanceGuardTests: XCTestCase {
     /// 重启监视进程：等待旧 PID 退出后才 open（/bin/sh -c 'while kill -0 …; open -n …'）
     func testRestartWatcherWaitsForOldPIDDeathBeforeOpen() {
         let args = SelfRelauncher.restartWatcherArguments(pid: 4242,
-                                                          bundlePath: "/Applications/WindowLayoutRestorer.app")
+                                                          bundlePath: "/Applications/Winductor.app")
         let script = args.joined(separator: " ")
         XCTAssertTrue(script.contains("kill -0 4242"), "必须轮询旧实例 PID")
         XCTAssertTrue(script.contains("open -n"), "必须强制新实例拉起（不带 -n 会被解析为激活旧实例）")
-        XCTAssertTrue(script.contains("/Applications/WindowLayoutRestorer.app"))
+        XCTAssertTrue(script.contains("/Applications/Winductor.app"))
     }
 
     /// 执行顺序：先落重启监视进程（存活于本进程之外），后干净退出自身

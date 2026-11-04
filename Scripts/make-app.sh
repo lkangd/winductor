@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# make-app.sh — 组装并签名 build/WindowLayoutRestorer.app（票 10；spec §4 签名前置）。
+# make-app.sh — 组装并签名 build/Winductor.app（票 10；spec §4 签名前置）。
 # 用法：Scripts/make-app.sh [swift build 参数透传]
 #   CODESIGN_IDENTITY=证书名 Scripts/make-app.sh   # 覆盖默认证书名
 # 流程：swift build -c release → 组装 .app（Info.plist 冻结字段见下）→ codesign。
 # 证书缺失：给出中文指引后退出非零（证书创建步骤见 docs/signing.md）。
 set -euo pipefail
 
-APP_NAME="WindowLayoutRestorer"
+APP_NAME="Winductor"
 BUNDLE_ID="com.lkd.window-restore" # 冻结（spec §4.4）：TCC designated requirement 含 identifier，一变授权全废
-DISPLAY_NAME="窗口布局恢复器"
+# 保留旧签名证书名以沿用现有 macOS 授权身份；它不是产品显示名。
 IDENTITY="${CODESIGN_IDENTITY:-WindowLayoutRestorer Dev}"
+DISPLAY_NAME="Winductor"
 
 cd "$(dirname "$0")/.."
 BUILD_DIR="build"

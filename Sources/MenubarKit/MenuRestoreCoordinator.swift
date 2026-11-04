@@ -121,7 +121,7 @@ public final class MenuRestoreCoordinator {
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 scheduler: TriggerChainScheduling = DispatchTriggerScheduler(),
                 restoreEnqueue: @escaping (@escaping @Sendable () -> Void) -> Void = { work in
-                    DispatchQueue(label: "wlr.restore", qos: .userInitiated).async(execute: work)
+                    DispatchQueue(label: "winductor.restore", qos: .userInitiated).async(execute: work)
                 },
                 log: LogWriting? = nil,
                 degradeCollector: DegradeCollectingLog? = nil,

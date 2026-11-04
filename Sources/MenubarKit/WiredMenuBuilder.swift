@@ -2,7 +2,7 @@ import AppKit
 
 // WiredMenuBuilder.swift — 全量菜单构建（票 19，spec §8.2 七项定稿结构 + §8.5 能力状态行）。
 // 结构（逐字照 09 二）：状态行（纯文本三态）──── 立即恢复／撤销上次恢复 ──── 登录时启动 ✓／
-// 打开快照文件夹／打开日志文件夹 ──── 能力状态行 ──── 退出窗口布局恢复器。
+// 打开快照文件夹／打开日志文件夹 ──── 能力状态行 ──── 退出 Winductor。
 // 无「最近结果」常驻行（09 二：完成通知已带计数，常驻只会变陈旧信息）。
 // 动作经 NSObject 载体路由到注入闭包（NSMenuItem.target 为 unsafe unretained——载体同时挂在
 // 各动作项 representedObject（强引用）上保活，测试直接 perform 捕获）。
@@ -47,7 +47,7 @@ public struct WiredMenuContent {
 
 public enum WiredMenuBuilder {
     /// 菜单标题（NSStatusItem 不显示，仅作标识；沿票 10 占位菜单同款）
-    static let menuTitle = "窗口布局恢复器"
+    static let menuTitle = "Winductor"
 
     /// 构建 §8.2 定稿菜单
     public static func build(_ content: WiredMenuContent) -> NSMenu {
@@ -81,7 +81,7 @@ public enum WiredMenuBuilder {
         menu.addItem(.separator())
 
         // 退出（响应链 terminate:，骨架期同款）
-        let quit = NSMenuItem(title: "退出窗口布局恢复器",
+        let quit = NSMenuItem(title: "退出 Winductor",
                               action: NSSelectorFromString("terminate:"),
                               keyEquivalent: "q")
         quit.keyEquivalentModifierMask = .command

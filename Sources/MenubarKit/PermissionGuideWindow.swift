@@ -60,9 +60,9 @@ public final class PermissionGuideWindow {
         let heading = text("先授权，才能开始", bold: true, size: 16)
         let intro = text("本应用需要两项系统权限才能读取和移动窗口。授权仅用于本机恢复窗口，不上传任何数据。")
         let section1 = text("① 辅助功能 —— 用于读取和设置窗口位置、最小化与全屏。")
-        let hint1 = text("→ 隐私与安全性 > 辅助功能，打开「窗口布局恢复器」")
+        let hint1 = text("→ 隐私与安全性 > 辅助功能，打开「Winductor」")
         let section2 = text("② 屏幕与系统录音 —— 用于读取所有屏幕、所有桌面上的窗口列表与标题。")
-        let hint2 = text("→ 隐私与安全性 > 屏幕与系统录音，打开「窗口布局恢复器」")
+        let hint2 = text("→ 隐私与安全性 > 屏幕与系统录音，打开「Winductor」")
         statusLabel = text(Self.detectingText)
         contentLabels = [heading, intro, section1, hint1, section2, hint2, statusLabel]
 

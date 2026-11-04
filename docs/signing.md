@@ -1,8 +1,9 @@
-# 签名与授权前置操作手册（spec §4 落地）
+# Winductor 签名与授权前置操作手册（spec §4 落地）
 
 > 票 10 把 spec §4 的 HITL 清单整理成可照抄的操作手册。本工程**无 .xcodeproj**：
-> 日常构建走 `Scripts/make-app.sh`（swift build → 组装 `build/WindowLayoutRestorer.app` → codesign），
-> 证书名默认 `WindowLayoutRestorer Dev`（可用 `CODESIGN_IDENTITY` 环境变量覆盖）。
+> 日常构建走 `Scripts/make-app.sh`（swift build → 组装 `build/Winductor.app` → codesign），
+> 默认证书仍使用 `WindowLayoutRestorer Dev`，以保留现有 macOS 授权身份；该证书名是兼容性标识，不是产品名。
+> 有其他证书时，可用 `CODESIGN_IDENTITY` 环境变量覆盖。
 > §3 的 Xcode 红线适用于将来用 Xcode 构建此工程时的配置；当前按脚本签名时已天然满足。
 
 ## 0. 为什么必须自签证书（背景）
@@ -57,11 +58,11 @@ TCC 授权（辅助功能 / 屏幕录制）绑定代码签名身份。ad-hoc 签
 
 ```bash
 Scripts/make-app.sh
-codesign -dv build/WindowLayoutRestorer.app
+codesign -dv build/Winductor.app
 # 应看到：Identifier=com.lkd.window-restore、Authority=WindowLayoutRestorer Dev
 
 # designated requirement（TCC 绑定的本体；重编译前后应不变）：
-codesign -dvr- build/WindowLayoutRestorer.app
+codesign -dvr- build/Winductor.app
 ```
 
 **跨重建复核**：改一行代码 → 重新 `Scripts/make-app.sh` → `codesign -dvr-` 输出应与之前一致

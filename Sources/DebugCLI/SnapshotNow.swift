@@ -8,7 +8,7 @@ import SnapshotEngine
 // SpaceProviding 实现由票 13 提供：本命令当前以 spaces=nil（降级：spaces=[]、spaceIndex=1）
 // 构造引擎；票 17/18 接线时注入 SpaceAdapter 实现即可。
 // 用法：swift run DebugCLI snapshot-now [--dir <快照目录>] [--watch <秒>]
-//   --dir   落盘目录（默认 ~/Library/Application Support/WindowLayoutRestorer/snapshots/）
+//   --dir   落盘目录（默认 ~/Library/Application Support/Winductor/snapshots/）
 //   --watch 挂起引擎 N 秒（照常 2s 轮询+1s 防抖+加速器），live mtime 变化时打印，
 //           退出前列 1+4 滚动文件——验收「动窗口后 mtime 可查 / 1+4 滚动」用
 

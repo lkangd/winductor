@@ -50,7 +50,7 @@ public final class SnapshotEngine {
     private let lock = NSLock()
     private var lastFingerprint: WindowFingerprint?
     private var debounceItem: DispatchWorkItem?
-    private let debounceQueue = DispatchQueue(label: "wlr.snapshot-engine.debounce")
+    private let debounceQueue = DispatchQueue(label: "winductor.snapshot-engine.debounce")
 
     private var pollTimer: DispatchSourceTimer?
     private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
@@ -90,7 +90,7 @@ public final class SnapshotEngine {
     /// 启动轮询 timer（2s ± 0.5s）与加速器观察（应用启退、屏幕事件）
     public func start() {
         pollNow()
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "wlr.snapshot-engine.poll"))
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "winductor.snapshot-engine.poll"))
         timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval,
                        leeway: .nanoseconds(Int(pollTolerance * 1_000_000_000)))
         timer.setEventHandler { [weak self] in self?.pollNow() }

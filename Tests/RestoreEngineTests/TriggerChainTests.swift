@@ -177,7 +177,7 @@ private func makeSnapshot(topology uuids: [String]) -> Snapshot {
 
 private func makeStore(topologies: [[String]]) throws -> SnapshotStore {
     let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wlr-triggerchain-\(UUID().uuidString)")
+        .appendingPathComponent("winductor-triggerchain-\(UUID().uuidString)")
     let store = SnapshotStore(directory: dir)
     for uuids in topologies {
         try store.write(makeSnapshot(topology: uuids),
@@ -630,7 +630,7 @@ final class TriggerChainTests: XCTestCase {
         var snapshot = makeSnapshot(topology: ["A-uuid", "B-uuid"])
         snapshot.spaces = [SnapshotSpace(displayUUID: "A-uuid", index: 1, kind: .user, fullscreenAppBundleID: nil)]
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-triggerchain-\(UUID().uuidString)")
+            .appendingPathComponent("winductor-triggerchain-\(UUID().uuidString)")
         let store = SnapshotStore(directory: dir)
         try store.write(snapshot, topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"]))
         let box = DisplayBox([displayA])

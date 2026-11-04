@@ -113,7 +113,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         openedFolders = []
         refreshCalls = 0
         store = SnapshotStore(directory: FileManager.default.temporaryDirectory
-            .appendingPathComponent("wlr-menu-coordinator-\(UUID().uuidString)"))
+            .appendingPathComponent("winductor-menu-coordinator-\(UUID().uuidString)"))
         restorer = FakeRestorer()
         undo = FakeUndo()
         notifier = FakeNotifier()
@@ -155,8 +155,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             notifier: notifier,
             loginItem: login,
             capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
-            snapshotsFolder: URL(fileURLWithPath: "/tmp/wlr-snapshots"),
-            logsFolder: URL(fileURLWithPath: "/tmp/wlr-logs"),
+            snapshotsFolder: URL(fileURLWithPath: "/tmp/winductor-snapshots"),
+            logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
             openFolder: { [weak self] in self?.openedFolders.append($0) },
             refreshMenu: { [weak self] in self?.refreshCalls += 1 })
     }
@@ -202,8 +202,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             degradeCollector: collector,
             undo: undo, icon: icon, notifier: notifier, loginItem: login,
             capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
-            snapshotsFolder: URL(fileURLWithPath: "/tmp/wlr-snapshots"),
-            logsFolder: URL(fileURLWithPath: "/tmp/wlr-logs"),
+            snapshotsFolder: URL(fileURLWithPath: "/tmp/winductor-snapshots"),
+            logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
             openFolder: { [weak self] in self?.openedFolders.append($0) },
             refreshMenu: { [weak self] in self?.refreshCalls += 1 })
 
@@ -315,8 +315,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         try perform(coordinator, title: "打开日志文件夹")
 
         XCTAssertEqual(openedFolders, [
-            URL(fileURLWithPath: "/tmp/wlr-snapshots"),
-            URL(fileURLWithPath: "/tmp/wlr-logs"),
+            URL(fileURLWithPath: "/tmp/winductor-snapshots"),
+            URL(fileURLWithPath: "/tmp/winductor-logs"),
         ])
     }
 

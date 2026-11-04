@@ -56,7 +56,7 @@ public final class DispatchTriggerScheduler: TriggerChainScheduling {
     private let lock = NSLock()
     private var pending: [DispatchWorkItem] = []
 
-    public init(queue: DispatchQueue = DispatchQueue(label: "wlr.trigger-chain")) {
+    public init(queue: DispatchQueue = DispatchQueue(label: "winductor.trigger-chain")) {
         self.queue = queue
     }
 
@@ -210,7 +210,7 @@ public final class TriggerChain: @unchecked Sendable {
                 log: LogWriting? = nil,
                 degradeCollector: DegradeCollectingLog? = nil,
                 restoreEnqueue: @escaping (@escaping @Sendable () -> Void) -> Void = { work in
-                    DispatchQueue(label: "wlr.restore", qos: .userInitiated).async(execute: work)
+                    DispatchQueue(label: "winductor.restore", qos: .userInitiated).async(execute: work)
                 },
                 onNotice: @escaping @Sendable (RestoreNotice) -> Void = { _ in }) {
         self.store = store

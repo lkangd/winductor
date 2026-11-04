@@ -21,7 +21,7 @@ final class RuntimeAssemblyTests: XCTestCase {
         let engine = RuntimeAssembly.makeSnapshotEngine(
             gatedBy: monitor,
             storeDirectory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("wlr-runtime-assembly-tests-\(UUID().uuidString)")
+                .appendingPathComponent("winductor-runtime-assembly-tests-\(UUID().uuidString)")
         )
         XCTAssertFalse(engine.readinessGate(), "未就绪时引擎门必须关闭（零落盘）")
 
@@ -38,7 +38,7 @@ final class RuntimeAssemblyTests: XCTestCase {
         let enumerator = CountingEnumerator()
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("wlr-accelerator-tests-\(UUID().uuidString)")),
+                .appendingPathComponent("winductor-accelerator-tests-\(UUID().uuidString)")),
             spaces: nil,
             enumerator: enumerator,
             displaysProvider: { [] },

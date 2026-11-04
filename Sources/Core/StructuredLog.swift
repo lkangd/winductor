@@ -23,7 +23,7 @@ import Foundation
 // 逐窗口行的注册扩展键（restoreLine 尾部可选追加，接在冻结字段之后）：
 //   skip 行可附 reason=<跳过原因> 与 detail=<补充详情>；wid=0 = 未配对实况窗（规划期无 cgwindowid 可引）。
 // 文件 sink：落盘行前缀 ISO8601 时间戳；目录延迟创建（首次写入才建，
-// 默认 ~/Library/Application Support/WindowLayoutRestorer/logs/）。
+// 默认 ~/Library/Application Support/Winductor/logs/）。
 
 public protocol LogWriting: Sendable {
     func write(_ line: String)

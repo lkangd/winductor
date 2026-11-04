@@ -61,7 +61,7 @@ final class ReadyMenuInjectionTests: XCTestCase {
 
         XCTAssertTrue(statusSpy.warningDotVisible)
         XCTAssertTrue(lastMenuTitles.contains("状态行（占位）"), "未就绪保持票 18 占位骨架")
-        XCTAssertFalse(lastMenuTitles.contains("立即恢复") && lastMenuTitles.contains("退出窗口布局恢复器")
+        XCTAssertFalse(lastMenuTitles.contains("立即恢复") && lastMenuTitles.contains("退出 Winductor")
                        && !lastMenuTitles.contains("状态行（占位）"))
     }
 

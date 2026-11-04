@@ -47,7 +47,7 @@ final class WiredMenuBuilderTests: XCTestCase {
             "打开快照文件夹",
             "打开日志文件夹",
             "能力状态：全部可用",
-            "退出窗口布局恢复器",
+            "退出 Winductor",
         ])
     }
 
@@ -120,9 +120,9 @@ final class WiredMenuBuilderTests: XCTestCase {
         XCTAssertEqual(calls, ["openSnapshots", "openLogs"])
     }
 
-    /// 「退出窗口布局恢复器」可用，走 Cocoa terminate: 响应链（spec §8.2 退出项）
+    /// 「退出 Winductor」可用，走 Cocoa terminate: 响应链（spec §8.2 退出项）
     func testQuitItemEnabledWithTerminateAction() {
-        let quit = item(makeMenu(content: makeContent()), titled: "退出窗口布局恢复器")
+        let quit = item(makeMenu(content: makeContent()), titled: "退出 Winductor")
         XCTAssertEqual(quit?.isEnabled, true)
         XCTAssertEqual(quit?.action, NSSelectorFromString("terminate:"))
         XCTAssertEqual(quit?.keyEquivalent, "q")
