@@ -3,7 +3,6 @@ import Core
 import Dispatch
 import Foundation
 import RestoreEngine
-import SnapshotEngine
 import SpaceAdapter
 
 /// 后台窗延迟几何的消费轮询（RuntimeAssembly 专用）。
@@ -14,7 +13,7 @@ import SpaceAdapter
 ///
 /// 消费判定（每 2s 一次，pending 非空才做 SLS 读）：窗当前 Space ∈ 任一屏活跃 Space
 /// = 用户能看到它 = AX 可写 → 应用一次（每窗单次，一次性语义不变）。
-/// 恢复/撤销管线运行期间与 SnapshotEngine 一起挂起（SLS 并发冲突面，见 PollPausingRestorer）。
+/// 每轮是 SkyLightSession 的 shared：恢复/撤销管线独占期间跳过，补写批次中途经 shouldYield 让出。
 ///
 /// 生命周期：start() 后由 timer 回调强持有自身（装配处只有局部变量；实测缺陷 11-03：
 /// 曾用 [weak self]，装配函数返回即释放，pending 从未被消费），stop() 断环释放。
@@ -22,7 +21,7 @@ final class PendingGeometryConsumer {
     private let store: DeferredGeometryStore
     private let applier: DeferredGeometryApplier
     private let adapter: SpaceAdapter
-    private let snapshotEngine: SnapshotEngine
+    private let session: SkyLightSession
     private let log: LogWriting?
     /// 上一次读失败的描述（同一失败只落一行日志，防 2s 轮询刷屏）
     private var lastReadFailure: String?
@@ -32,11 +31,11 @@ final class PendingGeometryConsumer {
     private let queue = DispatchQueue(label: "winductor.pending-geometry")
 
     init(store: DeferredGeometryStore, applier: DeferredGeometryApplier,
-         adapter: SpaceAdapter, snapshotEngine: SnapshotEngine, log: LogWriting? = nil) {
+         adapter: SpaceAdapter, session: SkyLightSession, log: LogWriting? = nil) {
         self.store = store
         self.applier = applier
         self.adapter = adapter
-        self.snapshotEngine = snapshotEngine
+        self.session = session
         self.log = log
     }
 
@@ -71,10 +70,13 @@ final class PendingGeometryConsumer {
         timer = nil
     }
 
-    /// 单轮消费（测试直接调用；pending 空 / 管线挂起时零成本返回）。
+    /// 单轮消费（测试直接调用；pending 空 / 管线独占时零成本返回）。
     /// source 只进日志（space-change / timer）：实测量「切 Space → 补写」延迟
     func tick(source: String = "timer") {
-        guard !snapshotEngine.pollingSuspended else { return }
+        _ = session.shared { tickShared(source: source) }
+    }
+
+    private func tickShared(source: String) {
         let pending = store.load()
         guard !pending.isEmpty else { return }
         let active: Set<Int64>
@@ -91,7 +93,7 @@ final class PendingGeometryConsumer {
             }
             return
         }
-        let shouldYield = { [snapshotEngine] in snapshotEngine.pollingSuspended }
+        let shouldYield = { [session] in session.shouldYield }
         Self.consume(pending: pending, activeSpaceIDs: active, spaceByWindow: byWindow, shouldYield: shouldYield) {
             log?.write("[restore] action=deferred-consume source=\(source) eligible=\($0.count) pending=\(pending.count)")
             applier.applyPending(windowIDs: $0, shouldYield: shouldYield)

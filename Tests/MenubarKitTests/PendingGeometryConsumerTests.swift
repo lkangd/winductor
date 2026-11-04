@@ -14,14 +14,12 @@ final class PendingGeometryConsumerTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("winductor-pending-consumer-\(UUID().uuidString)")
         let geometryStore = DeferredGeometryStore(directory: dir)
-        let engine = SnapshotEngine(store: SnapshotStore(directory: dir), spaces: nil,
-                                    displaysProvider: { [] }, notificationCenters: [])
         weak var weakConsumer: PendingGeometryConsumer?
         do {
             let consumer = PendingGeometryConsumer(
                 store: geometryStore,
                 applier: DeferredGeometryApplier(store: geometryStore, displaysProvider: { [] }),
-                adapter: SpaceAdapter(), snapshotEngine: engine)
+                adapter: SpaceAdapter(), session: SkyLightSession())
             consumer.start(interval: 60, center: NotificationCenter())  // Space 切换观察也须在 stop 时断环
             weakConsumer = consumer
         }

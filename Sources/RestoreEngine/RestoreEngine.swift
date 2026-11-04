@@ -110,6 +110,8 @@ public final class RestoreEngine: @unchecked Sendable {
     /// L1 单窗 AX 写限时（秒）：插屏后各 app AX 响应变慢（实测 4.6s/项），限时转延迟几何保通知秒级
     private static let axApplyTimeoutSeconds: TimeInterval = 1.5
     private let geometry: WindowGeometryWriting
+    /// 管线全程独占 SkyLight（与 poller 写盘 / pending 补写互斥；多条管线串行）
+    private let session: SkyLightSession
     /// 后台窗延迟几何（AX 树不含非可见 Space 窗 → elementInvalid 的补救路径）
     private let deferredGeometry: DeferredGeometryStore
     /// 本轮 pending（runPipeline 开始清零，结束整写替换 pending 文件）
@@ -139,6 +141,7 @@ public final class RestoreEngine: @unchecked Sendable {
                 enumerator: WindowEnumerating = CGWindowListEnumerator(),
                 ax: WindowAXProbing = MinimalAXReader(),
                 geometry: WindowGeometryWriting = AXGeometryWriter(),
+                session: SkyLightSession = SkyLightSession(),
                 fullscreen: WindowFullScreenWriting = AXFullScreenWriter(),
                 minimize: WindowMinimizeWriting = AXMinimizeWriter(),
                 fullscreenSettleSeconds: TimeInterval = 1.0,
@@ -153,6 +156,7 @@ public final class RestoreEngine: @unchecked Sendable {
         self.enumerator = enumerator
         self.ax = ax
         self.geometry = geometry
+        self.session = session
         self.fullscreen = fullscreen
         self.minimize = minimize
         self.fullscreenSettleSeconds = fullscreenSettleSeconds
@@ -269,6 +273,13 @@ public final class RestoreEngine: @unchecked Sendable {
 
     private func runPipeline(snapshot: Snapshot, mode: RunMode,
                              displays: [Displays.Info], preserveUndo: Bool = false) throws -> PipelineCounts {
+        try session.exclusive(mode == .restore ? "restore" : "undo") {
+            try runPipelineExclusive(snapshot: snapshot, mode: mode, displays: displays, preserveUndo: preserveUndo)
+        }
+    }
+
+    private func runPipelineExclusive(snapshot: Snapshot, mode: RunMode,
+                                      displays: [Displays.Info], preserveUndo: Bool) throws -> PipelineCounts {
         let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
         // 分段计时（恢复提速：每轮一行 perf，定位瓶颈段）
         let tStart = Date()

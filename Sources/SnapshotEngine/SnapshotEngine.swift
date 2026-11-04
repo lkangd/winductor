@@ -28,14 +28,8 @@ public final class SnapshotEngine {
     private let visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)?
     /// 写盘时的几何覆盖源（生产：pending 延迟几何；见 SnapshotComposer.compose）
     private let geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])?
-    /// 轮询挂起（恢复管线运行期间置位：避免 poller 的 SLS 采样与管线 SLS 读并发冲突，
-    /// 实测并发下 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip）
-    private var pollSuspended = false
-    private let suspendLock = NSLock()
-    public var pollingSuspended: Bool {
-        get { suspendLock.lock(); defer { suspendLock.unlock() }; return pollSuspended }
-        set { suspendLock.lock(); pollSuspended = newValue; suspendLock.unlock() }
-    }
+    /// 恢复管线独占期间采样与写盘一律跳过（写盘 compose 读 SLS，采样触发的迁移补写写 AX）
+    private let session: SkyLightSession
     /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
     private var lastOnscreenByWID: [UInt32: Bool] = [:]
     private let store: SnapshotStore
@@ -66,7 +60,8 @@ public final class SnapshotEngine {
                 debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
                 notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
                 visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
-                geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil) {
+                geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil,
+                session: SkyLightSession = SkyLightSession()) {
         // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
         // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
         // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
@@ -81,6 +76,7 @@ public final class SnapshotEngine {
         self.debounceInterval = debounceInterval
         self.visibilityTransitionHandler = visibilityTransitionHandler
         self.geometryOverrides = geometryOverrides
+        self.session = session
     }
 
     deinit { stop() }
@@ -129,7 +125,10 @@ public final class SnapshotEngine {
     /// 返回是否检出变化。有变化且已就绪 → 排定防抖落盘（连续变化自动合并）。
     @discardableResult
     public func pollNow() -> Bool {
-        if pollingSuspended { return false }  // 恢复管线独占 SLS 期间暂停采样
+        session.shared { pollShared() } ?? false
+    }
+
+    private func pollShared() -> Bool {
         let fingerprint = WindowFingerprint(displays: displaysProvider(), windows: enumerator.sample())
         // 可见性迁移（后台窗延迟几何消费口）：上轮不可见 → 本轮可见的窗口集合
         let onscreenNow = fingerprint.windows.filter(\.isOnscreen).map(\.windowID)
@@ -184,6 +183,15 @@ public final class SnapshotEngine {
 
     private func performWrite() {
         guard readinessGate() else { return }  // 未就绪零落盘
+        guard session.shared({ writeShared() }) != nil else {
+            // 指纹清空：下一轮 poll 即使采样不变也重新检出、补上这次写盘
+            lock.lock(); lastFingerprint = nil; lock.unlock()
+            log?.write("[snapshot] action=write path=- result=skip detail=restore-pipeline-exclusive")
+            return
+        }
+    }
+
+    private func writeShared() {
         let displays = displaysProvider()
         guard !displays.isEmpty else {
             log?.write("[snapshot] action=write path=- result=fail detail=no-active-display")

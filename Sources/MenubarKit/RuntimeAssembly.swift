@@ -24,14 +24,16 @@ public enum RuntimeAssembly {
                                           log: LogWriting? = nil,
                                           notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
                                           visibilityTransitionHandler: (@Sendable ([UInt32]) -> Void)? = nil,
-                                          geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil) -> SnapshotEngine {
+                                          geometryOverrides: (@Sendable () -> [UInt32: WindowGeometryOverride])? = nil,
+                                          session: SkyLightSession = SkyLightSession()) -> SnapshotEngine {
         let engine = SnapshotEngine(
             store: SnapshotStore(directory: storeDirectory, log: log),
             spaces: spaces,
             log: log,
             notificationCenters: notificationCenters,
             visibilityTransitionHandler: visibilityTransitionHandler,
-            geometryOverrides: geometryOverrides
+            geometryOverrides: geometryOverrides,
+            session: session
         )
         engine.readinessGate = { [monitor] in monitor.status.isReady }
         return engine
@@ -56,6 +58,9 @@ public enum RuntimeAssembly {
         let collector = DegradeCollectingLog(inner: sink)
         let adapter = SpaceAdapter(log: collector)
         let store = SnapshotStore(directory: storeDirectory, log: collector)
+        // 恢复/撤销管线独占 SkyLight：poller 采样/写盘与 pending 补写在管线运行期间让出
+        // （并发 SLS 读实测导致 managedSpaces 失败 → 整轮 L2 静默 skip，11-03 生产复现）
+        let session = SkyLightSession(log: collector)
         // spec §7.5 加速器分工：引擎只接屏幕事件（.default）；应用启退 + Space 切换由装配件
         // WorkspaceEventAccelerator 接 NSWorkspace 中心（引擎无 Space 切换内置观察，见引擎文件头），
         // 随门控协调器同启同停。
@@ -80,33 +85,31 @@ public enum RuntimeAssembly {
                                                         ($0.windowID, WindowGeometryOverride(displayUUID: $0.displayUUID,
                                                                                              x: $0.x, y: $0.y, w: $0.w, h: $0.h))
                                                     }, uniquingKeysWith: { a, _ in a })
-                                                })
+                                                },
+                                                session: session)
         let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
         let restoreEngine = RestoreEngine(store: store,
                                           spaces: SpaceAdapterBridge(adapter),
+                                          session: session,
                                           log: collector)
         // 后台窗延迟几何的消费轮询：CG isOnscreen 对跨 Space 窗恒 true，迁移事件永不触发；
-        // 改为 2s 轮询「pending ∩ 活跃 Space」消费（恢复期间随 poller 一起挂起）
+        // 改为 2s 轮询「pending ∩ 活跃 Space」消费（管线独占期间让出）
         let pendingConsumer = PendingGeometryConsumer(
             store: deferredStore,
-            applier: deferredApplier, adapter: adapter, snapshotEngine: snapshotEngine, log: collector)
+            applier: deferredApplier, adapter: adapter, session: session, log: collector)
         pendingConsumer.start()
-        // 恢复/撤销期间暂停 SnapshotEngine 轮询（poller 的高频 SLS 采样与管线 SLS 读并发冲突，
-        // 实测导致 managedSpaces 失败 → entries 空 → 整轮 L2 静默 skip，11-03 生产复现 + DebugCLI 无
-        // poller 复测即愈）；完成后自动恢复轮询
-        let pollPausing = PollPausingRestorer(base: restoreEngine, snapshotEngine: snapshotEngine)
         let capabilityProbe = SpaceAdapterCapabilityProbe(adapter: adapter)
 
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
         let refreshBox = MenuRefreshBox()
         let menuCoordinator = MenuRestoreCoordinator(
             store: store,
-            restorer: pollPausing,
+            restorer: restoreEngine,
             spaces: ManagedSpaceListProvider(adapter),
             scheduler: DispatchTriggerScheduler(),
             log: collector,
             degradeCollector: collector,
-            undo: pollPausing,
+            undo: restoreEngine,
             icon: statusItem,
             notifier: notifier,
             loginItem: loginItem,

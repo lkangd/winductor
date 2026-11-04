@@ -112,6 +112,23 @@ final class RestorePipelineTests: XCTestCase {
         XCTAssertLessThan(undoIdx, firstActionIdx, "动手恢复前必须先落回滚快照")
     }
 
+    /// 管线全程独占 SkyLight：执行中（L1 几何写时刻）后台 shared 一律跳过，结束后放行
+    func testPipelineHoldsSkyLightSessionExclusively() throws {
+        let world = makeWorld()
+        let session = SkyLightSession()
+        let engine = RestoreEngine(store: world.store, spaces: world.bridge,
+                                   enumerator: FakeEnumerator(world.samples), ax: FakeAX(),
+                                   geometry: world.geometry, session: session,
+                                   displaysProvider: { World.displays() },
+                                   rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: world.log)
+        var sharedDuringPipeline: Int?? = .none
+        world.geometry.onApply = { sharedDuringPipeline = .some(session.shared { 1 }) }
+        try engine.restore(snapshot: world.snapshot)
+
+        XCTAssertEqual(sharedDuringPipeline, .some(nil), "管线执行中 shared 应被拦")
+        XCTAssertEqual(session.shared { 1 }, 1, "管线结束后放行")
+    }
+
     func testUndoWriteFailureAbortsBeforeAnyMutation() throws {
         // 存储目录路径被一个普通文件挡住 → 原子写必失败 → restore 中止且零动作（无撤销保险不动手）
         let dir = try makeTempDir()

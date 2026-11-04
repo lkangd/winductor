@@ -30,7 +30,6 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     /// >0 = managedSpaces 前 N 次调用抛错（模拟 poller 并发 SLS 冲突：undo 快照与
     /// 管线 Space 清单两次读都可能失败，重试才成功）
     var managedSpacesFailures = 0
-    /// 置 true = pollNow 风格挂起（pollingSuspended 验证用，SnapshotEngine 侧测试独立）
     /// 非 nil = 第 N 次 moveWindowsToSpace 后把 bridgeAvailable 翻 false（模拟桥接超时降级，实测缺陷）
     var degradeBridgeAfterMoves: Int?
     /// 每次桥接移动的阻塞钩子（模拟 WindowServer 楔死，测管线死线）

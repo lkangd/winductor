@@ -204,7 +204,8 @@ final class SnapshotEngineTests: XCTestCase {
 
     private func makeEngine(_ enumerator: FakeEnumerator, ax: WindowAXProbing = FakeAXProber(),
                             pollInterval: TimeInterval = 3600, debounceInterval: TimeInterval = 3600,
-                            notificationCenters: [NotificationCenter]? = nil) -> SnapshotEngine {
+                            notificationCenters: [NotificationCenter]? = nil,
+                            session: SkyLightSession = SkyLightSession()) -> SnapshotEngine {
         let display = fakeDisplay("AAAA-1111-1111-1111-111111111111")
         return SnapshotEngine(
             store: SnapshotStore(directory: root, log: log),
@@ -218,7 +219,8 @@ final class SnapshotEngineTests: XCTestCase {
             pollInterval: pollInterval,
             pollTolerance: 0.5,
             debounceInterval: debounceInterval,
-            notificationCenters: notificationCenters ?? [NotificationCenter()])
+            notificationCenters: notificationCenters ?? [NotificationCenter()],
+            session: session)
     }
 
     private func sample(id: UInt32, bundleID: String, title: String,
@@ -275,21 +277,31 @@ extension SnapshotEngineTests {
 }
 
 extension SnapshotEngineTests {
-    /// 恢复管线运行期间挂起轮询（poller 的 SLS 采样与管线 SLS 读并发冲突的根治）
-    func testPollingSuspendedSkipsSampling() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("winductor-snapshotengine-\(UUID().uuidString)")
-        let fake = FakeEnumerator([[CGWindowSample(windowID: 1, pid: 1, bundleID: "com.t", title: nil,
-                                                   bounds: CGRect(x: 0, y: 0, width: 10, height: 10), isOnscreen: true)]])
-        let engine = SnapshotEngine(store: SnapshotStore(directory: dir), spaces: nil, log: nil,
-                                    enumerator: fake, notificationCenters: [])
+    /// 恢复管线独占 SkyLight 期间不采样（采样会触发可见性迁移补写，与管线几何写冲突）
+    func testPollSkippedWhileSessionExclusive() throws {
+        let session = SkyLightSession()
+        let fake = FakeEnumerator([sample(id: 1, bundleID: "com.t", title: "t")])
+        let engine = makeEngine(fake, session: session)
 
-        engine.pollingSuspended = true
-        XCTAssertFalse(engine.pollNow(), "挂起期间不采样")
+        session.exclusive("restore") {
+            XCTAssertFalse(engine.pollNow(), "独占期间不采样")
+        }
         XCTAssertEqual(fake.callCount, 0, "enumerator 未被调用")
+        XCTAssertTrue(engine.pollNow(), "独占结束恢复采样")
+    }
 
-        engine.pollingSuspended = false
+    /// 防抖写盘撞上管线独占：本次不写（compose 读 SLS 会与管线并发），下一轮 poll 重新检出并写
+    func testWriteSkippedDuringExclusiveIsRetriedOnNextPoll() throws {
+        let session = SkyLightSession()
+        let w = sample(id: 1, bundleID: "com.t", title: "t")
+        let engine = makeEngine(FakeEnumerator([w]), session: session)
         XCTAssertTrue(engine.pollNow())
-        XCTAssertEqual(fake.callCount, 1, "解除挂起后恢复采样")
+
+        session.exclusive("restore") { engine.writePendingNow() }
+        XCTAssertEqual(try snapshotFiles().count, 0, "独占期间不写盘")
+
+        XCTAssertTrue(engine.pollNow(), "被跳过的写盘：同采样也要重新检出为变化")
+        engine.writePendingNow()
+        XCTAssertEqual(try decodeLive().windows.map(\.title), ["t"])
     }
 }

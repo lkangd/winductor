@@ -224,7 +224,7 @@ private final class LockedWindowIDs: @unchecked Sendable {
     func append(_ wid: UInt32) { lock.lock(); _items.append(wid); lock.unlock() }
 }
 
-/// concurrentPerform 闭包内调用非 Sendable 的让出判定（判定只读 pollingSuspended，线程安全）
+/// concurrentPerform 闭包内调用非 Sendable 的让出判定（判定只读 SkyLightSession.shouldYield，线程安全）
 private struct UncheckedBox<T>: @unchecked Sendable {
     let value: T
     init(_ value: T) { self.value = value }
