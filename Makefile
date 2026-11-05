@@ -8,7 +8,7 @@ N ?= 50
 # 重启前期望的显示器数（少屏时重启会让冻结点按少屏启动重建；FORCE=1 跳过）
 DISPLAYS ?= 3
 
-.PHONY: help build test test-tsan check app relaunch displays spaces debug log log-follow hooks issue
+.PHONY: help build test test-tsan check app dmg release setup-dist relaunch displays spaces debug log log-follow hooks issue
 
 help:
 	@echo "Targets:"
@@ -16,7 +16,10 @@ help:
 	@echo "  make test           swift test"
 	@echo "  make test-tsan      swift test --sanitize=thread（并发改动必跑）"
 	@echo "  make check          Scripts/check.sh（pre-commit 同款门禁）"
-	@echo "  make app            Scripts/make-app.sh（release 构建 + 组装 + 签名；留意钥匙串授权弹窗）"
+	@echo "  make app            Scripts/make-app.sh（release 构建 + 组装 + 签名：Developer ID，没有则用自签 Winductor Dev）"
+	@echo "  make dmg            通用二进制 .app + 未公证 DMG（本地分发，对方首次打开需手动放行）"
+	@echo "  make release        Scripts/release.sh（通用二进制 + 公证 + DMG + tag + GitHub Release；先改 VERSION 并提交）"
+	@echo "  make setup-dist     Scripts/setup-distribution.sh（一次性：证书、公证凭据、GitHub 仓库、重新授权）"
 	@echo "  make relaunch       test + app，确认 $(DISPLAYS) 屏后结束旧实例并打开新 app，核对启动晚于构建（FORCE=1 跳过屏数检查）"
 	@echo "  make displays       当前显示器数（DebugCLI list-spaces）"
 	@echo "  make spaces         DebugCLI list-spaces 全量输出"
@@ -41,7 +44,16 @@ check:
 app:
 	bash "$(ROOT)/Scripts/make-app.sh"
 
-# 改名升级期间同时终止旧可执行名，避免旧进程被单实例守卫激活。
+dmg:
+	RELEASE=1 bash "$(ROOT)/Scripts/make-app.sh"
+	bash "$(ROOT)/Scripts/make-dmg.sh"
+
+release:
+	bash "$(ROOT)/Scripts/release.sh"
+
+setup-dist:
+	bash "$(ROOT)/Scripts/setup-distribution.sh"
+
 relaunch: test
 	@n=$$(cd "$(ROOT)" && swift run -q DebugCLI list-spaces 2>/dev/null | grep -c '^display'); \
 	if [ "$$n" != "$(DISPLAYS)" ] && [ -z "$(FORCE)" ]; then \
@@ -49,7 +61,6 @@ relaunch: test
 	fi
 	bash "$(ROOT)/Scripts/make-app.sh"
 	pkill -9 -x Winductor 2>/dev/null || true
-	pkill -9 -x WindowLayoutRestorer 2>/dev/null || true
 	sleep 2
 	open "$(APP)"
 	@sleep 2

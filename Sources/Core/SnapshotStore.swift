@@ -13,9 +13,6 @@ import Foundation
 
 public struct SnapshotStore: Sendable {
     private static let applicationSupportDirectoryName = "Winductor"
-    // 首次启动新版本时迁移旧产品目录中的快照、待处理几何和日志。
-    private static let legacyApplicationSupportDirectoryName = "WindowLayoutRestorer"
-    private static let applicationSupportMigrationLock = NSLock()
 
     /// 快照根目录（spec §7.4）
     public let directory: URL
@@ -41,43 +38,9 @@ public struct SnapshotStore: Sendable {
             .appendingPathComponent("logs", isDirectory: true)
     }
 
-    /// 将旧目录中尚未迁移的内容移入新目录；同名文件保留新版文件，不覆盖用户当前数据。
     private static func applicationSupportRoot() -> URL {
-        let supportBase = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let current = supportBase.appendingPathComponent(applicationSupportDirectoryName, isDirectory: true)
-        let legacy = supportBase.appendingPathComponent(legacyApplicationSupportDirectoryName, isDirectory: true)
-
-        applicationSupportMigrationLock.lock()
-        defer { applicationSupportMigrationLock.unlock() }
-        do {
-            try moveMissingItems(from: legacy, to: current)
-        } catch {
-            // 如果系统阻止迁移且新目录尚不存在，继续使用旧目录以保留现有快照。
-            if !FileManager.default.fileExists(atPath: current.path) { return legacy }
-        }
-        return current
-    }
-
-    private static func moveMissingItems(from source: URL, to destination: URL) throws {
-        let fileManager = FileManager.default
-        var sourceIsDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: source.path, isDirectory: &sourceIsDirectory) else { return }
-
-        var destinationIsDirectory: ObjCBool = false
-        let destinationExists = fileManager.fileExists(atPath: destination.path, isDirectory: &destinationIsDirectory)
-        if !destinationExists {
-            try fileManager.moveItem(at: source, to: destination)
-            return
-        }
-        guard sourceIsDirectory.boolValue, destinationIsDirectory.boolValue else { return }
-
-        let children = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
-        for child in children {
-            try moveMissingItems(from: child, to: destination.appendingPathComponent(child.lastPathComponent))
-        }
-        if try fileManager.contentsOfDirectory(atPath: source.path).isEmpty {
-            try fileManager.removeItem(at: source)
-        }
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(applicationSupportDirectoryName, isDirectory: true)
     }
 
     // MARK: 拓扑键与路径

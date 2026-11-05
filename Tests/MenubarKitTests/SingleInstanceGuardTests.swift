@@ -27,7 +27,7 @@ final class SingleInstanceGuardTests: XCTestCase {
     func testStartupGuardUsesRunningApplicationsExcludingSelf() throws {
         let selfPID = ProcessInfo.processInfo.processIdentifier
         // 自己的 bundle id 不该有「其他」实例 → 放行
-        XCTAssertTrue(SingleInstanceGuard.startupGuard(bundleIdentifier: Bundle.main.bundleIdentifier ?? "com.lkd.window-restore",
+        XCTAssertTrue(SingleInstanceGuard.startupGuard(bundleIdentifier: Bundle.main.bundleIdentifier ?? "com.lkangd.winductor",
                                                        selfPID: selfPID,
                                                        runningPIDs: { _ in [selfPID] },
                                                        activate: { _ in XCTFail("放行路径不得激活") },
@@ -35,7 +35,7 @@ final class SingleInstanceGuardTests: XCTestCase {
         // 有其他实例 → 激活之 + 退出自身（exit 由注入接缝捕获，不真退测试进程）
         var activated: [Int32] = []
         var exited = false
-        XCTAssertFalse(SingleInstanceGuard.startupGuard(bundleIdentifier: "com.lkd.window-restore",
+        XCTAssertFalse(SingleInstanceGuard.startupGuard(bundleIdentifier: "com.lkangd.winductor",
                                                         selfPID: selfPID,
                                                         runningPIDs: { _ in [selfPID, 999999] },
                                                         activate: { activated.append($0) },

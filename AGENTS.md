@@ -15,3 +15,7 @@ When orchestrating subagents (implement-spec fan-out, code-review axes, review-f
 ### Domain docs
 
 Single-context layout: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
+### Handoff docs
+
+Put all handoff docs to `docs/handoffs/`.

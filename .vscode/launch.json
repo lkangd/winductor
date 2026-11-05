@@ -5,20 +5,20 @@
       "request": "launch",
       "args": [],
       "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
-      "name": "Debug WindowLayoutRestorer",
-      "target": "WindowLayoutRestorer",
+      "name": "Debug Winductor",
+      "target": "Winductor",
       "configuration": "debug",
-      "preLaunchTask": "swift: Build Debug WindowLayoutRestorer"
+      "preLaunchTask": "swift: Build Debug Winductor"
     },
     {
       "type": "swift",
       "request": "launch",
       "args": [],
       "cwd": "${workspaceFolder:mac-screen-layout-fixer}",
-      "name": "Release WindowLayoutRestorer",
-      "target": "WindowLayoutRestorer",
+      "name": "Release Winductor",
+      "target": "Winductor",
       "configuration": "release",
-      "preLaunchTask": "swift: Build Release WindowLayoutRestorer"
+      "preLaunchTask": "swift: Build Release Winductor"
     },
     {
       "type": "swift",

@@ -13,3 +13,6 @@ DerivedData/
 materials/
 .code-review/
 .claude/code-review.local.md
+
+# Local docs
+docs/handoffs/
