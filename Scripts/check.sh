@@ -6,6 +6,13 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/.." && pwd; })"
 cd "$ROOT"
 
+# Pin the SDK to the selected developer dir's macOS SDK so the swift toolchain and SDK match.
+# /usr/bin/git is an xcrun shim that exports SDKROOT=<xcrun's default SDK> into hooks, and that
+# default can be the CommandLineTools SDK even when xcode-select points at Xcode (SDK built by a
+# newer Swift than Xcode's compiler -> "this SDK is not supported by the compiler").
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export SDKROOT
+
 fail=0
 
 echo "==> swift build"
