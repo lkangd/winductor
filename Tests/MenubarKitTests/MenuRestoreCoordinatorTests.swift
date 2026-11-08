@@ -84,6 +84,12 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
+    private final class FakePopover: RestorePopoverRendering {
+        var onEvent: ((RestorePopoverEvent) -> Void)?
+        private(set) var rendered: [RestorePopoverPresentation] = []
+        func render(_ presentation: RestorePopoverPresentation) { rendered.append(presentation) }
+    }
+
     // MARK: 装配
 
     private var displays: [Displays.Info] = []
@@ -103,6 +109,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var icon: FakeIcon!
     private var login: FakeLogin!
     private var scheduler: FakeScheduler!
+    private var popover: FakePopover!
 
     override func setUp() {
         displays = Self.makeDisplays(["d-1", "d-2", "d-3"])
@@ -122,6 +129,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         icon = FakeIcon()
         login = FakeLogin()
         scheduler = FakeScheduler()
+        popover = FakePopover()
     }
 
     private static func makeDisplays(_ uuids: [String]) -> [Displays.Info] {
@@ -171,7 +179,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             snapshotsFolder: URL(fileURLWithPath: "/tmp/winductor-snapshots"),
             logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
             openFolder: { [weak self] in self?.openedFolders.append($0) },
-            refreshMenu: { [weak self] in self?.refreshCalls += 1 })
+            refreshMenu: { [weak self] in self?.refreshCalls += 1 },
+            popover: popover)
     }
 
     /// 经全量菜单项 target/action 触发动作（与真实点击同路径）
@@ -242,10 +251,18 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         scheduler.fireAll()  // 稳定判据第 2 轮到点 → 触发恢复
 
         XCTAssertEqual(restorer.restoreCalls, 1, "新拓扑有自动预设 → 自动恢复一次")
-        XCTAssertEqual(notifier.deliveries.first?.title, "恢复完成")
-        XCTAssertEqual(notifier.deliveries.first?.body, "已按「工作」恢复。恢复完成：12 窗口归位、1 跳过、0 失败",
-                       "过渡：自动恢复告知暂走系统通知（票 05 换 popover）")
+        XCTAssertTrue(notifier.deliveries.isEmpty, "自动恢复告知改走 popover，不再发系统通知（§6.3）")
+        guard case .notice(let notice, _)? = popover.rendered.last else { return XCTFail("应弹自动恢复告知") }
+        XCTAssertEqual(notice.headline, "已按「工作」恢复")
+        XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败")
         XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行三态）")
+
+        // 告知「撤销」走菜单同款撤销管线（离主线程 + 撤销完成通知）
+        undo.canUndoValue = true
+        popover.onEvent?(.undoTapped)
+        XCTAssertEqual(undo.undoCalls, 1)
+        XCTAssertEqual(enqueueUsed, true)
+        XCTAssertEqual(notifier.deliveries.first?.title, "撤销完成")
     }
 
     // MARK: 撤销上次恢复（§8.6 两段式通知 + 计数通知）
@@ -339,16 +356,24 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
 
     // MARK: 通知桥接与菜单刷新
 
-    /// 判定结果桥接（过渡形态，票 05 换 popover）：请求提示 → 系统通知；收起提示 → 无投递
-    func testOutcomeBridgeDeliversPromptAndIgnoresDismiss() throws {
+    /// 判定结果桥接（§6.2）：请求提示 → 恢复提示 popover；「恢复」走触发链手动恢复（完成通知照常）；收起提示 → 收起
+    func testOutcomeBridgeShowsPromptRestoresAndDismisses() throws {
         let coordinator = makeCoordinator()
         try writeLiveSnapshot()
         let topology = try XCTUnwrap(presetStore.topology(key: observedTopology.identity.key))
 
-        coordinator.handle(outcome: .dismissPrompt)
-        XCTAssertTrue(notifier.deliveries.isEmpty)
         coordinator.handle(outcome: .promptNeeded(topology))
-        XCTAssertEqual(notifier.deliveries.first?.title, "有可用预设")
+        guard case .prompt(let content)? = popover.rendered.last else { return XCTFail("应弹恢复提示") }
+        XCTAssertEqual(content.selected?.name, "工作")
+        XCTAssertTrue(notifier.deliveries.isEmpty)
+
+        popover.onEvent?(.restoreTapped)
+        XCTAssertEqual(restorer.restoreCalls, 1)
+        XCTAssertEqual(notifier.deliveries.first?.title, "恢复完成")
+
+        coordinator.handle(outcome: .promptNeeded(topology))
+        coordinator.handle(outcome: .dismissPrompt)
+        XCTAssertEqual(popover.rendered.last, .hidden)
     }
 
     /// 菜单打开时原位刷新：状态行/撤销可用性按构建时刻现状重算

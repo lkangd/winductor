@@ -24,7 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let (gate, menu) = RuntimeAssembly.assembleAppRoot(
             monitor: monitor,
             statusItem: controller,
-            notifier: UserNotificationPoster())
+            notifier: UserNotificationPoster(),
+            popoverAnchor: { [weak controller] in controller?.button })
         gate.start()        // 票 18：首检决策（未就绪→引导窗；就绪→全量菜单常态运行）
         menu.start()        // 票 19：didChangeScreenParameters 观察者 → 触发链 + 菜单刷新
 

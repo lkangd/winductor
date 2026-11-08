@@ -11,7 +11,8 @@ import SnapshotEngine
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp，唯一设置项 §8.2）；
 //   Finder 入口 → 目录打开接缝（目录不存在先创建，09 四）；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新（状态行三态 §8.2）；
-//   触发链判定结果（display-presets §5.1）→ handle(outcome:)（过渡：系统通知；票 05 换成 popover）。
+//   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
+//   popover，§6.2/§6.3；提示「恢复」= chain.restorePresetAsync，告知「撤销」= 菜单同款撤销管线）。
 // 全部系统单例经协议注入（UNUserNotificationCenter/SMAppService 不可单测；可测接缝全走 fake）。
 
 /// 系统通知投递接缝（生产：UserNotificationPoster 包 UNUserNotificationCenter；测试：fake 收集）
@@ -115,6 +116,8 @@ public final class MenuRestoreCoordinator {
     private let displaysProvider: () -> [Displays.Info]
     private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
+    /// 恢复提示 / 自动恢复告知（init 尾部构造：撤销闭包要引用 self）
+    private var popovers: RestorePopoverCoordinator?
     /// 菜单打开时原位刷新的委托载体（NSMenuDelegate 必须是 NSObject；
     /// coordinator 引用 init 尾部回填——初始化期不可在存储属性就绪前传 self）
     private final class MenuWillOpenCarrier: NSObject, NSMenuDelegate {
@@ -146,7 +149,9 @@ public final class MenuRestoreCoordinator {
                 snapshotsFolder: URL,
                 logsFolder: URL,
                 openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
-                refreshMenu: @escaping () -> Void) {
+                refreshMenu: @escaping () -> Void,
+                currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
+                popover: RestorePopoverRendering? = nil) {
         self.store = store
         self.restoreEnqueue = restoreEnqueue
         self.undo = undo
@@ -178,6 +183,11 @@ public final class MenuRestoreCoordinator {
         menuWillOpenCarrier.coordinator = self
         noticeSink.set { [weak self] notice in self?.handle(notice: notice) }
         outcomeSink.set { [weak self] outcome in self?.handle(outcome: outcome) }
+        popovers = RestorePopoverCoordinator(
+            renderer: popover, presets: presetStore, currentSpaces: currentSpaces,
+            restorePreset: { [chain] id, key in chain.restorePresetAsync(id: id, topologyKey: key) },
+            undo: { [weak self] in self?.undoLastTapped() },
+            log: log)
     }
 
     deinit {
@@ -220,18 +230,10 @@ public final class MenuRestoreCoordinator {
         refreshMenuOnMain()
     }
 
-    /// 判定结果桥接（TriggerChain onOutcome，spec §5.1）。过渡形态：自动恢复 / 请求提示走系统通知，
-    /// 收起提示无 UI 可收；票 05 把这里换成恢复提示与自动恢复告知 popover（§6.2/§6.3）。
+    /// 判定结果桥接（TriggerChain onOutcome，spec §5.1）→ 恢复提示 / 自动恢复告知 popover（§6.2/§6.3）。
+    /// 自动恢复不再发系统通知；手动恢复（含提示「恢复」）的完成通知仍经 onNotice 投递。
     func handle(outcome: TriggerOutcome) {
-        switch outcome {
-        case .autoRestored(let restored):
-            notifier.deliver(title: restored.notice.title, body: "已按「\(restored.presetName)」恢复。" + restored.notice.body)
-        case .promptNeeded(let topology):
-            notifier.deliver(title: "有可用预设",
-                             body: "当前屏幕组合有 \(topology.presets.count) 个预设，可用菜单「立即恢复」恢复。")
-        case .dismissPrompt:
-            break
-        }
+        popovers?.handle(outcome: outcome)
         refreshMenuOnMain()
     }
 

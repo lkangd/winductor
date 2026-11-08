@@ -19,6 +19,7 @@ public enum RuntimeAssembly {
     /// - Parameters:
     ///   - statusItem: 状态项呈现（警示点归 StatusPresenting，常态/恢复中图标归 StatusIconControlling）
     ///   - notifier: 系统通知投递（生产 UserNotificationPoster；UNUserNotificationCenter 不可单测）
+    ///   - popoverAnchor: 恢复提示 / 自动恢复告知 popover 的锚点（生产 = 状态项按钮；nil = 不弹 popover）
     ///   - appLog: app 结构化日志 sink（缺省 = FileLogSink 落日志目录 app.log，「打开日志文件夹」所指；
     ///     单测注入内存 sink）
     public static func assembleAppRoot(
@@ -27,6 +28,7 @@ public enum RuntimeAssembly {
         notifier: SystemNotifying,
         loginItem: LoginItemServicing = SMAppServiceLoginItem(),
         storeDirectory: URL = PresetStore.defaultDirectory,
+        popoverAnchor: (() -> NSView?)? = nil,
         appLog: LogWriting? = nil
     ) -> (gateCoordinator: NotReadyGateCoordinator, menuCoordinator: MenuRestoreCoordinator) {
         let sink = appLog ?? FileLogSink(directory: SnapshotStore.defaultLogDirectory, fileName: "app.log")
@@ -68,7 +70,10 @@ public enum RuntimeAssembly {
             capabilityLayers: { capabilityProbe.probe() },
             snapshotsFolder: storeDirectory,
             logsFolder: SnapshotStore.defaultLogDirectory,
-            refreshMenu: { refreshBox.refresh() })
+            refreshMenu: { refreshBox.refresh() },
+            // 恢复提示的 Space 不足对比：恢复/撤销管线独占 SkyLight 时让出（读不到 = 不提示）
+            currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
+            popover: popoverAnchor.map { StatusItemPopoverPresenter(anchor: $0) })
         let gateCoordinator = NotReadyGateCoordinator(
             monitor: monitor,
             statusItem: statusItem,
