@@ -8,6 +8,7 @@ import SnapshotEngine
 // → 一次性拍快照（SnapshotEngine.capture，离主线程）→ 仅当拍快照时的拓扑 = 预设所属拓扑才写
 // （spec「仅当前拓扑」：确认期间拓扑变了也拒绝）→ PresetStore.overwritePreset（保留名称与自动标记，更新快照与保存时间）。
 // 失败（拓扑已变 / 拍快照或写盘失败）经 notifier 投「覆盖预设失败」。
+// 两段执行器、拍快照判定与装配与保存流程共用（LayoutCaptureSupport.swift）。
 
 /// 覆盖确认框接缝（生产：AlertPresetOverwriteConfirm；测试：脚本假件）
 public protocol PresetOverwriteConfirming: AnyObject {
@@ -21,7 +22,7 @@ public enum OverwritePresetOutcome: Equatable {
     /// 用户在确认框取消
     case cancelled
     /// 禁用态（入口本应置灰；拍快照时才发现的镜像/恢复也归此）
-    case unavailable(SavePresetAvailability)
+    case unavailable(LayoutCaptureAvailability)
     /// 拍快照时的拓扑不是预设所属拓扑（已通知用户）
     case topologyChanged
     /// 预设不存在、拍快照或写盘失败（已通知用户）
@@ -31,14 +32,12 @@ public enum OverwritePresetOutcome: Equatable {
 public final class OverwritePresetFlow {
     private let store: PresetStore
     private let capture: () throws -> LayoutCapture
-    private let availabilityCheck: () -> SavePresetAvailability
+    private let availabilityCheck: () -> LayoutCaptureAvailability
     private let confirm: PresetOverwriteConfirming
     private let notifier: SystemNotifying?
     private let log: LogWriting?
-    private let captureExecutor: (@escaping () -> Void) -> Void
-    private let mainExecutor: (@escaping () -> Void) -> Void
-    /// runAsync 一轮进行中（确认 → 拍快照 → 写盘）；只在主线程读写
-    private var isRunning = false
+    /// runAsync 的两段执行器与在途守卫（一轮 = 确认 → 拍快照 → 写盘）
+    private let round: CaptureRound
 
     /// - Parameters:
     ///   - capture: 一次性拍快照（生产 = SnapshotEngine.capture）
@@ -46,7 +45,7 @@ public final class OverwritePresetFlow {
     ///   - captureExecutor / mainExecutor: runAsync 的两段执行器（生产 = 全局队列 / 主队列；测试手动推进）
     public init(store: PresetStore,
                 capture: @escaping () throws -> LayoutCapture,
-                availability: @escaping () -> SavePresetAvailability,
+                availability: @escaping () -> LayoutCaptureAvailability,
                 confirm: PresetOverwriteConfirming,
                 notifier: SystemNotifying? = nil,
                 log: LogWriting? = nil,
@@ -62,12 +61,11 @@ public final class OverwritePresetFlow {
         self.confirm = confirm
         self.notifier = notifier
         self.log = log
-        self.captureExecutor = captureExecutor
-        self.mainExecutor = mainExecutor
+        self.round = CaptureRound(captureExecutor: captureExecutor, mainExecutor: mainExecutor)
     }
 
     /// 覆盖入口当前可用性（入口构建时调用；与「保存当前布局为预设…」同口径）
-    public func availability() -> SavePresetAvailability {
+    public func availability() -> LayoutCaptureAvailability {
         availabilityCheck()
     }
 
@@ -77,7 +75,7 @@ public final class OverwritePresetFlow {
         switch prepare(presetID: presetID, topologyKey: topologyKey) {
         case .finished(let outcome): return outcome
         case .confirmed:
-            return write(captureLayout(), presetID: presetID, topologyKey: topologyKey)
+            return write(Result { try capture() }, presetID: presetID, topologyKey: topologyKey)
         }
     }
 
@@ -86,24 +84,18 @@ public final class OverwritePresetFlow {
     @discardableResult
     public func runAsync(presetID: String, topologyKey: String,
                          completion: @escaping (OverwritePresetOutcome) -> Void) -> Bool {
-        guard !isRunning else {
+        guard round.begin() else {
             log?.write("[preset] action=overwrite result=skip detail=in-flight")
             return false
         }
-        isRunning = true
         switch prepare(presetID: presetID, topologyKey: topologyKey) {
         case .finished(let outcome):
-            isRunning = false
+            round.end()
             completion(outcome)
         case .confirmed:
-            captureExecutor { [self] in
-                let captured = captureLayout()
-                mainExecutor { [self] in
-                    let outcome = write(captured, presetID: presetID, topologyKey: topologyKey)
-                    isRunning = false
-                    completion(outcome)
-                }
-            }
+            round.capture({ [capture] in Result { try capture() } },
+                          process: { [self] in write($0, presetID: presetID, topologyKey: topologyKey) },
+                          completion: completion)
         }
         return true
     }
@@ -132,25 +124,14 @@ public final class OverwritePresetFlow {
         return .confirmed
     }
 
-    private func captureLayout() -> Result<LayoutCapture, Error> {
-        Result { try capture() }
-    }
-
     /// 校验拍快照的拓扑后写盘
     private func write(_ captured: Result<LayoutCapture, Error>, presetID: String,
                        topologyKey: String) -> OverwritePresetOutcome {
         let layout: LayoutCapture
-        switch captured {
-        case .success(let value): layout = value
-        case .failure(SnapshotCaptureError.restoreInProgress):
-            log?.write("[preset] action=overwrite result=skip detail=unavailable=restoring")
-            return .unavailable(.restoring)
-        case .failure(let error):
-            return fail("拍快照失败：\(SavePresetFlow.describe(error))")
-        }
-        guard !layout.topology.isMirrored else {
-            log?.write("[preset] action=overwrite result=skip detail=unavailable=mirrored")
-            return .unavailable(.mirrored)
+        switch LayoutCaptureCheck.check(captured, action: "overwrite", log: log) {
+        case .captured(let value): layout = value
+        case .unavailable(let state): return .unavailable(state)
+        case .failed(let reason): return fail(reason)
         }
         guard layout.topology.identity.key == topologyKey else {
             log?.write("[preset] action=overwrite topology=\(topologyKey) result=skip "
@@ -174,9 +155,9 @@ public final class OverwritePresetFlow {
 }
 
 extension RuntimeAssembly {
-    /// 组装覆盖流程：拍快照与保存流程同参数（同一 session 独占、同一延迟几何覆盖），可用性取保存流程同口径；
-    /// 本应用自身窗口（管理窗口）不入快照——覆盖从管理窗口发起时它正开着。
-    public static func makeOverwritePresetFlow(availability: @escaping () -> SavePresetAvailability,
+    /// 组装覆盖流程：拍快照与保存流程共用 makeLayoutCapture（同一 session 独占、同一延迟几何覆盖；
+    /// 本应用自身窗口不入快照——覆盖从管理窗口发起时它正开着），可用性取保存流程同口径。
+    public static func makeOverwritePresetFlow(availability: @escaping () -> LayoutCaptureAvailability,
                                                store: PresetStore,
                                                spaces: SpaceProviding?,
                                                session: SkyLightSession,
@@ -184,19 +165,13 @@ extension RuntimeAssembly {
                                                confirm: PresetOverwriteConfirming = AlertPresetOverwriteConfirm(),
                                                notifier: SystemNotifying? = nil,
                                                log: LogWriting? = nil) -> OverwritePresetFlow {
-        let engine = SnapshotEngine(spaces: spaces, log: log, deferredGeometry: deferredGeometry, session: session)
-        let ownBundleID = Bundle.main.bundleIdentifier
-        return OverwritePresetFlow(store: store,
-                                   capture: {
-                                       let captured = try engine.capture()
-                                       var snapshot = captured.snapshot
-                                       snapshot.windows.removeAll { $0.bundleID == ownBundleID }
-                                       return LayoutCapture(snapshot: snapshot, topology: captured.topology)
-                                   },
-                                   availability: availability,
-                                   confirm: confirm,
-                                   notifier: notifier,
-                                   log: log)
+        OverwritePresetFlow(store: store,
+                            capture: makeLayoutCapture(spaces: spaces, session: session,
+                                                       deferredGeometry: deferredGeometry, log: log),
+                            availability: availability,
+                            confirm: confirm,
+                            notifier: notifier,
+                            log: log)
     }
 }
 

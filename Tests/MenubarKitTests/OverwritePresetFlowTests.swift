@@ -161,7 +161,7 @@ final class OverwritePresetFlowTests: XCTestCase {
     }
 
     private func makeFlow(confirm: PresetOverwriteConfirming,
-                          availability: @escaping () -> SavePresetAvailability = { .available },
+                          availability: @escaping () -> LayoutCaptureAvailability = { .available },
                           capture: @escaping () throws -> LayoutCapture,
                           background: ManualExecutor? = nil,
                           main: ManualExecutor? = nil) -> OverwritePresetFlow {

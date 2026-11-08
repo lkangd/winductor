@@ -46,7 +46,7 @@ final class PresetManagerModelTests: XCTestCase {
     private var clock: Date!
     private var dialogs: ScriptedDialogs!
     private var current: ObservedTopology!
-    private var availability: SavePresetAvailability = .available
+    private var availability: LayoutCaptureAvailability = .available
     private var restored: [(id: String, key: String)] = []
     private var liveSpaces: [SpaceEntry]?
 

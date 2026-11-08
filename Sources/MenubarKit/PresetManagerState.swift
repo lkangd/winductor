@@ -63,7 +63,7 @@ public struct PresetManagerState: Equatable {
 
     public static func make(topologies: [PresetTopology],
                             current: ObservedTopology,
-                            availability: SavePresetAvailability,
+                            availability: LayoutCaptureAvailability,
                             selectedKey: String?,
                             selectedDisplayUUID: String? = nil,
                             expandedPresetID: String? = nil,

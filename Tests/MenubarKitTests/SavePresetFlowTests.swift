@@ -103,7 +103,7 @@ final class SavePresetFlowTests: XCTestCase {
     func testRunWhileDisabledDoesNothing() {
         final class Counter { var captures = 0 }
         for (state, flow) in [
-            (SavePresetAvailability.notReady, { (p: PresetNamePrompting, c: @escaping () throws -> LayoutCapture) in
+            (LayoutCaptureAvailability.notReady, { (p: PresetNamePrompting, c: @escaping () throws -> LayoutCapture) in
                 self.makeFlow(prompt: p, isReady: { false }, capture: c) }),
             (.mirrored, { p, c in self.makeFlow(prompt: p, isMirrored: { true }, capture: c) }),
             (.restoring, { p, c in self.makeFlow(prompt: p, isRestoring: { true }, capture: c) }),

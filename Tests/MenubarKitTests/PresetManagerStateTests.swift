@@ -123,7 +123,7 @@ final class PresetManagerStateTests: XCTestCase {
     func testRowsOfCurrentTopologyDisabledWhileUnavailable() throws {
         try save("工作", on: officeDesk)
 
-        for availability in [SavePresetAvailability.restoring, .notReady] {
+        for availability in [LayoutCaptureAvailability.restoring, .notReady] {
             let rows = try XCTUnwrap(make(current: officeDesk, availability: availability).selected?.rows)
             XCTAssertEqual(rows.map(\.canRestore), [false], "\(availability)")
             XCTAssertEqual(rows.map(\.canOverwrite), [false], "\(availability)")
@@ -158,7 +158,7 @@ final class PresetManagerStateTests: XCTestCase {
     }
 
     private func make(current: ObservedTopology,
-                      availability: SavePresetAvailability = .available,
+                      availability: LayoutCaptureAvailability = .available,
                       selectedKey: String? = nil,
                       selectedDisplayUUID: String? = nil) -> PresetManagerState {
         PresetManagerState.make(topologies: store.topologies(), current: current, availability: availability,

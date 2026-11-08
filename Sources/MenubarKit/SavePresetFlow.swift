@@ -6,24 +6,13 @@ import SnapshotEngine
 // 流程：可用性门（未就绪 / 镜像中 / 恢复进行中 → 禁用）→ 一次性拍快照（SnapshotEngine.capture，点击时刻的布局，
 // 先于输入框拍：输入期间的窗口变化与输入框自身不入快照）→ 输入框（默认名「MM-dd HH:mm」，可改）
 // → 存入拍快照时的拓扑（PresetStore.addPreset；拓扑首个预设默认自动）。撞名/空名提示后重弹，取消不写。
-// 菜单项接线（票 06）：可用性取 availability()（非 .available 置灰），点击调 runAsync()——拍快照（SLS/AX 读，
-// 遇无响应应用的 AX 读可达数秒）经 captureExecutor 离开主线程，输入框（模态）与写盘经 mainExecutor 回到主线程。
+// 菜单项接线（票 06）：可用性取 availability()（非 .available 置灰），点击调 runAsync()——拍快照经 captureExecutor
+// 离开主线程，输入框（模态）与写盘经 mainExecutor 回到主线程（两段执行器、拍快照判定与装配见 LayoutCaptureSupport.swift）。
 
 /// 预设名输入框接缝（生产：AlertPresetNamePrompt；测试：脚本假件）
 public protocol PresetNamePrompting: AnyObject {
     /// 弹输入框：defaultName 预填；message = 上次输入的问题提示（首次 nil）。返回 nil = 取消
     func promptPresetName(defaultName: String, message: String?) -> String?
-}
-
-/// 保存入口可用性（spec §4.3 禁用三态）
-public enum SavePresetAvailability: Equatable {
-    case available
-    /// 两项授权未齐（未就绪门控）
-    case notReady
-    /// 任一屏处于镜像集合（spec §3.3）
-    case mirrored
-    /// 恢复/撤销管线进行中
-    case restoring
 }
 
 /// 一次保存流程的结果
@@ -32,7 +21,7 @@ public enum SavePresetOutcome: Equatable {
     /// 用户在输入框取消
     case cancelled
     /// 禁用态（菜单项本应置灰；拍快照时才发现的镜像/恢复也归此）
-    case unavailable(SavePresetAvailability)
+    case unavailable(LayoutCaptureAvailability)
     /// 拍快照或写盘失败（已通知用户）
     case failed(String)
 }
@@ -48,10 +37,8 @@ public final class SavePresetFlow {
     private let log: LogWriting?
     private let now: () -> Date
     private let nameFormatter: DateFormatter
-    private let captureExecutor: (@escaping () -> Void) -> Void
-    private let mainExecutor: (@escaping () -> Void) -> Void
-    /// runAsync 一轮进行中（拍快照 → 输入框 → 写盘）；只在 mainExecutor 所在线程（主线程）读写
-    private var isRunning = false
+    /// runAsync 的两段执行器与在途守卫（一轮 = 拍快照 → 输入框 → 写盘）
+    private let round: CaptureRound
 
     /// - Parameters:
     ///   - capture: 一次性拍快照（生产 = SnapshotEngine.capture）
@@ -90,12 +77,11 @@ public final class SavePresetFlow {
         formatter.timeZone = timeZone
         formatter.dateFormat = "MM-dd HH:mm"
         self.nameFormatter = formatter
-        self.captureExecutor = captureExecutor
-        self.mainExecutor = mainExecutor
+        self.round = CaptureRound(captureExecutor: captureExecutor, mainExecutor: mainExecutor)
     }
 
     /// 保存入口当前可用性（菜单构建时调用；判定顺序：未就绪 > 镜像中 > 恢复进行中）
-    public func availability() -> SavePresetAvailability {
+    public func availability() -> LayoutCaptureAvailability {
         if !isReady() { return .notReady }
         if isMirrored() { return .mirrored }
         if isRestoring() { return .restoring }
@@ -106,7 +92,7 @@ public final class SavePresetFlow {
     @discardableResult
     public func run() -> SavePresetOutcome {
         if let refused = gate() { return refused }
-        return promptAndSave(captureLayout())
+        return promptAndSave(Result { try capture() })
     }
 
     /// 菜单路径（主线程调用）：门判定在调用线程；拍快照经 captureExecutor 离开主线程，
@@ -114,23 +100,18 @@ public final class SavePresetFlow {
     /// 上一轮未结束（拍快照中 / 输入框开着）时不受理，返回 false 且不回调。
     @discardableResult
     public func runAsync(completion: @escaping (SavePresetOutcome) -> Void) -> Bool {
-        guard !isRunning else {
+        guard round.begin() else {
             log?.write("[preset] action=save result=skip detail=in-flight")
             return false
         }
         if let refused = gate() {
+            round.end()
             completion(refused)
             return true
         }
-        isRunning = true
-        captureExecutor { [self] in
-            let captured = captureLayout()
-            mainExecutor { [self] in
-                let outcome = promptAndSave(captured)
-                isRunning = false
-                completion(outcome)
-            }
-        }
+        round.capture({ [capture] in Result { try capture() } },
+                      process: { [self] in promptAndSave($0) },
+                      completion: completion)
         return true
     }
 
@@ -144,35 +125,14 @@ public final class SavePresetFlow {
         return nil
     }
 
-    /// 拍快照这一步的产物：拿到快照，或流程已有定论（门后才发现的恢复/镜像 → 不可用；其余失败已通知）
-    private enum CaptureStep {
-        case captured(LayoutCapture)
-        case finished(SavePresetOutcome)
-    }
-
-    private func captureLayout() -> CaptureStep {
+    /// 判定拍快照结果 → 输入框 → 写盘（主线程：输入框模态）。
+    /// 门后才发现的恢复/镜像 → 不可用；拍快照失败 → 通知
+    private func promptAndSave(_ result: Result<LayoutCapture, Error>) -> SavePresetOutcome {
         let captured: LayoutCapture
-        do {
-            captured = try capture()
-        } catch SnapshotCaptureError.restoreInProgress {
-            log?.write("[preset] action=save result=skip detail=unavailable=restoring")
-            return .finished(.unavailable(.restoring))
-        } catch {
-            return .finished(fail("拍快照失败：\(Self.describe(error))"))
-        }
-        guard !captured.topology.isMirrored else {
-            log?.write("[preset] action=save result=skip detail=unavailable=mirrored")
-            return .finished(.unavailable(.mirrored))
-        }
-        return .captured(captured)
-    }
-
-    /// 输入框 → 写盘（主线程：输入框模态）
-    private func promptAndSave(_ step: CaptureStep) -> SavePresetOutcome {
-        let captured: LayoutCapture
-        switch step {
+        switch LayoutCaptureCheck.check(result, action: "save", log: log) {
         case .captured(let value): captured = value
-        case .finished(let outcome): return outcome
+        case .unavailable(let state): return .unavailable(state)
+        case .failed(let reason): return fail(reason)
         }
         var defaultName = nameFormatter.string(from: now())
         var message: String?
@@ -188,7 +148,7 @@ public final class SavePresetFlow {
             } catch PresetStoreError.mirrored {
                 return .unavailable(.mirrored)
             } catch {
-                return fail("写入预设失败：\(Self.describe(error))")
+                return fail("写入预设失败：\(LayoutCaptureCheck.describe(error))")
             }
             defaultName = name
         }
@@ -202,19 +162,11 @@ public final class SavePresetFlow {
         return .failed(reason)
     }
 
-    static func describe(_ error: Error) -> String {
-        switch error as? SnapshotCaptureError {
-        case .noActiveDisplay?: return "无活动显示器"
-        case .topologyChangedWhileComposing?: return "拍快照期间屏幕排列发生变化，请稍后重试"
-        case .restoreInProgress?: return "恢复进行中"
-        case nil: return String(describing: error)
-        }
-    }
 }
 
 extension RuntimeAssembly {
     /// 组装保存预设流程（票 06 在 assembleAppRoot 内以同一 presetStore/adapter/session/deferredGeometry 调用）：
-    /// 拍快照 = 一次性 SnapshotEngine（spaces 注入 Space 归属；deferredGeometry 提供待补写窗的几何覆盖），
+    /// 拍快照 = makeLayoutCapture（与覆盖共用：一次性 SnapshotEngine，本应用自身窗口不入快照），
     /// 未就绪门 = monitor，恢复进行中 = session 独占持有/排队，镜像 = 实况拓扑。
     public static func makeSavePresetFlow(gatedBy monitor: PermissionMonitor,
                                           store: PresetStore,
@@ -226,15 +178,15 @@ extension RuntimeAssembly {
                                           log: LogWriting? = nil,
                                           isMirrored: @escaping () -> Bool = { ObservedTopology.current().isMirrored })
         -> SavePresetFlow {
-        let engine = SnapshotEngine(spaces: spaces, log: log, deferredGeometry: deferredGeometry, session: session)
-        return SavePresetFlow(store: store,
-                              capture: { try engine.capture() },
-                              prompt: prompt,
-                              isReady: { [monitor] in monitor.status.isReady },
-                              isMirrored: isMirrored,
-                              isRestoring: { session.shouldYield },
-                              notifier: notifier,
-                              log: log)
+        SavePresetFlow(store: store,
+                       capture: makeLayoutCapture(spaces: spaces, session: session,
+                                                  deferredGeometry: deferredGeometry, log: log),
+                       prompt: prompt,
+                       isReady: { [monitor] in monitor.status.isReady },
+                       isMirrored: isMirrored,
+                       isRestoring: { session.shouldYield },
+                       notifier: notifier,
+                       log: log)
     }
 }
 
