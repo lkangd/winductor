@@ -6,7 +6,8 @@ import SnapshotEngine
 // 流程：可用性门（未就绪 / 镜像中 / 恢复进行中 → 禁用）→ 一次性拍快照（SnapshotEngine.capture，点击时刻的布局，
 // 先于输入框拍：输入期间的窗口变化与输入框自身不入快照）→ 输入框（默认名「MM-dd HH:mm」，可改）
 // → 存入拍快照时的拓扑（PresetStore.addPreset；拓扑首个预设默认自动）。撞名/空名提示后重弹，取消不写。
-// 菜单项接线归票 06：可用性取 availability()（非 .available 置灰），点击调 run()。
+// 菜单项接线（票 06）：可用性取 availability()（非 .available 置灰），点击调 runAsync()——拍快照（SLS/AX 读，
+// 遇无响应应用的 AX 读可达数秒）经 captureExecutor 离开主线程，输入框（模态）与写盘经 mainExecutor 回到主线程。
 
 /// 预设名输入框接缝（生产：AlertPresetNamePrompt；测试：脚本假件）
 public protocol PresetNamePrompting: AnyObject {
@@ -47,6 +48,10 @@ public final class SavePresetFlow {
     private let log: LogWriting?
     private let now: () -> Date
     private let nameFormatter: DateFormatter
+    private let captureExecutor: (@escaping () -> Void) -> Void
+    private let mainExecutor: (@escaping () -> Void) -> Void
+    /// runAsync 一轮进行中（拍快照 → 输入框 → 写盘）；只在 mainExecutor 所在线程（主线程）读写
+    private var isRunning = false
 
     /// - Parameters:
     ///   - capture: 一次性拍快照（生产 = SnapshotEngine.capture）
@@ -54,6 +59,7 @@ public final class SavePresetFlow {
     ///   - isMirrored: 镜像检测（生产 = ObservedTopology.current().isMirrored）
     ///   - isRestoring: 恢复进行中（生产 = SkyLightSession.shouldYield：恢复/撤销管线持有或排队独占）
     ///   - notifier: 失败通知（nil = 只记日志）
+    ///   - captureExecutor / mainExecutor: runAsync 的两段执行器（生产 = 全局队列 / 主队列；测试手动推进）
     public init(store: PresetStore,
                 capture: @escaping () throws -> LayoutCapture,
                 prompt: PresetNamePrompting,
@@ -63,7 +69,13 @@ public final class SavePresetFlow {
                 notifier: SystemNotifying? = nil,
                 log: LogWriting? = nil,
                 now: @escaping () -> Date = Date.init,
-                timeZone: TimeZone = .current) {
+                timeZone: TimeZone = .current,
+                captureExecutor: @escaping (@escaping () -> Void) -> Void = { work in
+                    DispatchQueue.global(qos: .userInitiated).async(execute: work)
+                },
+                mainExecutor: @escaping (@escaping () -> Void) -> Void = { work in
+                    DispatchQueue.main.async(execute: work)
+                }) {
         self.store = store
         self.capture = capture
         self.prompt = prompt
@@ -78,6 +90,8 @@ public final class SavePresetFlow {
         formatter.timeZone = timeZone
         formatter.dateFormat = "MM-dd HH:mm"
         self.nameFormatter = formatter
+        self.captureExecutor = captureExecutor
+        self.mainExecutor = mainExecutor
     }
 
     /// 保存入口当前可用性（菜单构建时调用；判定顺序：未就绪 > 镜像中 > 恢复进行中）
@@ -88,28 +102,78 @@ public final class SavePresetFlow {
         return .available
     }
 
-    /// 走一遍保存流程（主线程：输入框模态；拍快照同步执行）
+    /// 走一遍保存流程（同步：拍快照、输入框、写盘都在调用线程；菜单路径用 runAsync）
     @discardableResult
     public func run() -> SavePresetOutcome {
+        if let refused = gate() { return refused }
+        return promptAndSave(captureLayout())
+    }
+
+    /// 菜单路径（主线程调用）：门判定在调用线程；拍快照经 captureExecutor 离开主线程，
+    /// 输入框与写盘经 mainExecutor 回到主线程，completion 在该线程回调。
+    /// 上一轮未结束（拍快照中 / 输入框开着）时不受理，返回 false 且不回调。
+    @discardableResult
+    public func runAsync(completion: @escaping (SavePresetOutcome) -> Void) -> Bool {
+        guard !isRunning else {
+            log?.write("[preset] action=save result=skip detail=in-flight")
+            return false
+        }
+        if let refused = gate() {
+            completion(refused)
+            return true
+        }
+        isRunning = true
+        captureExecutor { [self] in
+            let captured = captureLayout()
+            mainExecutor { [self] in
+                let outcome = promptAndSave(captured)
+                isRunning = false
+                completion(outcome)
+            }
+        }
+        return true
+    }
+
+    /// 门：禁用态返回 .unavailable（菜单项本应置灰，防御）
+    private func gate() -> SavePresetOutcome? {
         let state = availability()
         guard state == .available else {
             log?.write("[preset] action=save result=skip detail=unavailable=\(state)")
             return .unavailable(state)
         }
+        return nil
+    }
+
+    /// 拍快照这一步的产物：拿到快照，或流程已有定论（门后才发现的恢复/镜像 → 不可用；其余失败已通知）
+    private enum CaptureStep {
+        case captured(LayoutCapture)
+        case finished(SavePresetOutcome)
+    }
+
+    private func captureLayout() -> CaptureStep {
         let captured: LayoutCapture
         do {
             captured = try capture()
         } catch SnapshotCaptureError.restoreInProgress {
             log?.write("[preset] action=save result=skip detail=unavailable=restoring")
-            return .unavailable(.restoring)
+            return .finished(.unavailable(.restoring))
         } catch {
-            return fail("拍快照失败：\(Self.describe(error))")
+            return .finished(fail("拍快照失败：\(Self.describe(error))"))
         }
         guard !captured.topology.isMirrored else {
             log?.write("[preset] action=save result=skip detail=unavailable=mirrored")
-            return .unavailable(.mirrored)
+            return .finished(.unavailable(.mirrored))
         }
+        return .captured(captured)
+    }
 
+    /// 输入框 → 写盘（主线程：输入框模态）
+    private func promptAndSave(_ step: CaptureStep) -> SavePresetOutcome {
+        let captured: LayoutCapture
+        switch step {
+        case .captured(let value): captured = value
+        case .finished(let outcome): return outcome
+        }
         var defaultName = nameFormatter.string(from: now())
         var message: String?
         // 撞名/空名：提示后带着刚输入的名称重弹，直到存入或取消（spec §4.1 撞名提示改名）

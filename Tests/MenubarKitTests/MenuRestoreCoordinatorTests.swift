@@ -7,16 +7,18 @@ import XCTest
 @testable import Core  // 构造 Displays.Info（memberwise init 为 internal，Seams.swift 冻结不可改）
 @testable import RestoreEngine  // 构造 RestoreReport（memberwise init 为 internal）
 
-// 票 19：菜单接线协调器（spec §8.2 动作接线 + §8.5 通知 + §8.1 图标三态）。
-// 接缝：MenuRestoreCoordinator 对注入接缝的输出——
-//   SnapshotRestoring fake（断言恢复调用与图标装饰顺序）、UndoPerforming fake（撤销调用与 §8.6 通知）、
-//   SystemNotifying fake（通知投递）、LoginItemServicing fake（登录启动切换）、StatusIconControlling fake、
-//   文件夹打开/菜单刷新闭包。TriggerChain 用真机（fake 调度器驱动）验证通知桥接与观察者入口。
+// 票 19 → 票 06：菜单接线协调器（display-presets spec §6.1 菜单 + 状态行四态；§8.5 通知 + §8.1 图标三态沿用）。
+// 接缝：MenuRestoreCoordinator 的全量菜单（makeReadyMenu，经菜单项 target/action 点击）对注入接缝的输出——
+//   SnapshotRestoring fake（断言恢复调用、所恢复的快照与图标装饰顺序）、UndoPerforming fake（撤销调用与 §8.6 通知）、
+//   SystemNotifying fake（通知投递）、LoginItemServicing fake、StatusIconControlling fake、文件夹打开/菜单刷新闭包。
+//   PresetStore 用真实存储（临时目录）；TriggerChain 用真机（fake 调度器驱动）；保存流程用真实 SavePresetFlow
+//   （拍快照与输入框经注入假件，两段执行器同步执行）。
 final class MenuRestoreCoordinatorTests: XCTestCase {
     // MARK: 假件
 
     private final class FakeRestorer: SnapshotRestoring, @unchecked Sendable {
         private(set) var restoreCalls = 0
+        private(set) var restoredSnapshots: [Snapshot] = []
         var report: RestoreReport
         init(report: RestoreReport = RestoreReport(okCount: 12, skipCount: 1, failCount: 0,
                                                    matchedCount: 13, untouchedLiveCount: 2,
@@ -25,6 +27,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
         func restore(snapshot: Snapshot) throws -> RestoreReport {
             restoreCalls += 1
+            restoredSnapshots.append(snapshot)
             return report
         }
     }
@@ -64,6 +67,27 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         func disable() throws { disableCalls += 1; enabled = false }
     }
 
+    private final class TickingClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current = Date(timeIntervalSince1970: 1_794_000_000)
+        func tick() -> Date {
+            lock.lock(); defer { lock.unlock() }
+            current += 60
+            return current
+        }
+    }
+
+    /// 输入框假件：按脚本依次应答（nil = 取消）
+    private final class ScriptedPrompt: PresetNamePrompting {
+        var answers: [String?]
+        private(set) var askedCount = 0
+        init(_ answers: [String?]) { self.answers = answers }
+        func promptPresetName(defaultName: String, message: String?) -> String? {
+            askedCount += 1
+            return answers.isEmpty ? nil : answers.removeFirst()
+        }
+    }
+
     private final class FakeSpaceList: SpaceListProviding, @unchecked Sendable {
         let signature: [String]
         init(_ signature: [String]) { self.signature = signature }
@@ -87,14 +111,10 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     // MARK: 装配
 
     private var displays: [Displays.Info] = []
-    private var capabilityLayers: [CapabilityLayerStatus] = [
-        CapabilityLayerStatus(layerNumber: 2, displayName: "Space 归属", available: true),
-        CapabilityLayerStatus(layerNumber: 3, displayName: "全屏状态", available: true),
-        CapabilityLayerStatus(layerNumber: 4, displayName: "最小化窗口归位", available: true),
-    ]
+    private var mirrored = false
+    private var capabilityLayers: [CapabilityLayerStatus] = []
     private var openedFolders: [URL] = []
     private var refreshCalls = 0
-    private var store: TransitionalLiveSnapshots!
     private var presetStore: PresetStore!
     private var restorer: FakeRestorer!
     private var undo: FakeUndo!
@@ -103,9 +123,12 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var icon: FakeIcon!
     private var login: FakeLogin!
     private var scheduler: FakeScheduler!
+    private var prompt: ScriptedPrompt!
+    private var restoring = false
 
     override func setUp() {
         displays = Self.makeDisplays(["d-1", "d-2", "d-3"])
+        mirrored = false
         capabilityLayers = [
             CapabilityLayerStatus(layerNumber: 2, displayName: "Space 归属", available: true),
             CapabilityLayerStatus(layerNumber: 3, displayName: "全屏状态", available: true),
@@ -113,15 +136,22 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         ]
         openedFolders = []
         refreshCalls = 0
-        store = TransitionalLiveSnapshots()
+        // 每次写入时钟前进 1 分钟：预设按保存时间排序可预期（同秒才按名称）
+        let clock = TickingClock()
         presetStore = PresetStore(directory: FileManager.default.temporaryDirectory
-            .appendingPathComponent("winductor-menutests-\(UUID().uuidString)"))
+            .appendingPathComponent("winductor-menutests-\(UUID().uuidString)"), now: { clock.tick() })
         restorer = FakeRestorer()
         undo = FakeUndo()
         notifier = FakeNotifier()
         icon = FakeIcon()
         login = FakeLogin()
         scheduler = FakeScheduler()
+        prompt = ScriptedPrompt([])
+        restoring = false
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: presetStore.directory)
     }
 
     private static func makeDisplays(_ uuids: [String]) -> [Displays.Info] {
@@ -132,109 +162,189 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
-    /// 当前 displays 的拓扑观测（屏并排贴合；不读真实 CG）
+    /// 当前 displays 的拓扑观测（屏并排贴合；mirrored = 首屏处于镜像集合；不读真实 CG）
     private var observedTopology: ObservedTopology {
-        ObservedTopology(screens: displays.map {
-            TopologyScreen(uuid: $0.uuid ?? "", name: "屏", frame: $0.bounds, pixelWidth: 2000, pixelHeight: 1200,
-                           rotation: 0, isMirrored: false)
+        ObservedTopology(screens: displays.enumerated().map { index, info in
+            TopologyScreen(uuid: info.uuid ?? "", name: "屏", frame: info.bounds, pixelWidth: 2000, pixelHeight: 1200,
+                           rotation: 0, isMirrored: mirrored && index == 0)
         })
     }
 
-    /// 现势快照写入（状态行旧三态）+ 当前拓扑存一个预设（首个默认自动；触发链与立即恢复按预设判定）
-    private func writeLiveSnapshot() throws {
+    /// 当前布局的快照（marker 写进首屏 Space 的全屏应用字段，用来区分不同预设的快照）
+    private func currentSnapshot(marker: String = "") -> Snapshot {
         let topology = displays.map {
             TopologyDisplay(uuid: $0.uuid ?? "", localizedName: "屏",
                             frame: SnapshotDisplayFrame(x: $0.bounds.minX, y: 0, w: 2000, h: 1200),
                             orientation: 0)
         }
-        let spaces = topology.map { SnapshotSpace(displayUUID: $0.uuid, index: 1, kind: .user, fullscreenAppBundleID: nil) }
-        let snapshot = Snapshot(capturedAt: Date(), topology: topology, spaces: spaces, windows: [])
-        store.write(snapshot, topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid)))
-        try presetStore.addPreset(name: "工作", snapshot: snapshot, topology: observedTopology)
+        let spaces = topology.map {
+            SnapshotSpace(displayUUID: $0.uuid, index: 1, kind: .user, fullscreenAppBundleID: marker.isEmpty ? nil : marker)
+        }
+        return Snapshot(capturedAt: Date(timeIntervalSince1970: 1_794_000_000), topology: topology, spaces: spaces, windows: [])
     }
 
-    private func makeCoordinator() -> MenuRestoreCoordinator {
-        MenuRestoreCoordinator(
-            store: store,
+    /// 当前拓扑存一个预设（拓扑首个预设默认自动）
+    @discardableResult
+    private func addPreset(_ name: String) throws -> Preset {
+        try presetStore.addPreset(name: name, snapshot: currentSnapshot(marker: name), topology: observedTopology)
+    }
+
+    private var currentKey: String { observedTopology.identity.key }
+
+    private func makeCoordinator(degradeCollector: DegradeCollectingLog? = nil,
+                                 openPresetManager: (() -> Void)? = nil) -> MenuRestoreCoordinator {
+        let savePreset = SavePresetFlow(
+            store: presetStore,
+            capture: { [unowned self] in LayoutCapture(snapshot: currentSnapshot(), topology: observedTopology) },
+            prompt: prompt,
+            isReady: { true },
+            isMirrored: { [unowned self] in mirrored },
+            isRestoring: { [unowned self] in restoring },
+            captureExecutor: { $0() },
+            mainExecutor: { $0() })
+        return MenuRestoreCoordinator(
             presetStore: presetStore,
             restorer: restorer,
             spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
-            displaysProvider: { [weak self] in self?.displays ?? [] },
             topologyProvider: { [weak self] in self?.observedTopology ?? ObservedTopology(screens: []) },
             scheduler: scheduler,
             restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
+            degradeCollector: degradeCollector,
             undo: undo,
             icon: icon,
             notifier: notifier,
             loginItem: login,
             capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
-            snapshotsFolder: URL(fileURLWithPath: "/tmp/winductor-snapshots"),
+            savePreset: savePreset,
+            openPresetManager: openPresetManager,
+            presetsFolder: URL(fileURLWithPath: "/tmp/winductor-presets"),
             logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
             openFolder: { [weak self] in self?.openedFolders.append($0) },
             refreshMenu: { [weak self] in self?.refreshCalls += 1 })
     }
 
+    private func titles(_ menu: NSMenu) -> [String] { menu.items.filter { !$0.isSeparatorItem }.map(\.title) }
+
+    private func item(_ menu: NSMenu, _ title: String) -> NSMenuItem? { menu.items.first { $0.title == title } }
+
     /// 经全量菜单项 target/action 触发动作（与真实点击同路径）
     private func perform(_ coordinator: MenuRestoreCoordinator, title: String) throws {
-        let menu = coordinator.makeReadyMenu()
-        guard let item = menu.items.first(where: { $0.title == title }) else {
-            XCTFail("菜单缺项：\(title)")
-            return
-        }
-        item.target?.perform(item.action!, with: item)
+        let menuItem = try XCTUnwrap(item(coordinator.makeReadyMenu(), title), "菜单缺项：\(title)")
+        _ = menuItem.target?.perform(try XCTUnwrap(menuItem.action, "项不可点：\(title)"), with: menuItem)
     }
 
-    // MARK: 立即恢复（§8.2 → chain.restoreNow → 完成通知 §8.5 + 图标三态 §8.1）
+    /// 「恢复预设 ▸」子菜单项（按显示标题取）
+    private func restoreItem(_ menu: NSMenu, _ title: String) throws -> NSMenuItem {
+        let submenu = try XCTUnwrap(item(menu, "恢复预设")?.submenu, "恢复预设无子菜单")
+        return try XCTUnwrap(submenu.items.first { $0.title == title }, "子菜单缺项：\(title)")
+    }
 
-    /// 立即恢复：经触发链 restoreNow 调恢复引擎一次；完成通知计数照 §8.5；结束图标回到常态
-    func testRestoreNowCallsRestorerDeliversNoticeAndResetsIcon() throws {
-        try writeLiveSnapshot()
+    private func click(_ menuItem: NSMenuItem) throws {
+        _ = menuItem.target?.perform(try XCTUnwrap(menuItem.action), with: menuItem)
+    }
+
+    // MARK: 状态行四态（spec §6.1，随拓扑 / 预设 / 镜像切换）
+
+    func testStatusLineFollowsTopologyPresetsAndMirroring() throws {
+        let coordinator = makeCoordinator()
+        XCTAssertEqual(titles(coordinator.makeReadyMenu()).first, "3 屏 · 无预设")
+
+        try addPreset("工作")  // 拓扑首个预设默认自动
+        try addPreset("家")
+        XCTAssertEqual(titles(coordinator.makeReadyMenu()).first, "3 屏 · 2 个预设（自动：工作）")
+
+        try presetStore.setAuto(false, presetID: try XCTUnwrap(presetStore.topology(key: currentKey)?.autoPreset?.id),
+                                topologyKey: currentKey)
+        XCTAssertEqual(titles(coordinator.makeReadyMenu()).first, "3 屏 · 2 个预设")
+
+        displays = Self.makeDisplays(["d-1", "d-2"])  // 拔一块屏 = 另一拓扑（无预设）
+        XCTAssertEqual(titles(coordinator.makeReadyMenu()).first, "2 屏 · 无预设")
+
+        mirrored = true
+        XCTAssertEqual(titles(coordinator.makeReadyMenu()).first, "镜像中")
+    }
+
+    /// 菜单打开时原位刷新：状态行/撤销可用性按打开时刻现状重算
+    func testMenuWillOpenRefreshesItemsInPlace() throws {
+        try addPreset("工作")
+        undo.canUndoValue = true
+        let coordinator = makeCoordinator()
+        let menu = coordinator.makeReadyMenu()
+        XCTAssertEqual(titles(menu).first, "3 屏 · 1 个预设（自动：工作）")
+
+        displays = Self.makeDisplays(["e-1", "e-2", "e-3"])  // 拓扑变化且新拓扑无预设
+        undo.canUndoValue = false
+        coordinator.refreshItemsInPlace(menu)
+
+        XCTAssertEqual(titles(menu).first, "3 屏 · 无预设")
+        XCTAssertEqual(item(menu, "撤销上次恢复")?.isEnabled, false)
+        XCTAssertEqual(item(menu, "恢复预设")?.isEnabled, false)
+    }
+
+    // MARK: 恢复预设 ▸（与自动恢复同一管线：触发链 → 恢复引擎 → 记录最近恢复 → 完成通知）
+
+    /// 子菜单列出当前拓扑预设（保存时间升序），自动预设带标记；无预设 / 镜像中置灰
+    func testRestoreSubmenuListsCurrentTopologyPresets() throws {
+        let coordinator = makeCoordinator()
+        XCTAssertEqual(item(coordinator.makeReadyMenu(), "恢复预设")?.isEnabled, false, "无预设置灰")
+
+        try addPreset("工作")
+        try addPreset("家")
+        let submenu = try XCTUnwrap(item(coordinator.makeReadyMenu(), "恢复预设")?.submenu)
+        XCTAssertEqual(submenu.items.map(\.title), ["工作（自动）", "家"])
+
+        mirrored = true
+        XCTAssertEqual(item(coordinator.makeReadyMenu(), "恢复预设")?.isEnabled, false, "镜像中禁用恢复（spec §3.3）")
+    }
+
+    /// 点击子菜单项：经触发链离主线程恢复该预设快照一次，记录最近恢复，完成通知计数照 §8.5，图标恢复中→常态
+    func testRestoreSubmenuItemRestoresThroughChainAndRecordsLastRestored() throws {
+        try addPreset("工作")
+        let home = try addPreset("家")
         let coordinator = makeCoordinator()
 
-        try perform(coordinator, title: "立即恢复")
+        try click(try restoreItem(coordinator.makeReadyMenu(), "家"))
 
-        XCTAssertEqual(restorer.restoreCalls, 1, "立即恢复必须经触发链调引擎（命令级一致）")
-        XCTAssertEqual(notifier.deliveries.count, 1)
-        XCTAssertEqual(notifier.deliveries.first?.title, "恢复完成")
+        XCTAssertEqual(restorer.restoredSnapshots, [home.snapshot], "恢复所点预设的快照")
+        XCTAssertTrue(enqueueUsed, "恢复管线经注入执行器（离主线程）")
+        XCTAssertEqual(presetStore.topology(key: currentKey)?.lastRestoredPresetID, home.id, "成功后记录最近恢复（spec §4.4）")
+        XCTAssertEqual(notifier.deliveries.map(\.title), ["恢复完成"])
         XCTAssertEqual(notifier.deliveries.first?.body, "恢复完成：12 窗口归位、1 跳过、0 失败")
         XCTAssertEqual(icon.sequence, ["restoring", "normal"], "恢复中临时同步图形，结束即回（§8.1）")
+        XCTAssertGreaterThanOrEqual(refreshCalls, 1, "恢复后刷新菜单")
+    }
+
+    /// 菜单打开后拓扑已变：点旧拓扑的预设不恢复（仅当前拓扑，spec §5.2）
+    func testRestoreSubmenuItemIgnoredAfterTopologyChanged() throws {
+        try addPreset("工作")
+        let coordinator = makeCoordinator()
+        let stale = try restoreItem(coordinator.makeReadyMenu(), "工作（自动）")
+
+        displays = Self.makeDisplays(["d-1", "d-2"])
+        try click(stale)
+
+        XCTAssertEqual(restorer.restoreCalls, 0)
+        XCTAssertNil(presetStore.topology(key: currentKey))
     }
 
     /// 降级附注：恢复后 [degrade] 收集层名拼进通知（§8.5「本次 Space 归属层失效（几何已恢复）」）
     func testRestoreNoticeIncludesDegradeAppendix() throws {
-        try writeLiveSnapshot()
+        try addPreset("工作")
         let collector = DegradeCollectingLog(inner: nil)
         collector.write("[degrade] layer=L2 reason=no-op detail=x")
-        let coordinator = MenuRestoreCoordinator(
-            store: store,
-            presetStore: presetStore,
-            restorer: restorer,
-            spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
-            displaysProvider: { [weak self] in self?.displays ?? [] },
-            topologyProvider: { [weak self] in self?.observedTopology ?? ObservedTopology(screens: []) },
-            scheduler: scheduler,
-            restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
-            degradeCollector: collector,
-            undo: undo, icon: icon, notifier: notifier, loginItem: login,
-            capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
-            snapshotsFolder: URL(fileURLWithPath: "/tmp/winductor-snapshots"),
-            logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
-            openFolder: { [weak self] in self?.openedFolders.append($0) },
-            refreshMenu: { [weak self] in self?.refreshCalls += 1 })
+        let coordinator = makeCoordinator(degradeCollector: collector)
 
-        try perform(coordinator, title: "立即恢复")
+        try click(try restoreItem(coordinator.makeReadyMenu(), "工作（自动）"))
 
         XCTAssertEqual(notifier.deliveries.first?.body,
                        "恢复完成：12 窗口归位、1 跳过、0 失败；本次 Space 归属层失效（几何已恢复）")
     }
 
-    /// 自动触发链路（观察者入口 → 防抖 → 稳定两轮 → 恢复 → 通知）：桥接与命令级一致
+    /// 自动触发链路（观察者入口 → 防抖 → 稳定两轮 → 自动预设恢复 → 告知）：同一管线
     func testScreenParametersChangeDrivesAutoRestoreAndNotice() throws {
-        try writeLiveSnapshot()
         let coordinator = makeCoordinator()
-        // 模拟插屏：拓扑变化（链基线在构造时建立；此处直接改 displays 后发事件）
-        displays = Self.makeDisplays(["d-1", "d-2", "d-3", "d-4"])
-        try writeLiveSnapshot()  // 新拓扑的自动预设
+        displays = Self.makeDisplays(["d-1", "d-2", "d-3", "d-4"])  // 插屏：新拓扑带自动预设
+        try addPreset("工作")
         coordinator.screenParametersDidChange()
 
         scheduler.fireAll()  // 防抖 1.5s 到点
@@ -245,14 +355,65 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(notifier.deliveries.first?.title, "恢复完成")
         XCTAssertEqual(notifier.deliveries.first?.body, "已按「工作」恢复。恢复完成：12 窗口归位、1 跳过、0 失败",
                        "过渡：自动恢复告知暂走系统通知（票 05 换 popover）")
-        XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行三态）")
+        XCTAssertGreaterThanOrEqual(refreshCalls, 1, "屏幕变化必须刷新菜单（状态行）")
+    }
+
+    // MARK: 保存当前布局为预设…（票 03 SavePresetFlow）
+
+    /// 点击：拍快照 → 输入框 → 存入当前拓扑；保存后刷新菜单，状态行与「恢复预设 ▸」随之更新
+    func testSavePresetItemRunsFlowAndRefreshesMenu() throws {
+        prompt.answers = ["工作"]
+        let coordinator = makeCoordinator()
+
+        try perform(coordinator, title: "保存当前布局为预设…")
+
+        XCTAssertEqual(prompt.askedCount, 1)
+        XCTAssertEqual(presetStore.topology(key: currentKey)?.presets.map(\.name), ["工作"])
+        XCTAssertEqual(refreshCalls, 1, "保存后刷新菜单")
+        let menu = coordinator.makeReadyMenu()
+        XCTAssertEqual(titles(menu).first, "3 屏 · 1 个预设（自动：工作）")
+        XCTAssertNoThrow(try restoreItem(menu, "工作（自动）"))
+    }
+
+    /// 取消输入框：不写、不刷新
+    func testSavePresetCancelledWritesNothing() throws {
+        prompt.answers = [nil]
+        let coordinator = makeCoordinator()
+
+        try perform(coordinator, title: "保存当前布局为预设…")
+
+        XCTAssertNil(presetStore.topology(key: currentKey))
+        XCTAssertEqual(refreshCalls, 0)
+    }
+
+    /// 镜像中 / 恢复进行中：保存项置灰（spec §4.3）
+    func testSavePresetItemDisabledWhileMirroredOrRestoring() {
+        let coordinator = makeCoordinator()
+        XCTAssertEqual(item(coordinator.makeReadyMenu(), "保存当前布局为预设…")?.isEnabled, true)
+
+        mirrored = true
+        XCTAssertEqual(item(coordinator.makeReadyMenu(), "保存当前布局为预设…")?.isEnabled, false)
+
+        mirrored = false
+        restoring = true
+        XCTAssertEqual(item(coordinator.makeReadyMenu(), "保存当前布局为预设…")?.isEnabled, false)
+    }
+
+    // MARK: 管理预设…（窗口归票 07，此处只验入口接缝）
+
+    func testManagePresetsRoutesToInjectedOpener() throws {
+        XCTAssertEqual(item(makeCoordinator().makeReadyMenu(), "管理预设…")?.isEnabled, false, "未装配窗口：置灰")
+
+        var opened = 0
+        let coordinator = makeCoordinator(openPresetManager: { opened += 1 })
+        try perform(coordinator, title: "管理预设…")
+        XCTAssertEqual(opened, 1)
     }
 
     // MARK: 撤销上次恢复（§8.6 两段式通知 + 计数通知）
 
-    /// 撤销经注入执行器离开调用线程（与立即恢复同修复：undo 跑全管线 ≈ 分钟级，不能阻塞主线程）
+    /// 撤销经注入执行器离开调用线程（undo 跑全管线 ≈ 分钟级，不能阻塞主线程）
     func testUndoRunsViaRestoreEnqueue() throws {
-        try writeLiveSnapshot()
         undo.canUndoValue = true
         let coordinator = makeCoordinator()
 
@@ -294,12 +455,9 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     /// canUndo == false：撤销菜单项置灰且不触发引擎（spec §7.4 入口禁用）
     func testUndoItemDisabledWhenCanUndoFalse() throws {
         undo.canUndoValue = false
-        let coordinator = makeCoordinator()
-
-        let menu = coordinator.makeReadyMenu()
-        let item = menu.items.first { $0.title == "撤销上次恢复" }
-        XCTAssertEqual(item?.isEnabled, false)
-        XCTAssertNil(item?.action)
+        let menuItem = item(makeCoordinator().makeReadyMenu(), "撤销上次恢复")
+        XCTAssertEqual(menuItem?.isEnabled, false)
+        XCTAssertNil(menuItem?.action)
         XCTAssertEqual(undo.undoCalls, 0)
     }
 
@@ -320,83 +478,43 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     /// 登录勾选态取自服务（SMAppService 注入接缝）
     func testLoginCheckboxReflectsServiceState() throws {
         login.enabled = true
-        let coordinator = makeCoordinator()
-        let menu = coordinator.makeReadyMenu()
-        XCTAssertEqual(menu.items.first { $0.title == "登录时启动" }?.state, .on)
+        XCTAssertEqual(item(makeCoordinator().makeReadyMenu(), "登录时启动")?.state, .on)
     }
 
     func testFinderEntriesOpenConfiguredFolders() throws {
         let coordinator = makeCoordinator()
 
-        try perform(coordinator, title: "打开快照文件夹")
+        try perform(coordinator, title: "打开预设文件夹")
         try perform(coordinator, title: "打开日志文件夹")
 
         XCTAssertEqual(openedFolders, [
-            URL(fileURLWithPath: "/tmp/winductor-snapshots"),
+            URL(fileURLWithPath: "/tmp/winductor-presets"),
             URL(fileURLWithPath: "/tmp/winductor-logs"),
         ])
     }
 
-    // MARK: 通知桥接与菜单刷新
+    // MARK: 通知桥接与能力状态行
 
-    /// 判定结果桥接（过渡形态，票 05 换 popover）：请求提示 → 系统通知；收起提示 → 无投递
+    /// 判定结果桥接（过渡形态，票 05 换 popover）：请求提示 → 系统通知指向「恢复预设」；收起提示 → 无投递
     func testOutcomeBridgeDeliversPromptAndIgnoresDismiss() throws {
         let coordinator = makeCoordinator()
-        try writeLiveSnapshot()
-        let topology = try XCTUnwrap(presetStore.topology(key: observedTopology.identity.key))
+        try addPreset("工作")
+        let topology = try XCTUnwrap(presetStore.topology(key: currentKey))
 
         coordinator.handle(outcome: .dismissPrompt)
         XCTAssertTrue(notifier.deliveries.isEmpty)
         coordinator.handle(outcome: .promptNeeded(topology))
         XCTAssertEqual(notifier.deliveries.first?.title, "有可用预设")
-    }
-
-    /// 菜单打开时原位刷新：状态行/撤销可用性按构建时刻现状重算
-    func testMenuWillOpenRefreshesItemsInPlace() throws {
-        try writeLiveSnapshot()
-        undo.canUndoValue = true
-        let coordinator = makeCoordinator()
-        let menu = coordinator.makeReadyMenu()
-        XCTAssertNotNil(menu.items.first { $0.title == "三屏 · 快照就绪" })
-
-        displays = Self.makeDisplays(["e-1", "e-2", "e-3"])  // 拓扑变化且无该拓扑快照
-        undo.canUndoValue = false
-        coordinator.refreshItemsInPlace(menu)
-
-        XCTAssertNotNil(menu.items.first { $0.title == "三屏 · 无匹配快照" })
-        XCTAssertEqual(menu.items.first { $0.title == "撤销上次恢复" }?.isEnabled, false)
-    }
-
-    /// 状态行三态随拓扑/快照匹配态切换（spec §8.2）：快照就绪 → 无匹配快照 → 一屏（拔出）
-    func testStatusLineFollowsTopologyAndSnapshotMatch() throws {
-        try writeLiveSnapshot()
-        let coordinator = makeCoordinator()
-
-        let menu1 = coordinator.makeReadyMenu()
-        XCTAssertNotNil(menu1.items.first { $0.title == "三屏 · 快照就绪" })
-
-        displays = Self.makeDisplays(["f-1", "f-2", "f-3"])  // 多屏但无该拓扑现势快照
-        let menu2 = coordinator.makeReadyMenu()
-        XCTAssertNotNil(menu2.items.first { $0.title == "三屏 · 无匹配快照" })
-
-        displays = Self.makeDisplays(["d-1"])  // 单屏 = 拔出态（与快照无关）
-        let menu3 = coordinator.makeReadyMenu()
-        XCTAssertNotNil(menu3.items.first { $0.title == "一屏（拔出）" })
+        XCTAssertEqual(notifier.deliveries.first?.body, "当前屏幕组合有 1 个预设，可用菜单「恢复预设」恢复。")
     }
 
     /// 能力状态行随 probeLayers 结果呈现降级措辞（fake 探针）
     func testCapabilityLineFollowsProbeResult() throws {
-        capabilityLayers = [
-            CapabilityLayerStatus(layerNumber: 2, displayName: "Space 归属", available: false),
-            CapabilityLayerStatus(layerNumber: 3, displayName: "全屏状态", available: true),
-            CapabilityLayerStatus(layerNumber: 4, displayName: "最小化窗口归位", available: true),
-        ]
+        capabilityLayers[0] = CapabilityLayerStatus(layerNumber: 2, displayName: "Space 归属", available: false)
         let coordinator = makeCoordinator()
-        let menu = coordinator.makeReadyMenu()
-        XCTAssertNotNil(menu.items.first { $0.title == "能力状态：以下恢复层不可用：Space 归属（详见日志）" })
+        XCTAssertNotNil(item(coordinator.makeReadyMenu(), "能力状态：以下恢复层不可用：Space 归属（详见日志）"))
 
         capabilityLayers[0] = CapabilityLayerStatus(layerNumber: 2, displayName: "Space 归属", available: true)
-        let refreshed = coordinator.makeReadyMenu()
-        XCTAssertNotNil(refreshed.items.first { $0.title == "能力状态：全部可用" })
+        XCTAssertNotNil(item(coordinator.makeReadyMenu(), "能力状态：全部可用"))
     }
 }

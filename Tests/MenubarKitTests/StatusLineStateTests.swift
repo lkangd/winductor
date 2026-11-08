@@ -1,29 +1,35 @@
 import XCTest
 @testable import MenubarKit
 
-// 票 19：状态行三态判定（spec §8.2「状态行三种显示」）。
-// 接缝：StatusLineState 的公开判定入口——按当前显示器数 + 现势快照匹配态产出菜单状态行标题。
-// 独立事实来源：spec §8.2 逐字引文（测试自带字面量，不用实现常量自证）。
+// 票 06：菜单状态行四态（display-presets spec §6.1）。
+// 接缝：StatusLineState 的公开判定入口——按当前屏数、镜像态、当前拓扑的预设数与自动预设名产出状态行标题。
+// 独立事实来源：spec §6.1 逐字措辞（测试自带字面量，不用实现常量自证）。
 final class StatusLineStateTests: XCTestCase {
-    /// 单屏 = 拔出态（与快照匹配无关）：「一屏（拔出）」
-    func testSingleDisplayShowsPluggedOutRegardlessOfSnapshot() {
-        XCTAssertEqual(StatusLineState.title(displayCount: 1, hasMatchingLiveSnapshot: true), "一屏（拔出）")
-        XCTAssertEqual(StatusLineState.title(displayCount: 1, hasMatchingLiveSnapshot: false), "一屏（拔出）")
+    /// 有自动预设：「N 屏 · M 个预设（自动：X）」（spec §6.1 示例原文）
+    func testPresetsWithAutoShowCountAndAutoName() {
+        XCTAssertEqual(StatusLineState.title(displayCount: 3, isMirrored: false, presetCount: 2, autoPresetName: "工作"),
+                       "3 屏 · 2 个预设（自动：工作）")
     }
 
-    /// 多屏且有现势快照：spec §8.2 验收拓扑原文「三屏 · 快照就绪」
-    func testThreeDisplayReadyMatchesSpecVerbatim() {
-        XCTAssertEqual(StatusLineState.title(displayCount: 3, hasMatchingLiveSnapshot: true), "三屏 · 快照就绪")
+    /// 有预设无自动：「N 屏 · M 个预设」
+    func testPresetsWithoutAutoShowCountOnly() {
+        XCTAssertEqual(StatusLineState.title(displayCount: 2, isMirrored: false, presetCount: 1, autoPresetName: nil),
+                       "2 屏 · 1 个预设")
     }
 
-    /// 多屏但无匹配快照：spec §8.2 验收拓扑原文「三屏 · 无匹配快照」
-    func testThreeDisplayWithoutSnapshotMatchesSpecVerbatim() {
-        XCTAssertEqual(StatusLineState.title(displayCount: 3, hasMatchingLiveSnapshot: false), "三屏 · 无匹配快照")
+    /// 无预设：「N 屏 · 无预设」（单屏同口径，旧「一屏（拔出）」不再出现；N 用阿拉伯数字）
+    func testNoPresetsShowsNoPresetWording() {
+        XCTAssertEqual(StatusLineState.title(displayCount: 1, isMirrored: false, presetCount: 0, autoPresetName: nil),
+                       "1 屏 · 无预设")
+        XCTAssertEqual(StatusLineState.title(displayCount: 12, isMirrored: false, presetCount: 0, autoPresetName: nil),
+                       "12 屏 · 无预设")
     }
 
-    /// 其他屏数按同构措辞动态产出（中文数字）
-    func testTwoDisplaysProduceChineseNumeral() {
-        XCTAssertEqual(StatusLineState.title(displayCount: 2, hasMatchingLiveSnapshot: true), "二屏 · 快照就绪")
-        XCTAssertEqual(StatusLineState.title(displayCount: 4, hasMatchingLiveSnapshot: false), "四屏 · 无匹配快照")
+    /// 任一屏处于镜像集合：「镜像中」，不论该拓扑有无预设（spec §3.3）
+    func testMirroredOverridesPresetState() {
+        XCTAssertEqual(StatusLineState.title(displayCount: 2, isMirrored: true, presetCount: 2, autoPresetName: "工作"),
+                       "镜像中")
+        XCTAssertEqual(StatusLineState.title(displayCount: 2, isMirrored: true, presetCount: 0, autoPresetName: nil),
+                       "镜像中")
     }
 }

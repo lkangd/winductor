@@ -9,7 +9,7 @@ import Foundation
 public enum RestoreTriggerKind: String, Equatable, Sendable {
     /// 自动触发（触发链走完）
     case auto
-    /// 手动「立即恢复」（菜单 / DebugCLI restore-now）
+    /// 手动恢复（菜单「恢复预设 ▸」/ 恢复提示 / 管理窗口）
     case manual
 }
 

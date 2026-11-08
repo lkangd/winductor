@@ -581,25 +581,28 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertTrue(rig.spy.all.contains { $0.contains("result=topology-mismatch") })
     }
 
-    /// 过渡入口「立即恢复」：当前拓扑默认预设（无自动时取最近恢复，否则最近保存），经注入执行器
-    func testRestoreNowAsyncUsesDefaultPresetViaEnqueue() throws {
+    /// 菜单路径（恢复预设子菜单）：选择在调用线程，管线经注入执行器
+    func testRestorePresetAsyncRunsViaEnqueue() throws {
         let rig = try rig(start: [screenA, screenB])
-        let first = try rig.addPreset("工作", on: [screenA, screenB], auto: false)
-        try rig.addPreset("演示", on: [screenA, screenB])
-        try rig.store.recordRestored(presetID: first.id, topologyKey: rig.key([screenA, screenB]))
+        try rig.addPreset("工作", on: [screenA, screenB])
+        let demo = try rig.addPreset("演示", on: [screenA, screenB])
         let enqueued = FlagBox(false)
         rig.makeChain(restoreEnqueue: { work in enqueued.value = true; work() })
 
-        rig.chain.restoreNowAsync()
+        rig.chain.restorePresetAsync(id: demo.id, topologyKey: rig.key([screenA, screenB]))
 
         XCTAssertTrue(enqueued.value)
-        XCTAssertEqual(rig.restorer.snapshots.map { $0.windows.first?.bundleID }, ["工作"], "最近恢复优先于最近保存")
+        XCTAssertEqual(rig.restorer.snapshots.map { $0.windows.first?.bundleID }, ["演示"])
+        XCTAssertEqual(rig.store.topology(key: rig.key([screenA, screenB]))?.lastRestoredPresetID, demo.id)
     }
 
-    func testRestoreNowWithoutPresetReturnsNil() throws {
+    /// 预设已不存在（菜单打开后在管理窗口删掉）：不恢复
+    func testRestoreMissingPresetReturnsNil() throws {
         let rig = try rig(start: [screenA, screenB])
+        try rig.addPreset("工作", on: [screenA, screenB])
         rig.makeChain()
-        XCTAssertNil(rig.chain.restoreNow())
+        XCTAssertNil(rig.chain.restorePreset(id: "gone", topologyKey: rig.key([screenA, screenB])))
+        XCTAssertTrue(rig.restorer.snapshots.isEmpty)
         XCTAssertTrue(rig.spy.all.contains { $0.contains("result=no-preset") })
     }
 
@@ -623,11 +626,12 @@ final class TriggerChainTests: XCTestCase {
     /// 恢复进行中再入手动入口：ignored 落日志、不二次恢复
     func testManualReentryWhileRestoringIsIgnored() throws {
         let rig = try rig(start: [screenA, screenB])
-        try rig.addPreset("工作", on: [screenA, screenB])
+        let work = try rig.addPreset("工作", on: [screenA, screenB])
+        let key = rig.key([screenA, screenB])
         rig.makeChain()
-        rig.restorer.onRestore = { [rig] _ in rig.chain.restoreNowAsync() }
+        rig.restorer.onRestore = { [rig] _ in rig.chain.restorePresetAsync(id: work.id, topologyKey: key) }
 
-        rig.chain.restoreNowAsync()
+        rig.chain.restorePresetAsync(id: work.id, topologyKey: key)
 
         XCTAssertEqual(rig.restorer.snapshots.count, 1)
         XCTAssertEqual(triggerSteps(rig.spy.all).filter { $0 == "ignored" }.count, 1)

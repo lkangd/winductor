@@ -582,37 +582,14 @@ public final class TriggerChain: @unchecked Sendable {
     /// 镜像中、预设不存在、恢复进行中 → 不恢复返回 nil。成功后记录最近恢复；完成通知经 onNotice 投递。
     @discardableResult
     public func restorePreset(id: String, topologyKey: String) -> RestoreNotice? {
-        guard let claim = claimManual(topologyKey: topologyKey, select: { $0.presets.first { $0.id == id } }) else {
-            return nil
-        }
+        guard let claim = claimManual(presetID: id, topologyKey: topologyKey) else { return nil }
         return runManual(claim)
     }
 
     /// restorePreset 的异步形态：选择与占位在调用线程，管线经 restoreEnqueue 离开调用线程（主线程不阻塞）
     public func restorePresetAsync(id: String, topologyKey: String) {
-        guard let claim = claimManual(topologyKey: topologyKey, select: { $0.presets.first { $0.id == id } }) else {
-            return
-        }
+        guard let claim = claimManual(presetID: id, topologyKey: topologyKey) else { return }
         restoreEnqueue { [weak self] in _ = self?.runManual(claim) }
-    }
-
-    /// 过渡入口（菜单「立即恢复」，票 06 删除）：恢复当前拓扑的默认预设——自动 → 最近恢复 → 最近保存
-    @discardableResult
-    public func restoreNow() -> RestoreNotice? {
-        guard let claim = claimManual(topologyKey: nil, select: Self.defaultPreset) else { return nil }
-        return runManual(claim)
-    }
-
-    /// restoreNow 的异步形态（菜单路径）
-    public func restoreNowAsync() {
-        guard let claim = claimManual(topologyKey: nil, select: Self.defaultPreset) else { return }
-        restoreEnqueue { [weak self] in _ = self?.runManual(claim) }
-    }
-
-    private static func defaultPreset(in topology: PresetTopology) -> Preset? {
-        topology.autoPreset
-            ?? topology.presets.first { $0.id == topology.lastRestoredPresetID }
-            ?? topology.presets.last
     }
 
     private struct ManualClaim {
@@ -621,9 +598,8 @@ public final class TriggerChain: @unchecked Sendable {
         let cancellation: RestoreCancellation
     }
 
-    /// 手动形态共用：校验当前拓扑 + 选预设 + 忙守卫（含 [trigger] 日志行）；成功即占住恢复相位
-    private func claimManual(topologyKey expected: String?,
-                             select: (PresetTopology) -> Preset?) -> ManualClaim? {
+    /// 手动形态共用：校验当前拓扑 + 取预设 + 忙守卫（含 [trigger] 日志行）；成功即占住恢复相位
+    private func claimManual(presetID: String, topologyKey expected: String) -> ManualClaim? {
         let current = TopologyState(topologyProvider())
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -635,9 +611,9 @@ public final class TriggerChain: @unchecked Sendable {
             log?.write(chainLine(step: "topology-match", result: result, detail: "key=\(current.key) trigger=manual"))
             return nil
         }
-        if let expected, expected != current.key { return reject("topology-mismatch") }
+        guard expected == current.key else { return reject("topology-mismatch") }
         guard !current.isMirrored else { return reject("mirrored") }
-        guard let topology = presets.topology(key: current.key), let preset = select(topology) else {
+        guard let preset = presets.topology(key: current.key)?.presets.first(where: { $0.id == presetID }) else {
             return reject("no-preset")
         }
         log?.write(chainLine(step: "topology-match", result: "manual",

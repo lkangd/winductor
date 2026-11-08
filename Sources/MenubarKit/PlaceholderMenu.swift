@@ -1,37 +1,40 @@
 import AppKit
 
-// PlaceholderMenu.swift — 占位菜单构建（票 10 骨架；票 19 以真实接线替换占位项）。
-// 结构照 spec §8.2 定稿：状态行 + 立即恢复／撤销上次恢复 + 登录时启动／打开快照文件夹／
-// 打开日志文件夹 + 能力状态行 + 退出。骨架期动作项全部置灰（引擎未接线），
+// PlaceholderMenu.swift — 占位菜单构建（票 10 骨架；未就绪态沿用，就绪态换 WiredMenuBuilder 全量菜单）。
+// 结构随 display-presets spec §6.1：状态行 + 保存当前布局为预设…／恢复预设／撤销上次恢复 + 管理预设… +
+// 登录时启动／打开预设文件夹／打开日志文件夹 + 能力状态行 + 退出。动作项全部置灰，
 // 仅「退出 Winductor」可用（terminate: 响应链）。
-// 占位文案带「（占位）」后缀，避免展示假状态；票 19 接线后换 §8.2 真实文案。
+// 占位文案带「（占位）」后缀，避免展示假状态。
 
 public enum PlaceholderMenu {
     /// 状态项菜单不显示标题，仅作标识
     static let title = "Winductor"
 
-    /// 构建 §8.2 骨架的占位菜单
+    /// 构建 §6.1 骨架的占位菜单
     public static func build() -> NSMenu {
         let menu = NSMenu(title: title)
         // 占位项不参与自动启用，可用性全部显式声明
         menu.autoenablesItems = false
 
-        // 状态行占位（spec §8.2 三态之一由票 19 接线：快照就绪／无匹配快照／一屏（拔出））
+        // 状态行占位（就绪后换 StatusLineState 四态；屏幕录制重确认时由 ScreenCaptureReconfirmGuide 替换）
         menu.addItem(disabled("状态行（占位）"))
         menu.addItem(.separator())
 
-        // 恢复动作占位（票 14–17 引擎接线）
-        menu.addItem(disabled("立即恢复"))
+        // 预设动作占位
+        menu.addItem(disabled("保存当前布局为预设…"))
+        menu.addItem(disabled("恢复预设"))
         menu.addItem(disabled("撤销上次恢复"))
         menu.addItem(.separator())
+        menu.addItem(disabled("管理预设…"))
+        menu.addItem(.separator())
 
-        // 设置与 Finder 入口占位（票 19 接 SMAppService / Finder 打开文件夹）
+        // 设置与 Finder 入口占位
         menu.addItem(disabled("登录时启动"))
-        menu.addItem(disabled("打开快照文件夹"))
+        menu.addItem(disabled("打开预设文件夹"))
         menu.addItem(disabled("打开日志文件夹"))
         menu.addItem(.separator())
 
-        // 能力状态行占位（spec §8.5，票 19 接启动探针）
+        // 能力状态行占位（就绪后换启动探针结果）
         menu.addItem(disabled("能力状态（占位）"))
         menu.addItem(.separator())
 
