@@ -42,7 +42,12 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
     /// §8.5 措辞：恢复完成：12 窗口归位、1 跳过、0 失败；本次 Space 归属层失效（几何已恢复）
     public var body: String {
         if let failureDetail { return "恢复失败：\(failureDetail)" }
-        var text = "恢复完成：\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
+        return "恢复完成：" + countsText
+    }
+
+    /// 计数 + 降级附注（不带「恢复完成：」前缀；自动恢复告知 popover 同口径复用）
+    public var countsText: String {
+        var text = "\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
         if !degradedLayerNames.isEmpty {
             text += "；本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）"
         }
