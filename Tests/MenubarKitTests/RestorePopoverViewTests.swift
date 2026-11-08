@@ -74,19 +74,19 @@ final class RestorePopoverViewTests: XCTestCase {
 
     /// 告知：标题 + 计数行；撤销 / 改用其他预设… 按标志出现并回传事件
     func testNoticeViewButtonsFollowFlags() {
-        let content = AutoRestoreNoticeContent(topologyKey: "k", headline: "已按「工作」恢复",
+        let content = AutoRestoreNoticeContent(topologyKey: "k", headline: "已按『工作』恢复",
                                                detail: "3 窗口归位、0 跳过、0 失败",
                                                showsUndo: true, showsSwitchPreset: true)
         let view = AutoRestoreNoticeView(content: content) { [unowned self] in self.events.append($0) }
 
-        XCTAssertTrue(texts(in: view).contains("已按「工作」恢复"))
+        XCTAssertTrue(texts(in: view).contains("已按『工作』恢复"))
         XCTAssertTrue(texts(in: view).contains("3 窗口归位、0 跳过、0 失败"))
         click("撤销", in: view)
         click("改用其他预设…", in: view)
         XCTAssertEqual(events, [.undoTapped, .switchPresetTapped])
 
         let bare = AutoRestoreNoticeView(content: AutoRestoreNoticeContent(
-            topologyKey: "k", headline: "按「工作」恢复失败", detail: "x",
+            topologyKey: "k", headline: "按『工作』恢复失败", detail: "x",
             showsUndo: false, showsSwitchPreset: false)) { _ in }
         XCTAssertEqual(buttons(in: bare).map(\.title), [])
     }

@@ -174,7 +174,7 @@ final class RestorePromptView: NSView {
     }
 }
 
-/// 自动恢复告知（§6.3）：「已按「X」恢复」+「撤销」、计数与降级附注、（有其他预设时）「改用其他预设…」
+/// 自动恢复告知（§6.3）：「已按『X』恢复」+「撤销」、计数与降级附注、（有其他预设时）「改用其他预设…」
 final class AutoRestoreNoticeView: NSView {
     private var actions: [ButtonAction] = []
 

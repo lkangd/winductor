@@ -54,7 +54,7 @@ public struct RestorePromptContent: Equatable {
 /// 自动恢复告知内容（§6.3）
 public struct AutoRestoreNoticeContent: Equatable {
     public let topologyKey: String
-    /// 「已按「X」恢复」/ 失败时「按「X」恢复失败」
+    /// 「已按『X』恢复」/ 失败时「按『X』恢复失败」（spec §6.3 用『』）
     public let headline: String
     /// 计数 + 降级附注（口径同完成通知）；失败时为原因
     public let detail: String
@@ -67,7 +67,7 @@ public struct AutoRestoreNoticeContent: Equatable {
         let failed = outcome.notice.failureDetail
         return AutoRestoreNoticeContent(
             topologyKey: outcome.topologyKey,
-            headline: failed == nil ? "已按「\(outcome.presetName)」恢复" : "按「\(outcome.presetName)」恢复失败",
+            headline: failed == nil ? "已按『\(outcome.presetName)』恢复" : "按『\(outcome.presetName)』恢复失败",
             detail: failed ?? outcome.notice.countsText,
             showsUndo: failed == nil,
             showsSwitchPreset: outcome.hasOtherPresets)

@@ -87,7 +87,7 @@ final class RestorePopoverModelTests: XCTestCase {
     func testNoticeHeadlineCountsUndoAndSwitchEntry() {
         let notice = AutoRestoreNoticeContent.make(autoRestored(degraded: ["Space 归属"], hasOtherPresets: true))
 
-        XCTAssertEqual(notice.headline, "已按「工作」恢复")
+        XCTAssertEqual(notice.headline, "已按『工作』恢复")
         XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败；本次 Space 归属层失效（几何已恢复）")
         XCTAssertTrue(notice.showsUndo)
         XCTAssertTrue(notice.showsSwitchPreset)
@@ -99,7 +99,7 @@ final class RestorePopoverModelTests: XCTestCase {
     func testNoticeForFailedAutoRestoreHasNoUndo() {
         let notice = AutoRestoreNoticeContent.make(autoRestored(failure: "无活动显示器", hasOtherPresets: true))
 
-        XCTAssertEqual(notice.headline, "按「工作」恢复失败")
+        XCTAssertEqual(notice.headline, "按『工作』恢复失败")
         XCTAssertEqual(notice.detail, "无活动显示器")
         XCTAssertFalse(notice.showsUndo)
         XCTAssertTrue(notice.showsSwitchPreset)

@@ -166,7 +166,7 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
 
         coordinator.handle(outcome: autoRestored(work, hasOtherPresets: false))
         guard case .notice(let notice, _)? = renderer.last else { return XCTFail("应渲染自动恢复告知") }
-        XCTAssertEqual(notice.headline, "已按「工作」恢复")
+        XCTAssertEqual(notice.headline, "已按『工作』恢复")
         XCTAssertEqual(scheduled.map(\.delay), [RestorePopoverCoordinator.noticeDuration])
         scheduled.first?.fire()
         XCTAssertEqual(renderer.last, .hidden)

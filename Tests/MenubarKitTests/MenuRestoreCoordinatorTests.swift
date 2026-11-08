@@ -422,7 +422,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(restorer.restoreCalls, 1, "新拓扑有自动预设 → 自动恢复一次")
         XCTAssertTrue(notifier.deliveries.isEmpty, "自动恢复告知改走 popover，不再发系统通知（§6.3）")
         guard case .notice(let notice, _)? = popover.rendered.last else { return XCTFail("应弹自动恢复告知") }
-        XCTAssertEqual(notice.headline, "已按「工作」恢复")
+        XCTAssertEqual(notice.headline, "已按『工作』恢复")
         XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败")
         XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行三态）")
 
