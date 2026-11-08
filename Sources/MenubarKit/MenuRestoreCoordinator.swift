@@ -117,6 +117,7 @@ public final class MenuRestoreCoordinator {
     private let topologyProvider: () -> ObservedTopology
     private let savePreset: SavePresetFlow
     private let openPresetManager: (() -> Void)?
+    private let overwritePreset: OverwritePresetFlow?
     private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
     /// 菜单打开时原位刷新的委托载体（NSMenuDelegate 必须是 NSObject；
@@ -131,6 +132,7 @@ public final class MenuRestoreCoordinator {
     /// - readiness：触发链未就绪门
     /// - savePreset：「保存当前布局为预设…」流程（RuntimeAssembly.makeSavePresetFlow）
     /// - openPresetManager：「管理预设…」打开入口（票 07 注入；nil = 置灰）
+    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（票 07，与管理窗口同一实例；nil = 不显示）
     public init(presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
@@ -149,6 +151,7 @@ public final class MenuRestoreCoordinator {
                 capabilityLayers: @escaping () -> [CapabilityLayerStatus],
                 savePreset: SavePresetFlow,
                 openPresetManager: (() -> Void)? = nil,
+                overwritePreset: OverwritePresetFlow? = nil,
                 presetsFolder: URL,
                 logsFolder: URL,
                 openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
@@ -157,6 +160,7 @@ public final class MenuRestoreCoordinator {
         self.topologyProvider = topologyProvider
         self.savePreset = savePreset
         self.openPresetManager = openPresetManager
+        self.overwritePreset = overwritePreset
         self.restoreEnqueue = restoreEnqueue
         self.undo = undo
         self.notifier = notifier
@@ -293,7 +297,12 @@ public final class MenuRestoreCoordinator {
             onManagePresets: openPresetManager,
             onToggleLoginLaunch: { [weak self] in self?.toggleLoginLaunchTapped() },
             onOpenPresetsFolder: { [weak self] in self?.openPresetsFolderTapped() },
-            onOpenLogsFolder: { [weak self] in self?.openLogsFolderTapped() })
+            onOpenLogsFolder: { [weak self] in self?.openLogsFolderTapped() },
+            canOverwritePreset: overwritePreset?.availability() == .available,
+            // 同恢复：绑定构建时刻的拓扑键，覆盖流程拍快照后再核对拓扑
+            onOverwritePreset: overwritePreset.map { flow in
+                { [weak self] id in flow.runAsync(presetID: id, topologyKey: key) { _ in self?.refreshMenuOnMain() } }
+            })
     }
 
     // MARK: 菜单动作（经 WiredMenuBuilder 载体路由；与真实点击同路径）

@@ -202,7 +202,7 @@ public final class SavePresetFlow {
         return .failed(reason)
     }
 
-    private static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         switch error as? SnapshotCaptureError {
         case .noActiveDisplay?: return "无活动显示器"
         case .topologyChangedWhileComposing?: return "拍快照期间屏幕排列发生变化，请稍后重试"

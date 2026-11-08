@@ -24,7 +24,9 @@ final class WiredMenuBuilderTests: XCTestCase {
                              canUndo: Bool = true,
                              managePresetsAvailable: Bool = true,
                              loginChecked: Bool = false,
-                             capabilityTitle: String = "能力状态：全部可用") -> WiredMenuContent {
+                             capabilityTitle: String = "能力状态：全部可用",
+                             overwriteWired: Bool = false,
+                             canOverwritePreset: Bool = true) -> WiredMenuContent {
         WiredMenuContent(
             statusLineTitle: statusLineTitle,
             canSavePreset: canSavePreset,
@@ -38,7 +40,9 @@ final class WiredMenuBuilderTests: XCTestCase {
             onManagePresets: managePresetsAvailable ? { [unowned self] in record("managePresets") } : nil,
             onToggleLoginLaunch: { [unowned self] in record("toggleLogin") },
             onOpenPresetsFolder: { [unowned self] in record("openPresets") },
-            onOpenLogsFolder: { [unowned self] in record("openLogs") })
+            onOpenLogsFolder: { [unowned self] in record("openLogs") },
+            canOverwritePreset: canOverwritePreset,
+            onOverwritePreset: overwriteWired ? { [unowned self] id in record("overwrite:\(id)") } : nil)
     }
 
     private func makeMenu(content: WiredMenuContent) -> NSMenu { WiredMenuBuilder.build(content) }
@@ -117,6 +121,30 @@ final class WiredMenuBuilderTests: XCTestCase {
         click(submenu.items[1])
         click(submenu.items[0])
         XCTAssertEqual(calls, ["restore:p-work", "restore:p-home"])
+    }
+
+    /// 「恢复预设 ▸」末尾「用当前布局覆盖 ▸」（spec §4.3，票 07）：预设列表后分隔线 + 同序预设子菜单，按 id 路由
+    func testOverwriteSubmenuFollowsRestoreEntriesAndRoutesByID() throws {
+        let submenu = try XCTUnwrap(item(makeMenu(content: makeContent(overwriteWired: true)), titled: "恢复预设")?.submenu)
+        XCTAssertEqual(submenu.items.map(\.isSeparatorItem), [false, false, true, false])
+        let overwrite = try XCTUnwrap(submenu.items.last)
+        XCTAssertEqual(overwrite.title, "用当前布局覆盖")
+        XCTAssertEqual(overwrite.isEnabled, true)
+        let targets = try XCTUnwrap(overwrite.submenu)
+        XCTAssertEqual(targets.items.map(\.title), ["家", "工作（自动）"])
+
+        click(targets.items[1])
+        XCTAssertEqual(calls, ["overwrite:p-work"])
+    }
+
+    /// 覆盖不可用（未就绪/镜像中/恢复中，与保存同口径）：「用当前布局覆盖」置灰，不挂子菜单
+    func testOverwriteSubmenuDisabledWhenUnavailable() throws {
+        let submenu = try XCTUnwrap(item(makeMenu(content: makeContent(overwriteWired: true, canOverwritePreset: false)),
+                                         titled: "恢复预设")?.submenu)
+        let overwrite = try XCTUnwrap(submenu.items.last)
+        XCTAssertEqual(overwrite.title, "用当前布局覆盖")
+        XCTAssertEqual(overwrite.isEnabled, false)
+        XCTAssertNil(overwrite.submenu)
     }
 
     /// 无预设：「恢复预设」置灰（spec §6.1「无预设置灰」）

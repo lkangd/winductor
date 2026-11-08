@@ -4,6 +4,7 @@ import AppKit
 // 结构：状态行（纯文本四态）──── 保存当前布局为预设…／恢复预设 ▸／撤销上次恢复 ──── 管理预设… ────
 // 登录时启动 ✓／打开预设文件夹／打开日志文件夹 ──── 能力状态行 ──── 退出 Winductor。
 // 「恢复预设 ▸」子菜单 = 当前拓扑预设（调用方给定顺序），自动预设标「（自动）」；无预设整项置灰。
+// 装配了覆盖动作时子菜单末尾另有「用当前布局覆盖 ▸」（票 07，spec §4.3），同序列出预设。
 // 动作经 NSObject 载体路由到注入闭包（NSMenuItem.target 为 unsafe unretained——每个动作项一个载体，
 // 同时挂在该项 representedObject（强引用）上保活，测试直接 perform 捕获）。
 // 状态/可用性由调用方在构建时刻判定传入，构建器不做 IO。
@@ -44,6 +45,10 @@ public struct WiredMenuContent {
     public let onToggleLoginLaunch: () -> Void
     public let onOpenPresetsFolder: () -> Void
     public let onOpenLogsFolder: () -> Void
+    /// 「恢复预设 ▸」内「用当前布局覆盖 ▸」可用性（票 07：与保存同口径）
+    public let canOverwritePreset: Bool
+    /// 覆盖当前拓扑下的指定预设，参数 = 预设 id（nil = 未装配，不显示覆盖组）
+    public let onOverwritePreset: ((String) -> Void)?
 
     public init(statusLineTitle: String,
                 canSavePreset: Bool,
@@ -57,7 +62,9 @@ public struct WiredMenuContent {
                 onManagePresets: (() -> Void)?,
                 onToggleLoginLaunch: @escaping () -> Void,
                 onOpenPresetsFolder: @escaping () -> Void,
-                onOpenLogsFolder: @escaping () -> Void) {
+                onOpenLogsFolder: @escaping () -> Void,
+                canOverwritePreset: Bool = false,
+                onOverwritePreset: ((String) -> Void)? = nil) {
         self.statusLineTitle = statusLineTitle
         self.canSavePreset = canSavePreset
         self.restorePresets = restorePresets
@@ -71,6 +78,8 @@ public struct WiredMenuContent {
         self.onToggleLoginLaunch = onToggleLoginLaunch
         self.onOpenPresetsFolder = onOpenPresetsFolder
         self.onOpenLogsFolder = onOpenLogsFolder
+        self.canOverwritePreset = canOverwritePreset
+        self.onOverwritePreset = onOverwritePreset
     }
 }
 
@@ -133,6 +142,29 @@ public enum WiredMenuBuilder {
         for entry in content.restorePresets {
             let title = entry.isAuto ? "\(entry.name)（自动）" : entry.name
             submenu.addItem(item(title, { onRestore(entry.id) }))
+        }
+        if let onOverwrite = content.onOverwritePreset {
+            submenu.addItem(.separator())
+            submenu.addItem(overwriteItem(content.restorePresets, enabled: content.canOverwritePreset, onOverwrite))
+        }
+        parent.submenu = submenu
+        parent.isEnabled = true
+        return parent
+    }
+
+    /// 「用当前布局覆盖 ▸」（spec §4.3，票 07）：同序列出当前拓扑预设，逐项路由预设 id；不可用置灰不挂子菜单
+    private static func overwriteItem(_ entries: [RestorePresetMenuEntry], enabled: Bool,
+                                      _ onOverwrite: @escaping (String) -> Void) -> NSMenuItem {
+        let parent = NSMenuItem(title: "用当前布局覆盖", action: nil, keyEquivalent: "")
+        guard enabled else {
+            parent.isEnabled = false
+            return parent
+        }
+        let submenu = NSMenu(title: "用当前布局覆盖")
+        submenu.autoenablesItems = false
+        for entry in entries {
+            let title = entry.isAuto ? "\(entry.name)（自动）" : entry.name
+            submenu.addItem(item(title, { onOverwrite(entry.id) }))
         }
         parent.submenu = submenu
         parent.isEnabled = true

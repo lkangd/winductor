@@ -88,6 +88,13 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
+    /// 覆盖确认框假件：按脚本应答（用尽 = 取消）
+    private final class ScriptedConfirm: PresetOverwriteConfirming {
+        var answers: [Bool]
+        init(_ answers: [Bool]) { self.answers = answers }
+        func confirmOverwrite(presetName: String) -> Bool { answers.isEmpty ? false : answers.removeFirst() }
+    }
+
     private final class FakeSpaceList: SpaceListProviding, @unchecked Sendable {
         let signature: [String]
         init(_ signature: [String]) { self.signature = signature }
@@ -192,7 +199,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var currentKey: String { observedTopology.identity.key }
 
     private func makeCoordinator(degradeCollector: DegradeCollectingLog? = nil,
-                                 openPresetManager: (() -> Void)? = nil) -> MenuRestoreCoordinator {
+                                 openPresetManager: (() -> Void)? = nil,
+                                 overwriteConfirm: [Bool] = []) -> MenuRestoreCoordinator {
         let savePreset = SavePresetFlow(
             store: presetStore,
             capture: { [unowned self] in LayoutCapture(snapshot: currentSnapshot(), topology: observedTopology) },
@@ -200,6 +208,13 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             isReady: { true },
             isMirrored: { [unowned self] in mirrored },
             isRestoring: { [unowned self] in restoring },
+            captureExecutor: { $0() },
+            mainExecutor: { $0() })
+        let overwrite = OverwritePresetFlow(
+            store: presetStore,
+            capture: { [unowned self] in LayoutCapture(snapshot: currentSnapshot(), topology: observedTopology) },
+            availability: { savePreset.availability() },
+            confirm: ScriptedConfirm(overwriteConfirm),
             captureExecutor: { $0() },
             mainExecutor: { $0() })
         return MenuRestoreCoordinator(
@@ -217,6 +232,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
             savePreset: savePreset,
             openPresetManager: openPresetManager,
+            overwritePreset: overwrite,
             presetsFolder: URL(fileURLWithPath: "/tmp/winductor-presets"),
             logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
             openFolder: { [weak self] in self?.openedFolders.append($0) },
@@ -291,7 +307,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         try addPreset("工作")
         try addPreset("家")
         let submenu = try XCTUnwrap(item(coordinator.makeReadyMenu(), "恢复预设")?.submenu)
-        XCTAssertEqual(submenu.items.map(\.title), ["工作（自动）", "家"])
+        // 预设之后是分隔线 +「用当前布局覆盖 ▸」（票 07）
+        XCTAssertEqual(submenu.items.map(\.title), ["工作（自动）", "家", "", "用当前布局覆盖"])
 
         mirrored = true
         XCTAssertEqual(item(coordinator.makeReadyMenu(), "恢复预设")?.isEnabled, false, "镜像中禁用恢复（spec §3.3）")
@@ -325,6 +342,33 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(restorer.restoreCalls, 0)
         XCTAssertNil(presetStore.topology(key: currentKey))
+    }
+
+    /// 「恢复预设 ▸」→「用当前布局覆盖 ▸」（spec §4.3，票 07）：确认后把当前布局写进所点预设，名称与自动保留，刷新菜单
+    func testOverwriteSubmenuItemOverwritesPresetWithCurrentLayout() throws {
+        try addPreset("工作")
+        let home = try addPreset("家")
+        let coordinator = makeCoordinator(overwriteConfirm: [true])
+        let targets = try XCTUnwrap(try restoreItem(coordinator.makeReadyMenu(), "用当前布局覆盖").submenu)
+
+        try click(try XCTUnwrap(targets.items.first { $0.title == "家" }))
+
+        let stored = presetStore.topology(key: currentKey)?.presets.first { $0.id == home.id }
+        XCTAssertEqual(stored?.snapshot, currentSnapshot())
+        XCTAssertNotEqual(stored?.snapshot, home.snapshot)
+        XCTAssertEqual(stored?.name, "家")
+        XCTAssertEqual(stored?.isAuto, false)
+        XCTAssertGreaterThanOrEqual(refreshCalls, 1, "覆盖后刷新菜单")
+        XCTAssertEqual(restorer.restoreCalls, 0, "覆盖不触发恢复")
+    }
+
+    /// 恢复进行中：「用当前布局覆盖」置灰（与保存同口径）
+    func testOverwriteSubmenuDisabledWhileRestoring() throws {
+        try addPreset("工作")
+        let coordinator = makeCoordinator()
+        restoring = true
+
+        XCTAssertEqual(try restoreItem(coordinator.makeReadyMenu(), "用当前布局覆盖").isEnabled, false)
     }
 
     /// 降级附注：恢复后 [degrade] 收集层名拼进通知（§8.5「本次 Space 归属层失效（几何已恢复）」）
