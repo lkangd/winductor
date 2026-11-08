@@ -111,6 +111,19 @@ public enum TriggerOutcome: Equatable, Sendable {
     }
 }
 
+/// 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 管理窗口）被触发链拒绝的原因（display-presets 票 04 评审修复：
+/// 被拒不再静默，调用方据此告知用户）
+public enum ManualRestoreRejection: Error, Equatable, Sendable {
+    /// 所选预设不属于当前拓扑（入口打开后屏幕排列变了；spec §5.2 仅当前拓扑）
+    case topologyChanged
+    /// 镜像中整体禁用（spec §3.3）
+    case mirrored
+    /// 预设已不存在（入口打开后被删）
+    case presetMissing
+    /// 恢复/撤销管线进行中
+    case restoreInProgress
+}
+
 /// 自动恢复结果（§6.3 告知所需：预设名、计数与降级附注、是否附「改用其他预设…」）
 public struct AutoRestoredOutcome: Equatable, Sendable {
     public let topologyKey: String

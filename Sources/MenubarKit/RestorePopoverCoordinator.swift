@@ -21,7 +21,7 @@ public final class RestorePopoverCoordinator {
     private let renderer: RestorePopoverRendering?
     private let presets: PresetStore
     private let currentSpaces: () -> [SpaceEntry]?
-    private let restorePreset: (_ presetID: String, _ topologyKey: String) -> Void
+    private let restorePreset: (_ presetID: String, _ topologyKey: String) -> ManualRestoreRejection?
     private let undo: () -> Void
     private let scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void
     private let log: LogWriting?
@@ -29,13 +29,13 @@ public final class RestorePopoverCoordinator {
 
     /// - Parameters:
     ///   - currentSpaces: 实时受管 Space 清单（Space 不足提示用；nil = 读不到，不提示）
-    ///   - restorePreset: 提示「恢复」→ 触发链 restorePresetAsync
+    ///   - restorePreset: 提示「恢复」→ 触发链 restorePresetAsync（经菜单协调器：被拒时告知用户）；返回 nil = 已受理
     ///   - undo: 告知「撤销」→ 菜单同款撤销管线（离主线程、两段式通知）
     ///   - scheduleAfter: 告知到期调度（回调须在主线程）
     public init(renderer: RestorePopoverRendering?,
                 presets: PresetStore,
                 currentSpaces: @escaping () -> [SpaceEntry]?,
-                restorePreset: @escaping (_ presetID: String, _ topologyKey: String) -> Void,
+                restorePreset: @escaping (_ presetID: String, _ topologyKey: String) -> ManualRestoreRejection?,
                 undo: @escaping () -> Void,
                 scheduleAfter: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -74,14 +74,21 @@ public final class RestorePopoverCoordinator {
             log?.write("[popover] action=render kind=\(Self.kind(of: state.presentation))")
             renderer?.render(state.presentation)
         }
-        effects.forEach(perform)
+        effects.forEach { perform($0, after: before) }
     }
 
-    private func perform(_ effect: RestorePopoverEffect) {
+    /// - after: 产出该副作用之前的呈现（「恢复」被拒时据此弹回原提示）
+    private func perform(_ effect: RestorePopoverEffect, after previous: RestorePopoverPresentation) {
         switch effect {
         case .restore(let presetID, let topologyKey):
             log?.write("[popover] action=restore preset=\(presetID) topology=\(topologyKey)")
-            restorePreset(presetID, topologyKey)
+            guard let rejection = restorePreset(presetID, topologyKey) else { return }
+            log?.write("[popover] action=restore result=rejected detail=\(rejection)")
+            // 恢复进行中被拒：选择仍有效，弹回同一提示（含所选预设）供稍后再点（§6.2 选择不丢失）；
+            // 拓扑已变 / 镜像中 / 预设已删：提示已过期，不弹回（告知由注入方投递）
+            if rejection == .restoreInProgress, case .prompt(let content) = previous {
+                send(.promptNeeded(content))
+            }
         case .undo:
             log?.write("[popover] action=undo")
             undo()

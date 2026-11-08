@@ -607,14 +607,21 @@ public final class TriggerChain: @unchecked Sendable {
     /// 镜像中、预设不存在、恢复进行中 → 不恢复返回 nil。成功后记录最近恢复；完成通知经 onNotice 投递。
     @discardableResult
     public func restorePreset(id: String, topologyKey: String) -> RestoreNotice? {
-        guard let claim = claimManual(presetID: id, topologyKey: topologyKey) else { return nil }
+        guard case .success(let claim) = claimManual(presetID: id, topologyKey: topologyKey) else { return nil }
         return runManual(claim)
     }
 
-    /// restorePreset 的异步形态：选择与占位在调用线程，管线经 restoreEnqueue 离开调用线程（主线程不阻塞）
-    public func restorePresetAsync(id: String, topologyKey: String) {
-        guard let claim = claimManual(presetID: id, topologyKey: topologyKey) else { return }
-        restoreEnqueue { [weak self] in _ = self?.runManual(claim) }
+    /// restorePreset 的异步形态：选择与占位在调用线程，管线经 restoreEnqueue 离开调用线程（主线程不阻塞）。
+    /// 返回 nil = 已受理；被拒返回原因（调用方据此告知用户，提示「恢复」的选择不静默丢失，spec §6.2）
+    @discardableResult
+    public func restorePresetAsync(id: String, topologyKey: String) -> ManualRestoreRejection? {
+        switch claimManual(presetID: id, topologyKey: topologyKey) {
+        case .failure(let rejection):
+            return rejection
+        case .success(let claim):
+            restoreEnqueue { [weak self] in _ = self?.runManual(claim) }
+            return nil
+        }
     }
 
     private struct ManualClaim {
@@ -624,28 +631,29 @@ public final class TriggerChain: @unchecked Sendable {
     }
 
     /// 手动形态共用：校验当前拓扑 + 取预设 + 忙守卫（含 [trigger] 日志行）；成功即占住恢复相位
-    private func claimManual(presetID: String, topologyKey expected: String) -> ManualClaim? {
+    private func claimManual(presetID: String, topologyKey expected: String) -> Result<ManualClaim, ManualRestoreRejection> {
         let current = TopologyState(topologyProvider())
         stateLock.lock()
         defer { stateLock.unlock() }
         guard phase != .restoring else {
             log?.write(chainLine(step: "ignored", detail: "restore-in-progress trigger=manual"))
-            return nil
+            return .failure(.restoreInProgress)
         }
-        func reject(_ result: String) -> ManualClaim? {
+        func reject(_ result: String, _ rejection: ManualRestoreRejection) -> Result<ManualClaim, ManualRestoreRejection> {
             log?.write(chainLine(step: "topology-match", result: result, detail: "key=\(current.key) trigger=manual"))
-            return nil
+            return .failure(rejection)
         }
-        guard expected == current.key else { return reject("topology-mismatch") }
-        guard !current.isMirrored else { return reject("mirrored") }
+        guard expected == current.key else { return reject("topology-mismatch", .topologyChanged) }
+        guard !current.isMirrored else { return reject("mirrored", .mirrored) }
         guard let preset = presets.topology(key: current.key)?.presets.first(where: { $0.id == presetID }) else {
-            return reject("no-preset")
+            return reject("no-preset", .presetMissing)
         }
         log?.write(chainLine(step: "topology-match", result: "manual",
                              detail: "key=\(current.key) preset=\(preset.id) trigger=manual"))
         // 防抖/稳定判据进行中被手动恢复抢占：恢复结束后重判（挂起的 settle/采样回调会因相位不符而作废）
         if phase == .debouncing || phase == .stabilizing { eventDuringRestore = true }
-        return ManualClaim(preset: preset, key: current.key, cancellation: claimRestoreLocked(key: current.key))
+        return .success(ManualClaim(preset: preset, key: current.key,
+                                    cancellation: claimRestoreLocked(key: current.key)))
     }
 
     private func runManual(_ claim: ManualClaim) -> RestoreNotice? {

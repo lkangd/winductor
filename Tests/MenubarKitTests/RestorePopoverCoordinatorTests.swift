@@ -19,6 +19,8 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
     private var store: PresetStore!
     private var renderer: FakeRenderer!
     private var restored: [(id: String, key: String)] = []
+    /// 注入的手动恢复应答（nil = 受理）
+    private var restoreRejection: ManualRestoreRejection?
     private var undoCalls = 0
     private var scheduled: [(delay: TimeInterval, fire: () -> Void)] = []
     private var liveSpaces: [SpaceEntry]?
@@ -28,6 +30,7 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
         store = PresetStore(directory: root)
         renderer = FakeRenderer()
         restored = []
+        restoreRejection = nil
         undoCalls = 0
         scheduled = []
         liveSpaces = nil
@@ -66,7 +69,10 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
         RestorePopoverCoordinator(
             renderer: renderer, presets: store,
             currentSpaces: { [unowned self] in self.liveSpaces },
-            restorePreset: { [unowned self] id, key in self.restored.append((id, key)) },
+            restorePreset: { [unowned self] id, key in
+                self.restored.append((id, key))
+                return self.restoreRejection
+            },
             undo: { [unowned self] in self.undoCalls += 1 },
             scheduleAfter: { [unowned self] delay, fire in self.scheduled.append((delay, fire)) })
     }
@@ -99,6 +105,33 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
         coordinator.handle(outcome: .promptNeeded(topology))
 
         coordinator.handle(outcome: .dismissPrompt)
+
+        XCTAssertEqual(renderer.last, .hidden)
+    }
+
+    /// 「恢复」因恢复进行中被拒：重新弹出同一提示（保留所选预设），选择不丢失（§6.2）
+    func testRestoreRejectedWhileRestoringReshowsPromptWithSelection() throws {
+        let work = try save("工作")
+        try save("演示")
+        let coordinator = makeCoordinator()
+        coordinator.handle(outcome: .promptNeeded(topology))
+        renderer.onEvent?(.select(presetID: work.id))
+        restoreRejection = .restoreInProgress
+
+        renderer.onEvent?(.restoreTapped)
+
+        guard case .prompt(let content)? = renderer.last else { return XCTFail("被拒后应重新弹出提示") }
+        XCTAssertEqual(content.selectedPresetID, work.id)
+    }
+
+    /// 「恢复」因拓扑已变被拒：提示属于旧拓扑，不再弹回
+    func testRestoreRejectedForStaleTopologyStaysHidden() throws {
+        try save("工作")
+        let coordinator = makeCoordinator()
+        coordinator.handle(outcome: .promptNeeded(topology))
+        restoreRejection = .topologyChanged
+
+        renderer.onEvent?(.restoreTapped)
 
         XCTAssertEqual(renderer.last, .hidden)
     }

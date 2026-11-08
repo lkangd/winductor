@@ -14,7 +14,7 @@ import SnapshotEngine
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
-//   popover，§6.2/§6.3；提示「恢复」= chain.restorePresetAsync，告知「撤销」= 菜单同款撤销管线）。
+//   popover，§6.2/§6.3；提示「恢复」= restorePreset（菜单同入口，被拒告知），告知「撤销」= 菜单同款撤销管线）。
 // 全部系统单例经协议注入（UNUserNotificationCenter/SMAppService 不可单测；可测接缝全走 fake）。
 
 /// 系统通知投递接缝（生产：UserNotificationPoster 包 UNUserNotificationCenter；测试：fake 收集）
@@ -197,7 +197,8 @@ public final class MenuRestoreCoordinator {
         outcomeSink.set { [weak self] outcome in self?.handle(outcome: outcome) }
         popovers = RestorePopoverCoordinator(
             renderer: popover, presets: presetStore, currentSpaces: currentSpaces,
-            restorePreset: { [chain] id, key in chain.restorePresetAsync(id: id, topologyKey: key) },
+            // 与菜单/管理窗口同一入口：被拒时同口径告知用户
+            restorePreset: { [weak self] id, key in self?.restorePreset(id: id, topologyKey: key) },
             undo: { [weak self] in self?.undoLastTapped() },
             log: log)
     }
@@ -269,10 +270,25 @@ public final class MenuRestoreCoordinator {
         }
     }
 
-    /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」；票 07 管理窗口「恢复」同入口）：
-    /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 恢复进行中则不恢复（链内记日志）
-    public func restorePreset(id: String, topologyKey: String) {
-        chain.restorePresetAsync(id: id, topologyKey: topologyKey)
+    /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」、管理窗口「恢复」、恢复提示「恢复」同入口）：
+    /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 预设已删 / 恢复进行中则不恢复，
+    /// 经通知告知用户并返回原因（nil = 已受理）
+    @discardableResult
+    public func restorePreset(id: String, topologyKey: String) -> ManualRestoreRejection? {
+        guard let rejection = chain.restorePresetAsync(id: id, topologyKey: topologyKey) else { return nil }
+        notifier.deliver(title: "未恢复预设", body: Self.message(for: rejection))
+        refreshMenuOnMain()  // 入口按旧状态构建（如拓扑已变）：刷新到现状
+        return rejection
+    }
+
+    /// 手动恢复被拒的用户文案
+    static func message(for rejection: ManualRestoreRejection) -> String {
+        switch rejection {
+        case .topologyChanged: return "屏幕排列已变化，只能恢复当前屏幕排列下的预设"
+        case .mirrored: return "镜像中，不能恢复预设"
+        case .presetMissing: return "预设不存在（可能已被删除）"
+        case .restoreInProgress: return "恢复进行中，请稍后再试"
+        }
     }
 
     /// 构建时刻的菜单内容（状态行四态、恢复预设子菜单、保存可用性、canUndo、登录勾选态、能力状态行）

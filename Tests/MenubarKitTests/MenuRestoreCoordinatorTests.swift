@@ -351,6 +351,21 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(restorer.restoreCalls, 0)
         XCTAssertNil(presetStore.topology(key: currentKey))
+        XCTAssertEqual(notifier.deliveries.map(\.title), ["未恢复预设"], "被拒不静默：告知用户")
+        XCTAssertEqual(notifier.deliveries.first?.body, "屏幕排列已变化，只能恢复当前屏幕排列下的预设")
+    }
+
+    /// 恢复提示「恢复」被拒（提示弹出后拓扑已变）：与菜单同口径告知，不恢复
+    func testPromptRestoreRejectedNotifiesUser() throws {
+        let coordinator = makeCoordinator()
+        try addPreset("工作")
+        coordinator.handle(outcome: .promptNeeded(try XCTUnwrap(presetStore.topology(key: currentKey))))
+
+        displays = Self.makeDisplays(["d-1", "d-2"])
+        popover.onEvent?(.restoreTapped)
+
+        XCTAssertEqual(restorer.restoreCalls, 0)
+        XCTAssertEqual(notifier.deliveries.map(\.title), ["未恢复预设"])
     }
 
     /// 「恢复预设 ▸」→「用当前布局覆盖 ▸」（spec §4.3，票 07）：确认后把当前布局写进所点预设，名称与自动保留，刷新菜单

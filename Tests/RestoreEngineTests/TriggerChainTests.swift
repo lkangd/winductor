@@ -688,18 +688,36 @@ final class TriggerChainTests: XCTestCase {
                        "手动恢复后重判：快速拔插按拓扑变过判定 → 自动预设")
     }
 
-    /// 恢复进行中再入手动入口：ignored 落日志、不二次恢复
+    /// 恢复进行中再入手动入口：ignored 落日志、不二次恢复，并告知调用方「恢复进行中」
     func testManualReentryWhileRestoringIsIgnored() throws {
         let rig = try rig(start: [screenA, screenB])
         let work = try rig.addPreset("工作", on: [screenA, screenB])
         let key = rig.key([screenA, screenB])
         rig.makeChain()
-        rig.restorer.onRestore = { [rig] _ in rig.chain.restorePresetAsync(id: work.id, topologyKey: key) }
+        let reentry = Recorder<ManualRestoreRejection?>()
+        rig.restorer.onRestore = { [rig] _ in reentry.append(rig.chain.restorePresetAsync(id: work.id, topologyKey: key)) }
 
-        rig.chain.restorePresetAsync(id: work.id, topologyKey: key)
+        XCTAssertNil(rig.chain.restorePresetAsync(id: work.id, topologyKey: key), "受理 = 无拒绝原因")
 
         XCTAssertEqual(rig.restorer.snapshots.count, 1)
+        XCTAssertEqual(reentry.items, [.restoreInProgress])
         XCTAssertEqual(triggerSteps(rig.spy.all).filter { $0 == "ignored" }.count, 1)
+    }
+
+    /// 异步手动入口被拒时返回原因（提示/菜单/管理窗口据此告知用户，选择不静默丢失）
+    func testRestorePresetAsyncReportsRejectionReason() throws {
+        let rig = try rig(start: [screenA])
+        let two = try rig.addPreset("双屏", on: [screenA, screenB])
+        try rig.addPreset("单屏", on: [screenA])
+        rig.makeChain()
+
+        XCTAssertEqual(rig.chain.restorePresetAsync(id: two.id, topologyKey: rig.key([screenA, screenB])),
+                       .topologyChanged)
+        XCTAssertEqual(rig.chain.restorePresetAsync(id: "gone", topologyKey: rig.key([screenA])), .presetMissing)
+        rig.topology.set([screen("A-uuid", x: 0, mirrored: true)])
+        XCTAssertEqual(rig.chain.restorePresetAsync(id: two.id, topologyKey: rig.topology.observed.identity.key),
+                       .mirrored)
+        XCTAssertTrue(rig.restorer.snapshots.isEmpty)
     }
 }
 
