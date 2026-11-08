@@ -72,11 +72,7 @@ public final class SavePresetFlow {
         self.notifier = notifier
         self.log = log
         self.now = now
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "MM-dd HH:mm"
-        self.nameFormatter = formatter
+        self.nameFormatter = PresetDateFormat.defaultName.formatter(timeZone: timeZone)
         self.round = CaptureRound(captureExecutor: captureExecutor, mainExecutor: mainExecutor)
     }
 

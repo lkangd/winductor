@@ -91,7 +91,7 @@ public struct PresetManagerState: Equatable {
 
         let resolvedKey = selectedKey.flatMap { key in entries.contains { $0.key == key } ? key : nil }
             ?? currentKey ?? entries.first?.key
-        let dateFormatter = formatter(timeZone)
+        let dateFormatter = PresetDateFormat.savedAt.formatter(timeZone: timeZone)
         let selected = resolvedKey.map { key -> SelectedTopologyState in
             let record = records[key]
             let isCurrent = key == currentKey
@@ -143,13 +143,5 @@ public struct PresetManagerState: Equatable {
 
     private static func latestSave(_ topology: PresetTopology) -> Date {
         topology.presets.map(\.savedAt).max() ?? .distantPast
-    }
-
-    private static func formatter(_ timeZone: TimeZone) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter
     }
 }

@@ -7,10 +7,7 @@ import Foundation
 public enum PresetListing {
     public static func render(_ topologies: [PresetTopology], current: ObservedTopology,
                               timeZone: TimeZone = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let formatter = PresetDateFormat.savedAt.formatter(timeZone: timeZone)
         let currentKey = current.isMirrored ? nil : current.identity.key
 
         var blocks = topologies.map { topology in

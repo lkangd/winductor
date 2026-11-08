@@ -83,11 +83,8 @@ enum SnapshotNow {
         }
     }
 
-    /// 缺省预设名「MM-dd HH:mm」（与 MenubarKit SavePresetFlow 输入框默认名同口径）
+    /// 缺省预设名（与 MenubarKit SavePresetFlow 输入框默认名同一定义）
     private static func defaultName() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter.string(from: Date())
+        PresetDateFormat.defaultName.formatter().string(from: Date())
     }
 }
