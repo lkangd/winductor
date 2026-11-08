@@ -1,210 +1,100 @@
-import AppKit
 import Core
 import Foundation
 
-// SnapshotEngine.swift — 快照引擎（spec §7.5/§10.1，票 12）。
-// 节奏：每 2s CGWindowListCopyWindowInfo(.optionAll) 差分（timer tolerance 0.5s）；
-//       无变化不写盘；有变化防抖 1s 落盘（连续变化合并为一次写入）。
-// 加速器：应用启退（NSWorkspace didLaunch/didTerminate）、屏幕事件（didChangeScreenParameters）
-//       触发立即差分一次；Space 切换加速器由票 17/18 观察方调 pollNow() 接入（公开入口即差分入口）。
-// 存储：经 Core/TransitionalLiveSnapshots —— 每拓扑 1 份内存现势快照（票 02 删除落盘与滚动历史；票 03 改一次性拍快照）。
-// 零 AX：轮询环只读 CG（见 WindowSampling.swift）；AX 仅写盘路径（见 MinimalAXReader.swift）。
-// 门控：readinessGate 默认恒就绪；未就绪 = 照常轮询但零落盘（票 18 接真实两项授权检查）。
+// SnapshotEngine.swift — 一次性拍快照（display-presets spec §4.3/§8，票 03；取代票 12 的 2s 轮询差分 + 防抖落盘）。
+// 只在调用方显式请求时（保存/覆盖预设、调试命令）执行一次：CG 枚举 → 组装（AX 读标题/几何、SLS Space 归属、
+// 屏归属口径，见 SnapshotComposer）→ 连同组装起点的观测拓扑一并返回。引擎无 timer、无通知观察、不落盘，
+// 存储归调用方（PresetStore）。未就绪/镜像中的门控归调用方（保存流程）；恢复管线独占 SkyLight 时拒绝。
 
-public enum SnapshotEngineConstants {
-    /// 快照轮询周期（spec §10.3，04 #8）
-    public static let pollInterval: TimeInterval = 2.0
-    /// 轮询 timer tolerance（spec §7.5）
-    public static let pollTolerance: TimeInterval = 0.5
-    /// 落盘防抖（spec §10.3，04 #8）
-    public static let writeDebounce: TimeInterval = 1.0
+/// 一次拍快照的产物：快照 + 组装起点的观测拓扑（预设存入该拓扑，二者同源同一份显示器读数）
+public struct LayoutCapture: Sendable {
+    public let snapshot: Snapshot
+    public let topology: ObservedTopology
+
+    public init(snapshot: Snapshot, topology: ObservedTopology) {
+        self.snapshot = snapshot
+        self.topology = topology
+    }
 }
 
-public final class SnapshotEngine {
-    /// 就绪门（票 18 接两项授权检查；默认恒就绪）。未就绪 = 照常轮询但零落盘。
-    public var readinessGate: () -> Bool = { true }
+public enum SnapshotCaptureError: Error, Equatable {
+    /// 恢复/撤销管线独占 SkyLight（compose 读 SLS 会与管线并发，实测 11-03 managedSpaces 失败）
+    case restoreInProgress
+    /// 无活动显示器
+    case noActiveDisplay
+    /// 采样期间显示器集合/几何变化：内容是拔插中途态，与组装起点拓扑不一致
+    case topologyChangedWhileComposing
+}
 
-    /// 延迟几何：写盘时的几何覆盖源 + 「变为可见」迁移的接收方（生产 = RestoreEngine.DeferredGeometry）
+public final class SnapshotEngine: @unchecked Sendable {
+    /// 延迟几何：组装时的几何覆盖源（生产 = RestoreEngine.DeferredGeometry）
     private let deferredGeometry: DeferredGeometryPort?
-    /// 恢复管线独占期间采样与写盘一律跳过（写盘 compose 读 SLS，采样触发的迁移补写写 AX）
+    /// 恢复管线独占期间不拍（compose 读 SLS）
     private let session: SkyLightSession
-    /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
-    private var lastOnscreenByWID: [UInt32: Bool] = [:]
-    private let store: TransitionalLiveSnapshots
     private let composer: SnapshotComposer
     private let enumerator: WindowEnumerating
     private let displaysProvider: () -> [Displays.Info]
+    private let topologyProvider: ([Displays.Info]) -> ObservedTopology
     private let log: LogWriting?
-    private let pollInterval: TimeInterval
-    private let pollTolerance: TimeInterval
-    private let debounceInterval: TimeInterval
-    private let notificationCenters: [NotificationCenter]
-    private let lock = NSLock()
-    private var lastFingerprint: WindowFingerprint?
-    private var debounceItem: DispatchWorkItem?
-    private let debounceQueue = DispatchQueue(label: "winductor.snapshot-engine.debounce")
+    private let now: () -> Date
 
-    private var pollTimer: DispatchSourceTimer?
-    private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
-
-    public init(store: TransitionalLiveSnapshots,
-                spaces: SpaceProviding?,
+    public init(spaces: SpaceProviding?,
                 log: LogWriting? = nil,
                 enumerator: WindowEnumerating = CGWindowListEnumerator(),
                 ax: WindowAXProbing = MinimalAXReader(),
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
-                pollInterval: TimeInterval = SnapshotEngineConstants.pollInterval,
-                pollTolerance: TimeInterval = SnapshotEngineConstants.pollTolerance,
-                debounceInterval: TimeInterval = SnapshotEngineConstants.writeDebounce,
-                notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
+                topologyProvider: @escaping ([Displays.Info]) -> ObservedTopology = {
+                    ObservedTopology(screens: Displays.topologyScreens($0))
+                },
                 deferredGeometry: DeferredGeometryPort? = nil,
-                session: SkyLightSession = SkyLightSession()) {
-        // 通知中心可注入（测试用 fake 驱动加速器）。生产默认观测两个中心：应用启退由
-        // NSWorkspace 中心投递；屏幕事件（didChangeScreenParameters）由 .default 投递——
-        // 三个通知名在两个中心上都挂观察，保证真实投递路径全覆盖。
-        self.notificationCenters = notificationCenters
-        self.store = store
-        // 写盘 compose 与 pending 补写同为 shared 可并发，SLS 读须经 session 串行
+                session: SkyLightSession = SkyLightSession(),
+                now: @escaping () -> Date = Date.init) {
+        // compose 与 pending 补写同为 shared 可并发，SLS 读须经 session 串行
         self.composer = SnapshotComposer(spaces: spaces.map(session.serializingReads), ax: ax)
         self.enumerator = enumerator
         self.displaysProvider = displaysProvider
+        self.topologyProvider = topologyProvider
         self.log = log
-        self.pollInterval = pollInterval
-        self.pollTolerance = pollTolerance
-        self.debounceInterval = debounceInterval
         self.deferredGeometry = deferredGeometry
         self.session = session
+        self.now = now
     }
 
-    deinit { stop() }
-
-    // MARK: 生命周期
-
-    /// 启动轮询 timer（2s ± 0.5s）与加速器观察（应用启退、屏幕事件）
-    public func start() {
-        pollNow()
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "winductor.snapshot-engine.poll"))
-        timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval,
-                       leeway: .nanoseconds(Int(pollTolerance * 1_000_000_000)))
-        timer.setEventHandler { [weak self] in self?.pollNow() }
-        timer.resume()
-        pollTimer = timer
-
-        // queue: nil = 投递线程同步回调（pollNow 有锁保护，快速返回；测试免跑 loop）
-        let names: [NSNotification.Name] = [
-            NSWorkspace.didLaunchApplicationNotification,
-            NSWorkspace.didTerminateApplicationNotification,
-            NSApplication.didChangeScreenParametersNotification,  // 屏幕事件（插拔/分辨率/旋转）
-        ]
-        observers = notificationCenters.flatMap { center in
-            names.map { name in
-                (center, center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
-                    self?.pollNow()  // 加速器：立即差分一次
-                })
-            }
+    /// 拍一次快照（同步；SLS/AX 读，插拔中可达数秒，调用方自定线程）
+    public func capture() throws -> LayoutCapture {
+        guard let result = session.shared({ captureShared() }) else {
+            log?.write("[snapshot] action=capture result=skip detail=restore-pipeline-exclusive")
+            throw SnapshotCaptureError.restoreInProgress
         }
+        return try result.get()
     }
 
-    public func stop() {
-        pollTimer?.cancel()
-        pollTimer = nil
-        for (center, token) in observers { center.removeObserver(token) }
-        observers = []
-        lock.lock()
-        debounceItem?.cancel()
-        debounceItem = nil
-        lock.unlock()
-    }
-
-    // MARK: 差分与落盘
-
-    /// 差分一次（轮询 timer、加速器、调试命令共用入口；Space 切换观察方也接这里）。
-    /// 返回是否检出变化。有变化且已就绪 → 排定防抖落盘（连续变化自动合并）。
-    @discardableResult
-    public func pollNow() -> Bool {
-        session.shared { pollShared() } ?? false
-    }
-
-    private func pollShared() -> Bool {
-        let fingerprint = WindowFingerprint(displays: displaysProvider(), windows: enumerator.sample())
-        // 可见性迁移（后台窗延迟几何消费口）：上轮不可见 → 本轮可见的窗口集合
-        let onscreenNow = fingerprint.windows.filter(\.isOnscreen).map(\.windowID)
-        lock.lock()
-        let hadLastOnscreen = !lastOnscreenByWID.isEmpty
-        var newlyVisible: [UInt32] = []
-        if hadLastOnscreen {
-            let seen = Set(onscreenNow)
-            newlyVisible = lastOnscreenByWID.filter { $0.value == false && seen.contains($0.key) }
-                .map(\.key).sorted()
-        }
-        for w in fingerprint.windows { lastOnscreenByWID[w.windowID] = w.isOnscreen }
-        if fingerprint == lastFingerprint {
-            lock.unlock()
-            if !newlyVisible.isEmpty { deferredGeometry?.windowsBecameVisible(newlyVisible) }
-            return false  // 无变化不写盘
-        }
-        lastFingerprint = fingerprint
-        lock.unlock()
-        if !newlyVisible.isEmpty { deferredGeometry?.windowsBecameVisible(newlyVisible) }
-        guard readinessGate() else {
-            log?.write("[snapshot] action=poll result=skip detail=not-ready 检出变化但未就绪，零落盘（票 18 接线）")
-            return true
-        }
-        scheduleDebouncedWrite()
-        return true
-    }
-
-    /// 立即执行挂起的防抖落盘（防抖期内变化合并 ⇒ 一次写入）。测试与 snapshot-now 驱动用。
-    public func writePendingNow() {
-        lock.lock()
-        debounceItem?.cancel()
-        debounceItem = nil
-        lock.unlock()
-        performWrite()
-    }
-
-    private func scheduleDebouncedWrite() {
-        lock.lock()
-        debounceItem?.cancel()  // 防抖：新变化重置 1s 等待，连续变化合并为一次写入
-        let item = DispatchWorkItem { [weak self] in self?.performWrite() }
-        debounceItem = item
-        lock.unlock()
-        debounceQueue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
-    }
-
-    /// 显示器集合 + 全局几何签名（写盘前后比对用）
+    /// 显示器集合 + 全局几何签名（组装前后比对用）
     static func displaySignature(_ displays: [Displays.Info]) -> [String] {
         displays.map { "\($0.uuid ?? "-")#\($0.bounds.minX),\($0.bounds.minY),\($0.bounds.width)x\($0.bounds.height)" }
             .sorted()
     }
 
-    private func performWrite() {
-        guard readinessGate() else { return }  // 未就绪零落盘
-        guard session.shared({ writeShared() }) != nil else {
-            // 指纹清空：下一轮 poll 即使采样不变也重新检出、补上这次写盘
-            lock.lock(); lastFingerprint = nil; lock.unlock()
-            log?.write("[snapshot] action=write path=- result=skip detail=restore-pipeline-exclusive")
-            return
-        }
-    }
-
-    private func writeShared() {
+    private func captureShared() -> Result<LayoutCapture, SnapshotCaptureError> {
+        let started = Date()
         let displays = displaysProvider()
         guard !displays.isEmpty else {
-            log?.write("[snapshot] action=write path=- result=fail detail=no-active-display")
-            return
+            log?.write("[snapshot] action=capture result=fail detail=no-active-display")
+            return .failure(.noActiveDisplay)
         }
-        let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date(),
+        let topology = topologyProvider(displays)
+        let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: now(),
                                         geometryOverrides: deferredGeometry?.geometryOverrides() ?? [:])
-        let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
-        // 采样（SLS/AX，插拔中可达数秒）期间显示器变了 → 内容是拔插中途态，键却是起点拓扑：丢弃。
-        // 实测 11-03 09:08:16：拔屏开始 2.2s 后这样一份写盘落进 live-3，0.3s 后被冻结为拔屏前基线，
-        // 插回时结构门槛 6 轮不过放弃恢复。拓扑已变的指纹会让下一轮差分按新拓扑重写
-        let after = displaysProvider()
-        guard Self.displaySignature(after) == Self.displaySignature(displays) else {
-            log?.write("[snapshot] action=write path=live-\(key).json result=skip detail=topology-changed-while-composing")
-            return
+        // 采样（SLS/AX，插拔中可达数秒）期间显示器变了 → 内容是拔插中途态，拓扑却是起点：拒绝。
+        // 实测 11-03 09:08:16：拔屏开始 2.2s 后的一份组装按起点拓扑落盘，插回时结构门槛 6 轮不过放弃恢复
+        guard Self.displaySignature(displaysProvider()) == Self.displaySignature(displays) else {
+            log?.write("[snapshot] action=capture topology=\(topology.identity.key) result=skip "
+                + "detail=topology-changed-while-composing")
+            return .failure(.topologyChangedWhileComposing)
         }
-        store.write(snapshot, topologyKey: key)
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        log?.write("[snapshot] action=capture topology=\(topology.identity.key) result=ok "
+            + "detail=displays=\(displays.count) spaces=\(snapshot.spaces.count) windows=\(snapshot.windows.count) ms=\(ms)")
+        return .success(LayoutCapture(snapshot: snapshot, topology: topology))
     }
 }

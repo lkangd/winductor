@@ -7,9 +7,9 @@ import SnapshotEngine
 
 // DeferredGeometry.swift — 后台窗延迟几何（实测缺陷：AX 树只暴露可见 Space 的窗口，
 // 恢复时后台窗几何写报 elementInvalid；一次性语义的保留形态 = 每窗延迟单次应用：
-// restore 时记录 pending，poller 检测到该窗变为可见时由 Applier 补写一次，之后不再管）。
+// restore 时记录 pending，该窗所在 Space 变为活跃时由 Applier 补写一次，之后不再管）。
 
-/// 延迟几何模块：记录（恢复管线）、快照覆盖（SnapshotEngine 写盘）、可见即补写（自驱轮询 + 可见性迁移）。
+/// 延迟几何模块：记录（恢复管线）、快照覆盖（SnapshotEngine 拍快照）、可见即补写（自驱轮询 + Space 切换）。
 /// 内部：DeferredGeometryStore（pending 文件）+ DeferredGeometryApplier（AX 补写/回读/重试）。
 public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
     private let store: DeferredGeometryStore
@@ -17,7 +17,7 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
     private let spaces: SpaceBridge
     private let session: SkyLightSession
     private let log: LogWriting?
-    /// 补写串行队列（轮询 tick、Space 切换补一轮、可见性迁移共用）
+    /// 补写串行队列（轮询 tick、Space 切换补一轮共用）
     private let queue = DispatchQueue(label: "winductor.deferred-geometry")
 
     public init(directory: URL, spaces: SpaceBridge, session: SkyLightSession,
@@ -48,15 +48,6 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
         Dictionary(store.load().map {
             ($0.windowID, WindowGeometryOverride(displayUUID: $0.displayUUID, x: $0.x, y: $0.y, w: $0.w, h: $0.h))
         }, uniquingKeysWith: { a, _ in a })
-    }
-
-    /// 单窗补写（单次尝试不快速重试）；与轮询消费同一串行队列，批次互不重叠
-    public func windowsBecameVisible(_ windowIDs: [UInt32]) {
-        queue.async { [self] in
-            _ = session.shared {
-                for wid in windowIDs where !session.shouldYield { applier.applyIfPending(windowID: wid) }
-            }
-        }
     }
 
     /// Space 切换 → 补写的延迟（秒）：只避开切换动画最初一段；仍未进 AX 树的窗由 Applier 的
@@ -190,7 +181,7 @@ public final class DeferredGeometryStore: @unchecked Sendable {
     }
 }
 
-/// 延迟几何应用器：poller 报告「窗口变为可见」时查 pending 补写 AX 几何
+/// 延迟几何应用器：消费轮询判定窗口可写（所在 Space 活跃）时查 pending 补写 AX 几何
 /// （此时窗口在可见 Space，AX 可达）。成功即消费；失败保留重试，达 maxAttempts 丢弃
 ///（实测 11-03 WeCom：切 Space 后首次补写 elementInvalid，一次性丢弃使窗停在缩过的高度）。
 public final class DeferredGeometryApplier: @unchecked Sendable {
@@ -240,7 +231,7 @@ public final class DeferredGeometryApplier: @unchecked Sendable {
         }
     }
 
-    /// 单窗入口（poller 可见性迁移用，单次尝试不快速重试）：有 pending 则应用一次。返回 true = 存在 pending（成功消费；失败未达上限则保留重试）。
+    /// 单窗入口（单次尝试不快速重试）：有 pending 则应用一次。返回 true = 存在 pending（成功消费；失败未达上限则保留重试）。
     /// 读与回写分离：AX 写可阻塞数秒，期间新一轮恢复可能整写替换 pending（实测 11-03 第二轮
     /// WeCom 条目被旧表覆盖丢失）→ 回写只在锁内改「同一条」（同 wid 且同目标），不碰其余条目。
     @discardableResult
