@@ -64,7 +64,10 @@ public enum RuntimeAssembly {
             store: presetStore,
             overwrite: overwritePreset,
             restore: { id, key in coordinatorBox.coordinator?.restorePreset(id: id, topologyKey: key) },
-            dialogs: AlertPresetManagerDialogs()))
+            dialogs: AlertPresetManagerDialogs(),
+            // 预设详情的 Space 不足对比（票 08）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
+            currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
+            appName: ApplicationNames.localizedName(bundleID:)))
 
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
         let refreshBox = MenuRefreshBox()

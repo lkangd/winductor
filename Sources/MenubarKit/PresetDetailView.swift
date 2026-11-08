@@ -1,22 +1,48 @@
 import Core
 import SwiftUI
 
-// PresetDetailView.swift — 预设详情展开区（display-presets spec §6.4「预设详情」）。
-// 票 07 只留插槽：预设行展开时在此渲染，入参已备齐——
-//   topology：选中拓扑（isCurrent 决定是否显示 Space 不足提示，displays 供屏名）；
-//   preset：完整预设（含快照，取自 PresetManagerModel.selectedTopologyRecord）；
-//   displayFilter：排列图点选的屏 UUID（nil = 全部屏，非 nil 只显示该屏）。
-// 票 08 在此实现「屏幕 → Space → 应用（窗口数，其中 N 个最小化）」/「全屏 · 应用名」/ Space 不足提示。
+// PresetDetailView.swift — 预设详情展开区（display-presets spec §6.4「预设详情」，票 08）。
+// 薄视图：只渲染 PresetManagerModel.expandedDetail（推导见 Core/PresetDetail：屏 → Space → 应用，
+// 「其中 N 个最小化」、「全屏 · 应用名」、随排列图点屏筛选、Space 不足提示仅当前拓扑）。
 
 struct PresetDetailView: View {
-    let topology: SelectedTopologyState
-    let preset: Preset
-    let displayFilter: String?
+    let detail: PresetDetail
 
     var body: some View {
-        // 票 08 前的占位：只给出窗口总数
-        Text("共 \(preset.snapshot.windows.count) 个窗口（详情待补）")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(detail.spaceShortages, id: \.displayUUID) { shortage in
+                Label(shortage.text, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(detail.displays, id: \.uuid) { display in
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(display.name, systemImage: "display").font(.caption).fontWeight(.semibold)
+                    ForEach(display.spaces, id: \.index) { space in
+                        SpaceDetailRow(space: space).padding(.leading, 18)
+                    }
+                    if display.spaces.isEmpty {
+                        Text("无 Space 记录").font(.caption).foregroundStyle(.secondary).padding(.leading, 18)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SpaceDetailRow: View {
+    let space: PresetDetailSpace
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(space.title).font(.caption).foregroundStyle(space.isFullscreen ? .primary : .secondary)
+            ForEach(space.apps, id: \.bundleID) { app in
+                Text(app.text).font(.caption).padding(.leading, 14)
+            }
+            if space.apps.isEmpty && !space.isFullscreen {
+                Text("无窗口").font(.caption).foregroundStyle(.tertiary).padding(.leading, 14)
+            }
+        }
     }
 }

@@ -128,7 +128,7 @@ private struct PresetList: View {
         } else {
             List {
                 ForEach(selected.rows) { row in
-                    PresetRowView(model: model, selected: selected, row: row)
+                    PresetRowView(model: model, row: row)
                 }
             }
         }
@@ -137,7 +137,6 @@ private struct PresetList: View {
 
 private struct PresetRowView: View {
     @ObservedObject var model: PresetManagerModel
-    let selected: SelectedTopologyState
     let row: PresetRowState
 
     private var isExpanded: Bool { model.state.expandedPresetID == row.id }
@@ -179,9 +178,8 @@ private struct PresetRowView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
-            if isExpanded, let preset = model.selectedTopologyRecord?.presets.first(where: { $0.id == row.id }) {
-                PresetDetailView(topology: selected, preset: preset,
-                                 displayFilter: model.state.selectedDisplayUUID)
+            if isExpanded, let detail = model.expandedDetail {
+                PresetDetailView(detail: detail)
                     .padding(.leading, 22)
             }
         }

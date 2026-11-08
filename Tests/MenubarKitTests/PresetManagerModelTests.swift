@@ -48,6 +48,7 @@ final class PresetManagerModelTests: XCTestCase {
     private var current: ObservedTopology!
     private var availability: SavePresetAvailability = .available
     private var restored: [(id: String, key: String)] = []
+    private var liveSpaces: [SpaceEntry]?
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory
@@ -58,6 +59,7 @@ final class PresetManagerModelTests: XCTestCase {
         current = office
         availability = .available
         restored = []
+        liveSpaces = nil
     }
 
     override func tearDownWithError() throws {
@@ -240,6 +242,45 @@ final class PresetManagerModelTests: XCTestCase {
         XCTAssertNil(model.state.expandedPresetID, "切换拓扑收起详情")
     }
 
+    /// 票 08：展开行的预设详情（屏 → Space → 应用）随点屏筛选；Space 不足提示仅当前拓扑、按实时 Space 对比
+    func testExpandedDetailFollowsDisplayFilterAndComparesLiveSpacesOnCurrentTopologyOnly() throws {
+        let snap = Snapshot(
+            capturedAt: clock,
+            topology: [TopologyDisplay(uuid: "BUILTIN", localizedName: "内置",
+                                       frame: SnapshotDisplayFrame(x: 0, y: 0, w: 1512, h: 982), orientation: 0),
+                       TopologyDisplay(uuid: "LG-1", localizedName: "LG HDR 4K",
+                                       frame: SnapshotDisplayFrame(x: 1512, y: 0, w: 1512, h: 982), orientation: 0)],
+            spaces: [SnapshotSpace(displayUUID: "BUILTIN", index: 1, kind: .user, fullscreenAppBundleID: nil),
+                     SnapshotSpace(displayUUID: "LG-1", index: 1, kind: .user, fullscreenAppBundleID: nil),
+                     SnapshotSpace(displayUUID: "LG-1", index: 2, kind: .user, fullscreenAppBundleID: nil)],
+            windows: [SnapshotWindow(bundleID: "com.apple.Terminal", title: "t", siblingIndex: 0, displayUUID: "LG-1",
+                                     spaceIndex: 2, x: 0, y: 0, w: 0.5, h: 0.5, minimized: true)])
+        let work = try store.addPreset(name: "工作", snapshot: snap, topology: office)
+        try save("出差", on: laptop)
+        liveSpaces = [SpaceEntry(spaceID: 1, displayUUID: "BUILTIN", index: 1, kind: SpaceKind.user),
+                      SpaceEntry(spaceID: 2, displayUUID: "LG-1", index: 1, kind: SpaceKind.user)]
+        let model = makeModel()
+        XCTAssertNil(model.expandedDetail, "未展开不推导")
+
+        model.toggleExpanded(presetID: work.id)
+        XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置", "LG HDR 4K"])
+        XCTAssertEqual(model.expandedDetail?.displays.last?.spaces.last?.apps.map(\.text),
+                       ["终端（1 个窗口，其中 1 个最小化）"])
+        XCTAssertEqual(model.expandedDetail?.spaceShortages.map(\.text),
+                       ["屏幕「LG HDR 4K」当前 Space 比预设少 1 个，多出的窗口将合并"])
+
+        model.selectDisplay("BUILTIN")
+        XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置"])
+        XCTAssertEqual(model.expandedDetail?.spaceShortages, [])
+
+        current = laptop
+        model.selectDisplay("BUILTIN")
+        model.selectTopology(office.identity.key)
+        model.toggleExpanded(presetID: work.id)
+        XCTAssertEqual(model.expandedDetail?.displays.count, 2)
+        XCTAssertEqual(model.expandedDetail?.spaceShortages, [], "非当前拓扑不提示")
+    }
+
     /// 存储写失败（预设已被别处删除）：报错并刷新
     func testStoreErrorIsShownAndStateRefreshed() throws {
         let work = try save("工作", on: office)
@@ -283,6 +324,8 @@ final class PresetManagerModelTests: XCTestCase {
                                   overwrite: overwrite,
                                   restore: { [unowned self] id, key in restored.append((id, key)) },
                                   dialogs: dialogs,
+                                  currentSpaces: { [unowned self] in liveSpaces },
+                                  appName: { ["com.apple.Terminal": "终端"][$0] },
                                   timeZone: TimeZone(secondsFromGMT: 0)!)
     }
 

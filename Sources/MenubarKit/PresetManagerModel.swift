@@ -28,12 +28,16 @@ public final class PresetManagerModel: ObservableObject {
     @Published public private(set) var state: PresetManagerState = .empty
     /// 选中拓扑的存储记录（含预设快照；当前拓扑尚无预设时为 nil）。票 08 预设详情据此展开「屏幕 → Space → 应用」
     public private(set) var selectedTopologyRecord: PresetTopology?
+    /// 展开行的预设详情（票 08：屏 → Space → 应用，随点屏筛选；Space 不足提示仅当前拓扑）。未展开为 nil
+    @Published public private(set) var expandedDetail: PresetDetail?
 
     private let store: PresetStore
     private let topologyProvider: () -> ObservedTopology
     private let overwriteFlow: OverwritePresetFlow
     private let restoreAction: (_ presetID: String, _ topologyKey: String) -> Void
     private let dialogs: PresetManagerDialogs
+    private let currentSpaces: () -> [SpaceEntry]?
+    private let appName: (String) -> String?
     private let timeZone: TimeZone
 
     /// 用户手动选中的拓扑（nil = 跟随当前拓扑）
@@ -45,17 +49,23 @@ public final class PresetManagerModel: ObservableObject {
     ///   - topologyProvider: 当前观测拓扑（生产 = ObservedTopology.current）
     ///   - overwrite: 覆盖流程；其 availability() 同时作恢复/覆盖按钮的可用性门（与保存同口径）
     ///   - restore: 手动恢复（生产 = MenuRestoreCoordinator.restorePreset(id:topologyKey:)）
+    ///   - currentSpaces: 实时受管 Space 清单（详情的 Space 不足提示用；nil = 读不到，不提示）。仅展开当前拓扑的预设时读
+    ///   - appName: bundleID → 应用名（生产 = ApplicationNames.localizedName；nil = 回退 bundleID）
     public init(store: PresetStore,
                 topologyProvider: @escaping () -> ObservedTopology = ObservedTopology.current,
                 overwrite: OverwritePresetFlow,
                 restore: @escaping (_ presetID: String, _ topologyKey: String) -> Void,
                 dialogs: PresetManagerDialogs,
+                currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
+                appName: @escaping (String) -> String? = { _ in nil },
                 timeZone: TimeZone = .current) {
         self.store = store
         self.topologyProvider = topologyProvider
         self.overwriteFlow = overwrite
         self.restoreAction = restore
         self.dialogs = dialogs
+        self.currentSpaces = currentSpaces
+        self.appName = appName
         self.timeZone = timeZone
         reload()
     }
@@ -75,6 +85,7 @@ public final class PresetManagerModel: ObservableObject {
         selectedDisplayUUID = fresh.selectedDisplayUUID
         expandedPresetID = fresh.expandedPresetID
         selectedTopologyRecord = topologies.first { $0.key == fresh.selectedKey }
+        expandedDetail = detail(for: fresh)
         state = fresh
     }
 
@@ -153,6 +164,17 @@ public final class PresetManagerModel: ObservableObject {
     }
 
     // MARK: 内部
+
+    /// 展开行的详情推导（纯计算在 PresetDetail；实时 Space 只在当前拓扑展开时读一次）
+    private func detail(for state: PresetManagerState) -> PresetDetail? {
+        guard let selected = state.selected, let id = state.expandedPresetID,
+              let preset = selectedTopologyRecord?.presets.first(where: { $0.id == id }) else { return nil }
+        return PresetDetail.make(snapshot: preset.snapshot, displays: selected.displays,
+                                 displayFilter: state.selectedDisplayUUID,
+                                 isCurrentTopology: selected.isCurrent,
+                                 currentSpaces: selected.isCurrent ? currentSpaces() : nil,
+                                 appName: appName)
+    }
 
     private func selectedRow(_ presetID: String) -> (String, PresetRowState)? {
         guard let selected = state.selected, let row = selected.rows.first(where: { $0.id == presetID }) else {
