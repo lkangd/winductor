@@ -36,7 +36,7 @@ enum Restore {
         }
 
         let log = ConsoleLogSink.shared
-        let store = SnapshotStore(directory: SnapshotStore.defaultDirectory, log: log)
+        let store = PresetStore(directory: PresetStore.defaultDirectory, log: log)
         let engine = RestoreEngine(
             store: store,
             spaces: SpaceAdapterBridge(SpaceAdapter(log: log)),

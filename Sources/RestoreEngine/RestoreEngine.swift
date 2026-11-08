@@ -101,7 +101,8 @@ public struct LiveRestoreWindow: Equatable, Sendable {
 }
 
 public final class RestoreEngine: @unchecked Sendable {
-    private let store: SnapshotStore
+    /// 回滚快照所在（每拓扑一份，PresetStore.undoURL）
+    private let store: PresetStore
     private let spaces: SpaceBridge
     private let enumerator: WindowEnumerating
     private let ax: WindowAXProbing
@@ -136,7 +137,7 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 回滚快照组装复用票 12 的 SnapshotComposer（同一 schema 口径，spec §7.3）
     private let composer: SnapshotComposer
 
-    public init(store: SnapshotStore,
+    public init(store: PresetStore,
                 spaces: SpaceBridge,
                 enumerator: WindowEnumerating = CGWindowListEnumerator(),
                 ax: WindowAXProbing = MinimalAXReader(),
@@ -237,29 +238,29 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 下次恢复重写；可用性检查传 false 保持无副作用）
     private func readUndoSnapshot(displays: [Displays.Info],
                                   quarantineOnCorrupt: Bool) throws -> (snapshot: Snapshot, url: URL) {
-        let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
+        let undoURL = store.undoURL(topologyKey: topologyKey(of: displays))
         guard FileManager.default.fileExists(atPath: undoURL.path) else {
-            log?.write("[undo] abort reason=undo-snapshot-missing path=\(undoURL.lastPathComponent)")
+            log?.write("[undo] abort reason=undo-snapshot-missing path=\(undoURL.topologyRelativePath)")
             throw RestoreEngineError.undoSnapshotMissing
         }
         do {
             return (try Snapshot.decode(from: try Data(contentsOf: undoURL)), undoURL)
         } catch let error as SnapshotSchemaError {
             // 版本拒用不隔离（§7.3 口径，文件本身合法 JSON）：入口禁用
-            log?.write("[undo] abort reason=undo-snapshot-rejected path=\(undoURL.lastPathComponent) detail=\(error)")
+            log?.write("[undo] abort reason=undo-snapshot-rejected path=\(undoURL.topologyRelativePath) detail=\(error)")
             throw RestoreEngineError.undoSnapshotCorrupt(String(describing: error))
         } catch {
             // 解析失败 = 损坏：按 §7.4 改名 .corrupt-<时间戳> 隔离挪开（下次恢复重写），入口禁用
             let moved = quarantineOnCorrupt ? store.quarantine(undoURL) : nil
-            log?.write("[undo] abort reason=undo-snapshot-corrupt path=\(undoURL.lastPathComponent) "
+            log?.write("[undo] abort reason=undo-snapshot-corrupt path=\(undoURL.topologyRelativePath) "
                 + "detail=\(error) quarantine=\(moved?.lastPathComponent ?? "failed")")
             throw RestoreEngineError.undoSnapshotCorrupt(String(describing: error))
         }
     }
 
-    /// 当前拓扑键（排序显示器 UUID 集合，spec §7.4）
-    private static func topologyKey(of displays: [Displays.Info]) -> String {
-        SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
+    /// 当前拓扑键（TopologyIdentity：UUID 集合 + 邻接排列 + 旋转，display-presets spec §3.1）
+    private func topologyKey(of displays: [Displays.Info]) -> String {
+        Displays.topologyIdentity(of: displays, rotation: rotationProvider).key
     }
 
     // MARK: - 恢复 / 撤销共用管线（§6.8 顺序铁律）
@@ -284,27 +285,27 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 调用方须持有 session.exclusive（拓扑与回滚快照也须在独占内读取）
     private func runPipelineExclusive(snapshot: Snapshot, mode: RunMode,
                                       displays: [Displays.Info], preserveUndo: Bool) throws -> PipelineCounts {
-        let undoURL = store.undoURL(topologyKey: Self.topologyKey(of: displays))
+        let undoURL = store.undoURL(topologyKey: topologyKey(of: displays))
         // 分段计时（恢复提速：每轮一行 perf，定位瓶颈段）
         let tStart = Date()
 
         switch mode {
         case .restore where preserveUndo && FileManager.default.fileExists(atPath: undoURL.path):
-            log?.write("[snapshot] action=write path=\(undoURL.lastPathComponent) result=skip detail=preserve-undo")
+            log?.write("[snapshot] action=write path=\(undoURL.topologyRelativePath) result=skip detail=preserve-undo")
         case .restore:
-            // §7.4：动手前先落回滚快照（当前实况按 schema 写 undo-<拓扑键>.json）；失败即中止
+            // §7.4：动手前先落回滚快照（当前实况按 schema 写 <拓扑键>/undo.json）；失败即中止
             do {
                 let undo = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date())
                 try SnapshotStore.atomicWrite(try undo.encoded(), to: undoURL)
-                log?.write("[snapshot] action=write path=\(undoURL.lastPathComponent) result=ok "
+                log?.write("[snapshot] action=write path=\(undoURL.topologyRelativePath) result=ok "
                     + "detail=windows=\(undo.windows.count)")
             } catch {
-                log?.write("[snapshot] action=write path=\(undoURL.lastPathComponent) result=fail detail=\(error)")
+                log?.write("[snapshot] action=write path=\(undoURL.topologyRelativePath) result=fail detail=\(error)")
                 throw RestoreEngineError.undoSnapshotWriteFailed(String(describing: error))
             }
         case .undo:
             // 票 16 §7.4：撤销复用仍保留的回滚快照、不重写（重复撤销幂等无害，至下次恢复才被覆盖）
-            log?.write("[undo] action=load path=\(undoURL.lastPathComponent) result=ok "
+            log?.write("[undo] action=load path=\(undoURL.topologyRelativePath) result=ok "
                 + "detail=windows=\(snapshot.windows.count)")
         }
 
@@ -999,4 +1000,11 @@ enum SpaceLayerNumber {
     static let bridge = 2
     static let fullscreen = 3
     static let minimized = 4
+}
+
+private extension URL {
+    /// 日志用短路径「<拓扑键>/<文件名>」（回滚快照文件名各拓扑同名，须带目录才可区分）
+    var topologyRelativePath: String {
+        "\(deletingLastPathComponent().lastPathComponent)/\(lastPathComponent)"
+    }
 }

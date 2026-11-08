@@ -16,7 +16,7 @@ final class RestorePipelineTests: XCTestCase {
     /// 实况 = 101(com.t.a Doc，被折腾到 B#1) + 202(com.t.other「Extra」，快照外)。
     func makeWorld(bridgeAvailable: Bool = true) -> (snapshot: Snapshot, samples: [CGWindowSample],
                                                      bridge: FakeBridge, geometry: FakeGeometry,
-                                                     log: LogSpy, store: SnapshotStore) {
+                                                     log: LogSpy, store: PresetStore) {
         let snapshot = Snapshot(
             capturedAt: Date(),
             topology: [
@@ -41,14 +41,14 @@ final class RestorePipelineTests: XCTestCase {
             byWindow: [101: 6, 202: 5],
             bridgeAvailable: bridgeAvailable)
         return (snapshot, samples, bridge, FakeGeometry(), LogSpy(),
-                SnapshotStore(directory: try! makeTempDir()))
+                PresetStore(directory: try! makeTempDir()))
     }
 
     func makeEngine(_ world: (snapshot: Snapshot, samples: [CGWindowSample], bridge: FakeBridge,
-                              geometry: FakeGeometry, log: LogSpy, store: SnapshotStore),
+                              geometry: FakeGeometry, log: LogSpy, store: PresetStore),
                     rotation: [CGDirectDisplayID: Int] = [1: 0, 2: 0],
                     ax: WindowAXProbing = FakeAX(),
-                    store: SnapshotStore? = nil) -> RestoreEngine {
+                    store: PresetStore? = nil) -> RestoreEngine {
         RestoreEngine(
             store: store ?? world.store,
             spaces: world.bridge,
@@ -65,7 +65,7 @@ final class RestorePipelineTests: XCTestCase {
     func testRestoreMovesMatchedSkipsQuitAppAndNeverTouchesOutOfSnapshotWindows() throws {
         let world = makeWorld()
         let engine = makeEngine(world)
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
+        let key = Displays.topologyIdentity(of: World.displays(), rotation: { _ in 0 }).key
         let undoURL = world.store.undoURL(topologyKey: key)
 
         let report = try engine.restore(snapshot: world.snapshot)
@@ -107,7 +107,7 @@ final class RestorePipelineTests: XCTestCase {
         XCTAssertTrue(undo.windows.contains { $0.bundleID == "com.t.other" })
 
         // 落盘顺序：undo 写入行必须先于首个 [restore] L2 动作行
-        let undoIdx = try XCTUnwrap(world.log.all.firstIndex { $0.contains("undo-") && $0.contains("result=ok") })
+        let undoIdx = try XCTUnwrap(world.log.all.firstIndex { $0.contains("/undo.json") && $0.contains("result=ok") })
         let firstActionIdx = try XCTUnwrap(world.log.all.firstIndex { $0.contains("[restore] L2") })
         XCTAssertLessThan(undoIdx, firstActionIdx, "动手恢复前必须先落回滚快照")
     }
@@ -133,7 +133,7 @@ final class RestorePipelineTests: XCTestCase {
         // 存储目录路径被一个普通文件挡住 → 原子写必失败 → restore 中止且零动作（无撤销保险不动手）
         let dir = try makeTempDir()
         try Data("blocker".utf8).write(to: dir.appendingPathComponent("snapshots"))
-        let blockedStore = SnapshotStore(directory: dir.appendingPathComponent("snapshots"))
+        let blockedStore = PresetStore(directory: dir.appendingPathComponent("snapshots"))
 
         let world = makeWorld()
         let engine = makeEngine(world, store: blockedStore)
@@ -160,7 +160,7 @@ extension RestorePipelineTests {
                              bridge: FakeBridge, geometry: FakeGeometry,
                              log: LogSpy, rotation: Int = 0) -> RestoreEngine {
         RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge,
             enumerator: FakeEnumerator(samples),
             ax: FakeAX(),
@@ -280,7 +280,7 @@ extension RestorePipelineTests {
         let geometry = FakeGeometry()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples),
             ax: FakeAX(minimizedIDs: [101]),  // 101 实况最小化
             geometry: geometry,
@@ -329,7 +329,7 @@ extension RestorePipelineTests {
         geometry.error = geometryError
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(), geometry: geometry,
             displaysProvider: { [Displays.Info(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000), uuid: "A-uuid"),
                                     Displays.Info(id: 2, bounds: CGRect(x: 2000, y: 0, width: 1000, height: 500), uuid: "B-uuid")] },
@@ -466,7 +466,7 @@ extension RestorePipelineTests {
         let geometry = FakeGeometry()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(), geometry: geometry,
             displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
@@ -543,7 +543,7 @@ extension RestorePipelineTests {
         let fs = FakeFullScreen()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples),
             ax: FakeAX(), geometry: geometry,
             fullscreen: fs, minimize: FakeMinimize(), fullscreenSettleSeconds: 0,
@@ -668,7 +668,7 @@ extension RestorePipelineTests {
         let mini = FakeMinimize()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples),
             ax: FakeAX(minimizedIDs: [101]), geometry: geometry,
             fullscreen: FakeFullScreen(), minimize: mini, fullscreenSettleSeconds: 0,
@@ -810,7 +810,7 @@ extension RestorePipelineTests {
         let mini = FakeMinimize()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try! makeTempDir()),
+            store: PresetStore(directory: try! makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples),
             ax: FakeAX(minimizedIDs: [301]), geometry: geometry,
             fullscreen: fs, minimize: mini, fullscreenSettleSeconds: 0,
@@ -900,7 +900,7 @@ extension RestorePipelineTests {
         let geometry = FakeGeometry()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
             geometry: geometry, displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
@@ -945,7 +945,7 @@ extension RestorePipelineTests {
         bridge.moveHook = { Thread.sleep(forTimeInterval: 0.3) }
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
             geometry: FakeGeometry(),
             pipelineDeadlineSeconds: 0.1,
@@ -990,7 +990,7 @@ extension RestorePipelineTests {
         geometry.error = AXFacadeError.elementInvalid
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: FakeBridge(
                 entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
                 byWindow: [101: 5]),
@@ -1033,7 +1033,7 @@ extension RestorePipelineTests {
         bridge.managedSpacesFailures = 2  // undo 快照读 + 管线首读都失败，重试即成功
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
             geometry: FakeGeometry(), displaysProvider: { World.displays() },
             rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
@@ -1081,7 +1081,7 @@ extension RestorePipelineTests {
         let geometry = FakeGeometry()
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
             geometry: geometry,
             displaysProvider: { World.displays() },
@@ -1122,7 +1122,7 @@ extension RestorePipelineTests {
         geometry.applyDelay = 2.5  // 超过 1.5s 限时
         let log = LogSpy()
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: try makeTempDir()),
+            store: PresetStore(directory: try makeTempDir()),
             spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
             geometry: geometry,
             displaysProvider: { World.displays() },

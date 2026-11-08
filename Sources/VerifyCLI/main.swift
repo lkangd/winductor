@@ -7,7 +7,7 @@ import SpaceAdapter
 
 // VerifyCLI — 验证器（票 11 起步雏形，票 14 升级全量比对，spec §9.1）。
 // 用法：swift run VerifyCLI [--snapshot <file.json>]
-//   --snapshot <file.json>  指定快照文件；缺省 = 当前拓扑的现势快照（无则报错退出）
+//   --snapshot <file.json>  指定快照文件（票 02 删除现势快照后为必需；预设基准 --preset / 最近恢复预设归票 09）
 // 从已授权终端运行（继承宿主 TCC；CLI 本身无需签名授权）。
 // 实时枚举：CGWindowListCopyWindowInfo(.optionAll) 全量窗口（含其他 Space/最小化）
 //   + _AXUIElementGetWindow 配对（照 05 spike 写法）。
@@ -19,7 +19,7 @@ import SpaceAdapter
 
 private let usage = """
 usage: swift run VerifyCLI [--snapshot <file.json>]
-  --snapshot <file.json>   指定快照文件；缺省 = 当前拓扑现势快照（无则报错退出）
+  --snapshot <file.json>   指定快照文件（必需；缺省报「无比对基准」）
 全量比对：逐条 PASS/FAIL/SKIP + 屏幕归属 + Space 归属（无法核验时标注不阻断，spec §9.1）
 exit codes: 0 报告产出 / 2 用法或快照错误 / 3 授权未齐
 """
@@ -145,24 +145,17 @@ func main() {
         exit(3)
     }
 
-    // 快照来源：--snapshot 指定，或当前拓扑现势快照
+    // 快照来源：--snapshot 指定（现势快照已删除；预设基准归票 09）
     let displays = Displays.active()
     guard !displays.isEmpty else {
         fputs("verify: 未枚举到任何显示器\n", stderr)
         exit(2)
     }
-    let store = SnapshotStore(directory: SnapshotStore.defaultDirectory)
-    let topologyKey = SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid))
-    let snapshotURL: URL
-    if let path = snapshotPath {
-        snapshotURL = URL(fileURLWithPath: path)
-    } else {
-        snapshotURL = store.liveURL(topologyKey: topologyKey)
-        guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
-            fputs("verify: 当前拓扑无现势快照（期待 \(snapshotURL.lastPathComponent)）；用 --snapshot <file.json> 指定，或先运行 app 落盘\n", stderr)
-            exit(2)
-        }
+    guard let snapshotPath else {
+        fputs("verify: 无比对基准；用 --snapshot <file.json> 指定\n\(usage)\n", stderr)
+        exit(2)
     }
+    let snapshotURL = URL(fileURLWithPath: snapshotPath)
     guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
         fputs("verify: 快照文件不存在：\(snapshotURL.path)\n", stderr)
         exit(2)
@@ -225,7 +218,7 @@ func main() {
     print("快照: \(snapshotURL.path)")
     print("  version=\(snapshot.version) capturedAt=\(dateFormatter.string(from: snapshot.capturedAt)) "
         + "displays=\(snapshot.topology.count) spaces=\(snapshot.spaces.count) windows=\(snapshot.windows.count)")
-    print("实时: 当前拓扑 key=\(topologyKey.prefix(24))… 屏=\(displays.count) "
+    print("实时: 当前拓扑 key=\(Displays.topologyIdentity(of: displays).key) 屏=\(displays.count) "
         + "CG 窗口(layer0)=\(cgWindows.count) AX 配对=\(axByWid.count) 参与匹配=\(liveWindows.count)")
     print("授权: 辅助功能=✓ 屏幕录制=✓  Space 归属=\(slsAvailable ? "\(spaceEntryByWindowID.count) 窗口可查" : "无法核验（本进程无 SLS 授权）")")
     print(String(repeating: "-", count: 72))

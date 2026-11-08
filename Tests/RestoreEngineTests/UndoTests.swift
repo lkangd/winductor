@@ -7,7 +7,7 @@ import SpaceAdapter
 import XCTest
 
 // UndoTests.swift — 票 16 撤销管线单测（fake 注入驱动，spec §6.3/§7.4/§8.6；用例 A18/A19）。
-// 撤销语义 = 把回滚快照（undo-<拓扑键>.json，恢复前实况）当作恢复目标跑一次恢复管线；
+// 撤销语义 = 把回滚快照（<拓扑键>/undo.json，恢复前实况）当作恢复目标跑一次恢复管线；
 // 回滚快照撤销后保留（重复撤销幂等无害，spec §7.4）；含全屏应用走两段式（§8.6）。
 // 场景自含（与 RestorePipelineTests 不共享状态）：
 //   U（恢复前实况 = 回滚目标）：101 常规窗 A#1 (0.1,0.1,0.4,0.4) + 202 常规窗 A#1 (0.55,0.55,0.3,0.3)；
@@ -39,16 +39,16 @@ struct UndoWorld {
     let geometry: FakeGeometry
     let fullscreen: FakeFullScreen
     let log: LogSpy
-    let store: SnapshotStore
+    let store: PresetStore
 }
 
 final class UndoPipelineTests: XCTestCase {
     let aOrigin = CGPoint(x: 0, y: 0), bOrigin = CGPoint(x: 2000, y: 0)
     let screenSize = CGSize(width: 1000, height: 1000)
 
-    /// 回滚快照路径（A/B 双屏拓扑键）
-    func undoURL(_ store: SnapshotStore) -> URL {
-        store.undoURL(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"]))
+    /// 回滚快照路径（A/B 双屏拓扑键：World.displays() 几何 + 旋转 0）
+    func undoURL(_ store: PresetStore) -> URL {
+        store.undoURL(topologyKey: Displays.topologyIdentity(of: World.displays(), rotation: { _ in 0 }).key)
     }
 
     /// 无全屏场景（A18）：U = 101(A#1, 0.1,0.1,0.4,0.4) + 202(A#1, 0.55,0.55,0.3,0.3)；S = 101 → B#1 (0.5,0.5,0.3,0.3)
@@ -78,7 +78,7 @@ final class UndoPipelineTests: XCTestCase {
             geometry: FakeGeometry(),
             fullscreen: FakeFullScreen(),
             log: LogSpy(),
-            store: SnapshotStore(directory: try! makeTempDir()))
+            store: PresetStore(directory: try! makeTempDir()))
     }
 
     func makeEngine(_ world: UndoWorld, samples: [CGWindowSample]? = nil) -> RestoreEngine {
@@ -212,7 +212,7 @@ final class UndoPipelineTests: XCTestCase {
                          displayOrigin: aOrigin, displaySize: screenSize, x: 0.55, y: 0.55, w: 0.3, h: 0.3),
         ]
 
-        // 第二步：撤销 → 读 undo-<拓扑键>.json 整体回滚到 U
+        // 第二步：撤销 → 读 <拓扑键>/undo.json 整体回滚到 U
         let undo = try makeEngine(world, samples: postRestoreSamples).undo()
 
         // 一步回滚：Space（6→5）+ 屏幕（B→A）+ 几何（U 比例 × A bounds）
@@ -313,7 +313,7 @@ final class UndoPipelineTests: XCTestCase {
             geometry: FakeGeometry(),
             fullscreen: FakeFullScreen(),
             log: LogSpy(),
-            store: SnapshotStore(directory: try! makeTempDir()))
+            store: PresetStore(directory: try! makeTempDir()))
     }
 
     /// A19 第一段：恢复把 301 全屏到 B 屏后撤销——301 卡在后台全屏 Space 不可达（§5.2），
@@ -395,7 +395,7 @@ final class UndoPipelineTests: XCTestCase {
             entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
             byWindow: [401: 5, 202: 5])
         let geometry = FakeGeometry(), fullscreen = FakeFullScreen(), log = LogSpy()
-        let store = SnapshotStore(directory: try! makeTempDir())
+        let store = PresetStore(directory: try! makeTempDir())
         func make(samples: [CGWindowSample]) -> RestoreEngine {
             RestoreEngine(store: store, spaces: bridge, enumerator: MutableEnumerator(samples),
                           ax: UndoFakeAX(), geometry: geometry, fullscreen: fullscreen,

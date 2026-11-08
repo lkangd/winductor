@@ -5,18 +5,15 @@ import XCTest
 @testable import SnapshotEngine
 
 // SnapshotEngineTests — 引擎层验收（spec §7.5，票面逐项）：
-//   无变化不写盘、有变化落盘、未就绪零落盘、轮询环零 AX、防抖合并、1+4 滚动。
+//   无变化不写盘、有变化写入、未就绪零写入、轮询环零 AX、防抖合并（票 02 起写入内存现势快照，无滚动历史）。
 // 接缝：SnapshotEngine（pollNow / writePendingNow / readinessGate）+ 注入 fake 枚举/AX/Spaces。
 final class SnapshotEngineTests: XCTestCase {
-    private var root: URL!
     private var log: LogSpy!
+    private var live: TransitionalLiveSnapshots!
 
     override func setUpWithError() throws {
-        root = try makeTempDir()
         log = LogSpy()
-    }
-    override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: root)
+        live = TransitionalLiveSnapshots(log: log)
     }
 
     // MARK: 周期 1 — 差分与落盘门控
@@ -79,30 +76,6 @@ final class SnapshotEngineTests: XCTestCase {
         engine.pollNow()
         engine.writePendingNow()
         XCTAssertEqual(writeCount(), 1, "防抖期内两次变化合并为一次落盘")
-    }
-
-    /// 每拓扑恰好 1+4 份：live + history-1..4，最旧被淘汰（第 6 次写后 history-4 = 第 2 次内容）。
-    /// 采样序列成对给（poll 一次 + 写盘取新采样一次）：写入序列恰为 w1..w6。
-    func testRollingHistoryKeepsExactlyOneLivePlusFourSlots() throws {
-        var samples: [[CGWindowSample]] = [[]]
-        for n in 1...6 {
-            let s = sample(id: UInt32(n), bundleID: "com.a", title: "w\(n)")
-            samples += [[s], [s]]
-        }
-        let engine = makeEngine(FakeEnumerator(samples))
-        for _ in 0..<6 {
-            engine.pollNow()
-            engine.writePendingNow()
-        }
-        let key = topologyKey()
-        XCTAssertEqual(try snapshotFiles().count, 5, "恰好 1+4 份")
-        for slot in 1...4 {
-            XCTAssertTrue(FileManager.default.fileExists(
-                atPath: root.appendingPathComponent("history-\(slot)-\(key).json").path))
-        }
-        let oldest = try Snapshot.decode(from: Data(contentsOf:
-            root.appendingPathComponent("history-4-\(key).json")))
-        XCTAssertEqual(oldest.windows.map(\.title), ["w2"], "最旧（w1）已被淘汰")
     }
 
     /// 定时器端到端：start 后自动轮询 → 防抖 → 自动落盘（放宽裕量避免抖动）
@@ -187,7 +160,7 @@ final class SnapshotEngineTests: XCTestCase {
         let b = fakeDisplay("BBBB-2222-2222-2222-222222222222", x: 1000)
         let w = sample(id: 1, bundleID: "com.a", title: "t")
         let engine = SnapshotEngine(
-            store: SnapshotStore(directory: root, log: log),
+            store: live,
             spaces: FakeSpaces(entries: [SpaceEntry(spaceID: 11, displayUUID: a.uuid!, index: 1, kind: 0)],
                                byWindow: [1: 11]),
             log: log, enumerator: FakeEnumerator([w], [w]), ax: FakeAXProber(),
@@ -209,7 +182,7 @@ final class SnapshotEngineTests: XCTestCase {
                             deferredGeometry: DeferredGeometryPort? = nil) -> SnapshotEngine {
         let display = fakeDisplay("AAAA-1111-1111-1111-111111111111")
         return SnapshotEngine(
-            store: SnapshotStore(directory: root, log: log),
+            store: live,
             spaces: FakeSpaces(
                 entries: [SpaceEntry(spaceID: 11, displayUUID: display.uuid!, index: 1, kind: 0)],
                 byWindow: [1: 11, 7: 11]),
@@ -233,16 +206,16 @@ final class SnapshotEngineTests: XCTestCase {
     }
 
     private func topologyKey() -> String {
-        SnapshotStore.topologyKey(forDisplayUUIDs: ["AAAA-1111-1111-1111-111111111111"])
+        TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["AAAA-1111-1111-1111-111111111111"])
     }
 
+    /// 已写入现势快照的拓扑键（每拓扑至多一份）
     private func snapshotFiles() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix("live-") || $0.hasPrefix("history-") }
+        live.topologyKeys
     }
 
     private func decodeLive() throws -> Snapshot {
-        try Snapshot.decode(from: Data(contentsOf: root.appendingPathComponent("live-\(topologyKey()).json")))
+        try XCTUnwrap(live.loadLive(topologyKey: topologyKey()))
     }
 
     private func writeCount() -> Int {

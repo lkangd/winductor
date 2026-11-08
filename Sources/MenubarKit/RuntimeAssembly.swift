@@ -14,19 +14,19 @@ import SpaceAdapter
 // [degrade] 收集 sink 单实例贯穿（恢复完成通知附注 §8.5 与能力状态行同源）。
 
 public enum RuntimeAssembly {
-    /// 组装就绪门接线的快照引擎。storeDirectory/spaces/log 可注入（单测用临时目录；生产默认用户目录）。
+    /// 组装就绪门接线的快照引擎。liveSnapshots/spaces/log 可注入（票 02 起现势快照只在内存，票 03 改一次性拍快照）。
     /// spaces = SpaceAdapter（票 19 注入；nil = 降级 spaceIndex，票 12 兼容口径）。
     /// notificationCenters = 引擎内置加速器的观察中心（默认 = 生产口径；全量装配时传 [.default]
     /// 只留屏幕事件，应用启退/Space 切换改由 WorkspaceEventAccelerator 接 NSWorkspace 中心，避免双观察）。
     public static func makeSnapshotEngine(gatedBy monitor: PermissionMonitor,
-                                          storeDirectory: URL = SnapshotStore.defaultDirectory,
+                                          liveSnapshots: TransitionalLiveSnapshots = TransitionalLiveSnapshots(),
                                           spaces: SpaceProviding? = nil,
                                           log: LogWriting? = nil,
                                           notificationCenters: [NotificationCenter] = [NSWorkspace.shared.notificationCenter, .default],
                                           deferredGeometry: DeferredGeometryPort? = nil,
                                           session: SkyLightSession = SkyLightSession()) -> SnapshotEngine {
         let engine = SnapshotEngine(
-            store: SnapshotStore(directory: storeDirectory, log: log),
+            store: liveSnapshots,
             spaces: spaces,
             log: log,
             notificationCenters: notificationCenters,
@@ -49,13 +49,15 @@ public enum RuntimeAssembly {
         statusItem: StatusPresenting & StatusIconControlling,
         notifier: SystemNotifying,
         loginItem: LoginItemServicing = SMAppServiceLoginItem(),
-        storeDirectory: URL = SnapshotStore.defaultDirectory,
+        storeDirectory: URL = PresetStore.defaultDirectory,
         appLog: LogWriting? = nil
     ) -> (gateCoordinator: NotReadyGateCoordinator, menuCoordinator: MenuRestoreCoordinator) {
         let sink = appLog ?? FileLogSink(directory: SnapshotStore.defaultLogDirectory, fileName: "app.log")
         let collector = DegradeCollectingLog(inner: sink)
         let adapter = SpaceAdapter(log: collector)
-        let store = SnapshotStore(directory: storeDirectory, log: collector)
+        // 预设存储（此票只承载回滚快照；预设读写由票 03/04 接线）+ 过渡期内存现势快照（票 03/04 删除）
+        let presetStore = PresetStore(directory: storeDirectory, log: collector)
+        let liveSnapshots = TransitionalLiveSnapshots(log: collector)
         // 恢复/撤销管线独占 SkyLight：poller 采样/写盘与 pending 补写在管线运行期间让出
         // （并发 SLS 读实测导致 managedSpaces 失败 → 整轮 L2 静默 skip，11-03 生产复现）
         let session = SkyLightSession(log: collector)
@@ -67,14 +69,14 @@ public enum RuntimeAssembly {
         let deferredGeometry = DeferredGeometry(directory: storeDirectory, spaces: bridge,
                                                 session: session, log: collector)
         let snapshotEngine = makeSnapshotEngine(gatedBy: monitor,
-                                                storeDirectory: storeDirectory,
+                                                liveSnapshots: liveSnapshots,
                                                 spaces: adapter,
                                                 log: collector,
                                                 notificationCenters: [.default],
                                                 deferredGeometry: deferredGeometry,
                                                 session: session)
         let workspaceAccelerator = WorkspaceEventAccelerator(engine: snapshotEngine)
-        let restoreEngine = RestoreEngine(store: store,
+        let restoreEngine = RestoreEngine(store: presetStore,
                                           spaces: bridge,
                                           session: session,
                                           deferredGeometry: deferredGeometry,
@@ -85,7 +87,7 @@ public enum RuntimeAssembly {
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
         let refreshBox = MenuRefreshBox()
         let menuCoordinator = MenuRestoreCoordinator(
-            store: store,
+            store: liveSnapshots,
             restorer: restoreEngine,
             spaces: ManagedSpaceListProvider(adapter),
             scheduler: DispatchTriggerScheduler(),

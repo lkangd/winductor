@@ -18,11 +18,7 @@ final class RuntimeAssemblyTests: XCTestCase {
             screenCaptureProbe: { screenCaptureGranted.value },
             titleSampler: { [] }
         )
-        let engine = RuntimeAssembly.makeSnapshotEngine(
-            gatedBy: monitor,
-            storeDirectory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("winductor-runtime-assembly-tests-\(UUID().uuidString)")
-        )
+        let engine = RuntimeAssembly.makeSnapshotEngine(gatedBy: monitor)
         XCTAssertFalse(engine.readinessGate(), "未就绪时引擎门必须关闭（零落盘）")
 
         accessibilityGranted.value = true
@@ -37,8 +33,7 @@ final class RuntimeAssemblyTests: XCTestCase {
         let center = NotificationCenter()
         let enumerator = CountingEnumerator()
         let engine = SnapshotEngine(
-            store: SnapshotStore(directory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("winductor-accelerator-tests-\(UUID().uuidString)")),
+            store: TransitionalLiveSnapshots(),
             spaces: nil,
             enumerator: enumerator,
             displaysProvider: { [] },

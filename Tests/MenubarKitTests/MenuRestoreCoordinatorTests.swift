@@ -94,7 +94,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     ]
     private var openedFolders: [URL] = []
     private var refreshCalls = 0
-    private var store: SnapshotStore!
+    private var store: TransitionalLiveSnapshots!
     private var restorer: FakeRestorer!
     private var undo: FakeUndo!
     private var enqueueUsed = false
@@ -112,8 +112,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         ]
         openedFolders = []
         refreshCalls = 0
-        store = SnapshotStore(directory: FileManager.default.temporaryDirectory
-            .appendingPathComponent("winductor-menu-coordinator-\(UUID().uuidString)"))
+        store = TransitionalLiveSnapshots()
         restorer = FakeRestorer()
         undo = FakeUndo()
         notifier = FakeNotifier()
@@ -130,7 +129,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
-    /// 现势快照落盘（与 displays 的 UUID 集合一致 → matchSnapshot 精确命中）
+    /// 现势快照写入（与 displays 的 UUID 集合一致 → matchSnapshot 精确命中）
     private func writeLiveSnapshot() throws {
         let topology = displays.map {
             TopologyDisplay(uuid: $0.uuid ?? "", localizedName: "屏",
@@ -139,7 +138,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
         let spaces = topology.map { SnapshotSpace(displayUUID: $0.uuid, index: 1, kind: .user, fullscreenAppBundleID: nil) }
         let snapshot = Snapshot(capturedAt: Date(), topology: topology, spaces: spaces, windows: [])
-        try store.write(snapshot, topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid)))
+        store.write(snapshot, topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid)))
     }
 
     private func makeCoordinator() -> MenuRestoreCoordinator {

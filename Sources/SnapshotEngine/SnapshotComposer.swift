@@ -43,7 +43,7 @@ public struct SnapshotComposer: Sendable {
         self.ax = ax
     }
 
-    /// 组装 schema v1 快照（纯映射；IO 由调用方经 SnapshotStore 落盘）。
+    /// 组装 schema v1 快照（纯映射；存储由调用方负责）。
     /// geometryOverrides：待补写延迟几何的窗（windowID → 目标几何），同屏时按目标记录——
     /// 实况是 macOS 中间态（如躲 Dock 缩高），照实写会把它固化成下次恢复的目标（11-03 实测）
     public func compose(sample: [CGWindowSample], displays: [Displays.Info], capturedAt: Date,

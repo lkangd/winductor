@@ -212,4 +212,16 @@ final class TopologyIdentityTests: XCTestCase {
             XCTAssertTrue(k.allSatisfy { "0123456789abcdef".contains($0) }, k)
         }
     }
+
+    // MARK: Displays.Info 直算（恢复引擎回滚快照键用）
+
+    /// 由活动屏信息 + 旋转直算身份：与同几何/旋转的 TopologyScreen 观测一致；无 UUID 的屏不参与
+    func testIdentityFromDisplayInfosMatchesObservedTopology() {
+        let infos = [Displays.Info(id: 1, bounds: CGRect(x: -1512, y: 400, width: 1512, height: 982), uuid: laptop),
+                     Displays.Info(id: 2, bounds: CGRect(x: 0, y: 0, width: 2560, height: 1440), uuid: main),
+                     Displays.Info(id: 3, bounds: CGRect(x: 2560, y: -200, width: 1440, height: 2560), uuid: side),
+                     Displays.Info(id: 4, bounds: CGRect(x: 0, y: 1440, width: 100, height: 100), uuid: nil)]
+        let identity = Displays.topologyIdentity(of: infos, rotation: { $0 == 3 ? 90 : 0 })
+        XCTAssertEqual(identity, ObservedTopology(screens: home()).identity)
+    }
 }

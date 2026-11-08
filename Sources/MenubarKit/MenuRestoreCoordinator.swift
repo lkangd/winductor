@@ -103,7 +103,7 @@ public final class MenuRestoreCoordinator {
     private let openFolder: (URL) -> Void
     private let refreshMenu: () -> Void
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
-    private let store: SnapshotStore
+    private let store: TransitionalLiveSnapshots
     private let displaysProvider: () -> [Displays.Info]
     private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
@@ -115,7 +115,7 @@ public final class MenuRestoreCoordinator {
     }
     private let menuWillOpenCarrier: MenuWillOpenCarrier = MenuWillOpenCarrier()
 
-    public init(store: SnapshotStore,
+    public init(store: TransitionalLiveSnapshots,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
@@ -243,7 +243,7 @@ public final class MenuRestoreCoordinator {
         let uuids = displays.compactMap(\.uuid).filter { !$0.isEmpty }
         let hasMatch: Bool = {
             guard !uuids.isEmpty,
-                  let snapshot = store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: uuids)) else {
+                  let snapshot = store.loadLive(topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: uuids)) else {
                 return false
             }
             return Set(snapshot.topology.map(\.uuid)) == Set(uuids)

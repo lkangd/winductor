@@ -122,7 +122,7 @@ public final class TriggerChain: @unchecked Sendable {
         case idle, debouncing, stabilizing, restoring
     }
 
-    private let store: SnapshotStore
+    private let store: TransitionalLiveSnapshots
     private let restorer: SnapshotRestoring
     /// nil = 无 Space 列表源（稳定判据采样不可用，走放弃上限）
     private let spaces: SpaceListProviding?
@@ -189,7 +189,7 @@ public final class TriggerChain: @unchecked Sendable {
         Set(spaces.map { "\($0.displayUUID)#\($0.index)#\($0.kind == .fullscreen ? 4 : 0)" })
     }
 
-    public init(store: SnapshotStore,
+    public init(store: TransitionalLiveSnapshots,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
@@ -220,14 +220,14 @@ public final class TriggerChain: @unchecked Sendable {
         seedReturnHomesAtLaunch()
     }
 
-    /// 少屏状态下启动：按磁盘上当前集合的极大超集拓扑重建冻结点（见 ReturnHomeLedger.seedAtLaunch）
+    /// 少屏状态下启动：按现势快照中当前集合的极大超集拓扑重建冻结点（见 ReturnHomeLedger.seedAtLaunch）
     private func seedReturnHomesAtLaunch() {
         stateLock.lock()
         let seeded = ledger.seedAtLaunch(current: settledUUIDs)
         stateLock.unlock()
         for (uuids, held) in seeded {
             log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
-                                 detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: Array(uuids))) launch-seed"))
+                                 detail: "key=\(TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: Array(uuids))) launch-seed"))
         }
     }
 
@@ -355,7 +355,7 @@ public final class TriggerChain: @unchecked Sendable {
             // 补记 baseline-hold（该拓扑已有冻结点则保留更早的拔屏前内容，不现读覆盖）
             if case .frozen(let held) = ledger.fastReplugged(to: baseline) {
                 log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
-                                     detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted())) fast-replug"))
+                                     detail: "key=\(TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: baseline.sorted())) fast-replug"))
             }
             // 落到下方共用恢复路径（current==baseline 直达匹配段）
         }
@@ -369,7 +369,7 @@ public final class TriggerChain: @unchecked Sendable {
             phase = .idle
             stateLock.unlock()
             log?.write(chainLine(step: "baseline-hold", result: held == nil ? "miss" : "held",
-                                 detail: "key=\(SnapshotStore.topologyKey(forDisplayUUIDs: baseline.sorted()))"))
+                                 detail: "key=\(TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: baseline.sorted()))"))
             return
         }
 
@@ -377,7 +377,7 @@ public final class TriggerChain: @unchecked Sendable {
         // 即使精确命中某份过期快照也不自动恢复——等待回到基线拓扑（手动「立即恢复」不受限）
         settledUUIDs = current
         lastAutoRestore = nil
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
+        let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: Array(current))
         var homeSnapshot: Snapshot?
         switch ledger.returnTo(current) {
         case .unguarded:
@@ -591,7 +591,7 @@ public final class TriggerChain: @unchecked Sendable {
     @discardableResult
     public func restoreNow(snapshot explicit: Snapshot? = nil) -> RestoreNotice? {
         if let explicit {
-            let key = SnapshotStore.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
+            let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
             guard let notice = performRestore(trigger: .manual, snapshot: explicit, key: key) else { return nil }
             deliver(notice)
             return notice
@@ -609,7 +609,7 @@ public final class TriggerChain: @unchecked Sendable {
     /// 完成通知照常投递（handle(notice:) 自带主线程汇编，后台线程投递安全）。
     public func restoreNowAsync(snapshot explicit: Snapshot? = nil) {
         if let explicit {
-            let key = SnapshotStore.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
+            let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: explicit.topology.map(\.uuid))
             restoreEnqueue { [weak self] in
                 guard let self,
                       let notice = self.performRestore(trigger: .manual, snapshot: explicit, key: key) else { return }
@@ -635,7 +635,7 @@ public final class TriggerChain: @unchecked Sendable {
             return nil
         }
         stateLock.unlock()
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: Array(current))
+        let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: Array(current))
         if let snapshot = matchSnapshot(for: current, key: key) {
             log?.write(chainLine(step: "topology-match", result: "exact", detail: "key=\(key) trigger=manual"))
             return (snapshot, key)
@@ -651,27 +651,11 @@ public final class TriggerChain: @unchecked Sendable {
     }
 
     /// 部分拓扑的 best-effort 快照选取：与当前集合重叠最多者优先；并列取屏幕更少，再字典序拓扑键。
-    /// 候选 = 快照目录里 live-/history- 文件反拆出的拓扑键（键即 UUID 集合）。
+    /// 候选 = 内存现势快照的拓扑键反拆出的 UUID 集合（票 02 起无落盘 live/history）。
     private func bestEffortSnapshot(for current: Set<String>) -> (snapshot: Snapshot, key: String)? {
         guard !current.isEmpty else { return nil }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: store.directory, includingPropertiesForKeys: nil) else {
-            return nil
-        }
-        var candidates: [(key: String, uuids: [String])] = []
-        for file in files where file.pathExtension == "json" {
-            let name = file.deletingPathExtension().lastPathComponent
-            let key: String?
-            if name.hasPrefix("live-") {
-                key = String(name.dropFirst("live-".count))
-            } else if name.hasPrefix("history-") {
-                // history-<slot>-<拓扑键>：去掉前缀与 slot 段
-                let rest = name.dropFirst("history-".count)
-                guard let dash = rest.firstIndex(of: "-") else { continue }
-                key = String(rest[rest.index(after: dash)...])
-            } else { continue }
-            guard let k = key, let uuids = SnapshotStore.displayUUIDs(inTopologyKey: k) else { continue }
-            candidates.append((k, uuids))
+        let candidates: [(key: String, uuids: [String])] = store.topologyKeys.compactMap { key in
+            TransitionalLiveSnapshots.displayUUIDs(inTopologyKey: key).map { (key, $0) }
         }
         // 重叠最多 → 屏幕更少 → 键字典序
         let ranked = candidates.sorted { a, b in

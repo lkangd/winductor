@@ -276,7 +276,7 @@ public enum SimulatedRestore {
         try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
         let seams = SimulatedSeams(fixture: fixture)
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: storeDirectory, log: log),
+            store: PresetStore(directory: storeDirectory, log: log),
             spaces: seams,
             enumerator: seams,
             ax: seams,

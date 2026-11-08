@@ -7,6 +7,9 @@ import Foundation
 //   [degrade] layer=L<n> reason=<probe-miss|no-op> detail=<…>
 //   [snapshot] action=<write|load|quarantine> path=<文件名> result=ok|fail detail=<…>
 //     ↑ 存储层自检行，票 11 新增、票 12 沿用；spec §10.4 只定义了前两种
+//   [preset] action=<add|overwrite|rename|delete|set-auto|alias|record-restored> topology=<拓扑键>
+//            [preset=<id>] result=ok [detail=<…>]                                   （预设存储，display-presets 票 02）
+//   [preset] action=<load|quarantine> path=<文件名> result=ok|fail detail=<…>        （预设文件版本拒用 / 损坏隔离）
 //
 // 管线级扩展行登记（评审修复项：非逐层逐窗口行，spec §10.4 未定义；拼写冻结，恢复管线沿用）：
 //   [restore] abort reason=no-active-display

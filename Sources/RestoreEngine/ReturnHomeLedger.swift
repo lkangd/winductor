@@ -21,7 +21,7 @@ enum ReturnDecision: Equatable {
 }
 
 struct ReturnHomeLedger {
-    private let store: SnapshotStore
+    private let store: TransitionalLiveSnapshots
     /// 拓扑集合 → 冻结的拔屏前快照
     private var homes: [Set<String>: Snapshot?] = [:]
     /// 事件串首个事件到达时的基线 live 快照。冻结取它而非 settle 时现读：
@@ -30,12 +30,12 @@ struct ReturnHomeLedger {
     /// 本次 settle 取走的事件串起点基线（仅当集合仍是 settle 基线；nil = 无，需现读）
     private var settledHeld: Snapshot??
 
-    init(store: SnapshotStore) {
+    init(store: TransitionalLiveSnapshots) {
         self.store = store
     }
 
     /// 少屏状态下启动（拔屏开会时 app 重启 / 登录启动）：内存冻结点为空，插回时中间拓扑会精确命中
-    /// 陈旧快照被当正常拓扑恢复（实测事故 11-03 07:39）。按磁盘上「当前集合的极大超集拓扑」重建冻结点：
+    /// 陈旧快照被当正常拓扑恢复（实测事故 11-03 07:39）。按现势快照中「当前集合的极大超集拓扑」重建冻结点（票 02 起现势快照只在内存，进程启动时为空 → 实际不再重建；票 04 删除）：
     /// 当前缺屏 ⇒ 这些拓扑自拔屏后不可能被 poller 写过 = 拔屏前内容。非极大超集（如 3 屏的 2 屏子集）
     /// 不冻结 = 视为中间拓扑。返回重建的冻结点（日志用）。
     mutating func seedAtLaunch(current: Set<String>) -> [(uuids: Set<String>, held: Snapshot?)] {
@@ -51,16 +51,9 @@ struct ReturnHomeLedger {
         }
     }
 
-    /// 快照目录里 live- 文件反拆出的拓扑集合
+    /// 内存现势快照的拓扑键反拆出的拓扑集合
     private func liveTopologies() -> [Set<String>] {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: store.directory,
-                                                                         includingPropertiesForKeys: nil) else { return [] }
-        return files.compactMap { file -> Set<String>? in
-            let name = file.deletingPathExtension().lastPathComponent
-            guard file.pathExtension == "json", name.hasPrefix("live-"),
-                  let uuids = SnapshotStore.displayUUIDs(inTopologyKey: String(name.dropFirst("live-".count))) else { return nil }
-            return Set(uuids)
-        }
+        store.topologyKeys.compactMap { TransitionalLiveSnapshots.displayUUIDs(inTopologyKey: $0).map(Set.init) }
     }
 
     /// 事件串开始（idle → debouncing）：记下此刻基线拓扑的 live 快照
@@ -119,6 +112,6 @@ struct ReturnHomeLedger {
     }
 
     private func loadLive(_ uuids: Set<String>) -> Snapshot? {
-        store.loadLive(topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: uuids.sorted()))
+        store.loadLive(topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: uuids.sorted()))
     }
 }

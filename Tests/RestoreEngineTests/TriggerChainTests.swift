@@ -175,13 +175,11 @@ private func makeSnapshot(topology uuids: [String]) -> Snapshot {
         spaces: [], windows: [])
 }
 
-private func makeStore(topologies: [[String]]) throws -> SnapshotStore {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("winductor-triggerchain-\(UUID().uuidString)")
-    let store = SnapshotStore(directory: dir)
+private func makeStore(topologies: [[String]]) throws -> TransitionalLiveSnapshots {
+    let store = TransitionalLiveSnapshots()
     for uuids in topologies {
-        try store.write(makeSnapshot(topology: uuids),
-                        topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: uuids))
+        store.write(makeSnapshot(topology: uuids),
+                        topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: uuids))
     }
     return store
 }
@@ -420,7 +418,7 @@ final class TriggerChainTests: XCTestCase {
         let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
         let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid"]])
         // 预写基线快照（带标记窗口）：拔屏冻结时应读到它
-        let homeKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
+        let homeKey = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
         let homeTopology = ["A-uuid", "B-uuid", "C-uuid"].map {
             World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
         }
@@ -428,7 +426,7 @@ final class TriggerChainTests: XCTestCase {
                             windows: [SnapshotWindow(bundleID: "held.app", title: "held", siblingIndex: 0,
                                                      displayUUID: "A-uuid", spaceIndex: 1,
                                                      x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
-        try store.write(held, topologyKey: homeKey)
+        store.write(held, topologyKey: homeKey)
         let box = DisplayBox([displayA, displayB, displayC])
         let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
                                  displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
@@ -444,7 +442,7 @@ final class TriggerChainTests: XCTestCase {
                                 windows: [SnapshotWindow(bundleID: "polluter.app", title: "junk", siblingIndex: 0,
                                                          displayUUID: "B-uuid", spaceIndex: 1,
                                                          x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
-        try store.write(polluted, topologyKey: homeKey)
+        store.write(polluted, topologyKey: homeKey)
 
         box.set([displayA, displayB])  // 中间态：精确命中 {A,B} 过期快照也不许自动恢复
         chain.screenParametersChanged()
@@ -470,7 +468,7 @@ final class TriggerChainTests: XCTestCase {
         let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
         let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
         let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid"], ["A-uuid", "C-uuid"]])
-        let homeKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
+        let homeKey = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid", "C-uuid"])
         let homeTopology = ["A-uuid", "B-uuid", "C-uuid"].map {
             World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
         }
@@ -478,7 +476,7 @@ final class TriggerChainTests: XCTestCase {
                             windows: [SnapshotWindow(bundleID: "held.app", title: "held", siblingIndex: 0,
                                                      displayUUID: "A-uuid", spaceIndex: 1,
                                                      x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
-        try store.write(held, topologyKey: homeKey)
+        store.write(held, topologyKey: homeKey)
         let box = DisplayBox([displayA, displayB, displayC])
         let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
                                  displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
@@ -494,7 +492,7 @@ final class TriggerChainTests: XCTestCase {
                                 windows: [SnapshotWindow(bundleID: "polluter.app", title: "junk", siblingIndex: 0,
                                                          displayUUID: "B-uuid", spaceIndex: 3,
                                                          x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
-        try store.write(polluted, topologyKey: homeKey)
+        store.write(polluted, topologyKey: homeKey)
         for stage in [[displayA, displayC], [displayA, displayB, displayC]] {  // 多段插屏：先 C 后 B
             box.set(stage)
             chain.screenParametersChanged()
@@ -525,9 +523,9 @@ final class TriggerChainTests: XCTestCase {
                                               spaceIndex: 1, x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
         }
         let store = try makeStore(topologies: [])
-        try store.write(snap([a, b, c], "home.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a, b, c]))
-        try store.write(snap([a, c], "stale.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a, c]))
-        try store.write(snap([a], "single.app"), topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: [a]))
+        store.write(snap([a, b, c], "home.app"), topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: [a, b, c]))
+        store.write(snap([a, c], "stale.app"), topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: [a, c]))
+        store.write(snap([a], "single.app"), topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: [a]))
         let clock = FakeTriggerClock(start: Date(timeIntervalSince1970: 1_000_000))
         let scheduler = FakeTriggerScheduler(clock: clock)
         let spy = LogSpy()
@@ -590,7 +588,7 @@ final class TriggerChainTests: XCTestCase {
         let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
         let spaces = FakeSpaceLists(queue: [["A-uuid#1#0"], ["A-uuid#1#0"]])
         let store = try makeStore(topologies: [["A-uuid"], ["A-uuid", "B-uuid", "C-uuid"]])
-        let midKey = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
+        let midKey = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
         let midTopology = ["A-uuid", "B-uuid"].map {
             World.topologyEntry(uuid: $0, name: $0, orientation: 0, x: 0, y: 0, w: 1000, h: 1000)
         }
@@ -606,7 +604,7 @@ final class TriggerChainTests: XCTestCase {
                                windows: [SnapshotWindow(bundleID: "mid.app", title: "mid", siblingIndex: 0,
                                                         displayUUID: "B-uuid", spaceIndex: 1,
                                                         x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)])
-        try store.write(midHeld, topologyKey: midKey)
+        store.write(midHeld, topologyKey: midKey)
         box.set([displayA])            // 2→1：冻结 {A,B}，且不丢 3 屏冻结点
         chain.screenParametersChanged()
         scheduler.runUntilIdle()
@@ -629,10 +627,8 @@ final class TriggerChainTests: XCTestCase {
                                             ["A-uuid#1#0"], ["A-uuid#1#0"]])
         var snapshot = makeSnapshot(topology: ["A-uuid", "B-uuid"])
         snapshot.spaces = [SnapshotSpace(displayUUID: "A-uuid", index: 1, kind: .user, fullscreenAppBundleID: nil)]
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("winductor-triggerchain-\(UUID().uuidString)")
-        let store = SnapshotStore(directory: dir)
-        try store.write(snapshot, topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"]))
+        let store = TransitionalLiveSnapshots()
+        store.write(snapshot, topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"]))
         let box = DisplayBox([displayA])
         let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
                                  displaysProvider: { box.displays }, clock: clock, scheduler: scheduler,
@@ -834,7 +830,7 @@ final class TriggerChainTests: XCTestCase {
     func testRestoreNowOnPartialTopologyRestoresBestEffortSupersetSnapshot() throws {
         // A6 部分拓扑形态：当前 {A,B}、只有 {A,B,C} 快照 → 选重叠最多的超集快照 best-effort 恢复
         //（缺失屏条目由引擎 target-display-absent skip，即「单屏 best-effort」语义）
-        // UUID 用真实形态（36 字符含内连字符）：拓扑键反拆依赖段长恒定（SnapshotStore 冻结格式）
+        // UUID 用真实形态（36 字符含内连字符）：拓扑键反拆依赖段长恒定（TransitionalLiveSnapshots 旧口径键）
         let aUUID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let bUUID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
         let cUUID = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
@@ -1166,7 +1162,7 @@ final class TriggerChainBurstBaselineTests: XCTestCase {
         let restorer = FakeSnapshotRestorer(report: report(ok: 1, skip: 0, fail: 0))
         let spaces = FakeSpaceLists(queue: Array(repeating: ["A-uuid#1#0", "B-uuid#1#0"], count: 8))
         let store = try makeStore(topologies: [["A-uuid", "B-uuid"]])
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
+        let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: ["A-uuid", "B-uuid"])
         let good = try XCTUnwrap(store.loadLive(topologyKey: key))
         let box = DisplayBox([displayA, displayB])
         let chain = TriggerChain(store: store, restorer: restorer, spaces: spaces,
@@ -1179,7 +1175,7 @@ final class TriggerChainBurstBaselineTests: XCTestCase {
         var polluted = makeSnapshot(topology: ["A-uuid", "B-uuid"])
         polluted = Snapshot(capturedAt: Date(timeIntervalSince1970: 42), topology: polluted.topology,
                             spaces: polluted.spaces, windows: polluted.windows)
-        try store.write(polluted, topologyKey: key)
+        store.write(polluted, topologyKey: key)
         scheduler.runUntilIdle()           // settle: shrank → 冻结
 
         box.set([displayA, displayB])      // 插回

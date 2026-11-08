@@ -22,6 +22,17 @@ extension Displays {
         }
     }
 
+    /// 活动屏信息 → 拓扑身份（只取身份要素：UUID、frame、旋转；不读屏名/分辨率）。
+    /// 无稳定 UUID 的屏不参与。rotation 可注入（恢复引擎测试桩）。
+    public static func topologyIdentity(of infos: [Info],
+                                        rotation: (CGDirectDisplayID) -> Int = Displays.rotation(for:)) -> TopologyIdentity {
+        TopologyIdentity(screens: infos.compactMap { info in
+            guard let uuid = info.uuid, !uuid.isEmpty else { return nil }
+            return TopologyScreen(uuid: uuid, name: "", frame: info.bounds, pixelWidth: 0, pixelHeight: 0,
+                                  rotation: rotation(info.id), isMirrored: false)
+        })
+    }
+
     /// 屏幕名：dlsym 取 CGDisplayGetName（Swift 不直接导出），失败回退 "Display <id>"
     public static func localizedName(for id: CGDirectDisplayID) -> String {
         displayNameFn(id) as String? ?? "Display \(id)"

@@ -97,7 +97,7 @@ final class DeferredGeometryTests: XCTestCase {
             windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
                                            display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
         let engine = RestoreEngine(
-            store: SnapshotStore(directory: dir),
+            store: PresetStore(directory: dir),
             spaces: bridge,
             enumerator: FakeEnumerator([World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
                                                      displayOrigin: .zero, displaySize: CGSize(width: 1000, height: 1000),

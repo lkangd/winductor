@@ -5,7 +5,7 @@ import SpaceAdapter
 
 // Undo.swift — 调试子命令 undo（票 16 验收：撤销入口 + spec §6.3/§8.6 单层/两段式撤销）。
 // 用法：undo
-// 读回滚快照 undo-<拓扑键>.json 整体回滚（把恢复前实况当作恢复目标跑一次恢复语义，spec §7.4）；
+// 读回滚快照 <拓扑键>/undo.json 整体回滚（把恢复前实况当作恢复目标跑一次恢复语义，spec §7.4）；
 // 含全屏应用时两段式：第一段跳过全屏并打印 09 八文案（§8.6 逐字，N = fullscreenPendingCount），
 // 用户按 Esc（全屏 Space 自动销毁、窗口归原 Space）后再次执行本命令补完几何回滚。
 // 回滚快照缺失/损坏 → 入口安全禁用：明确报错不崩溃（损坏文件由引擎按 §7.4 隔离挪开）。
@@ -22,7 +22,7 @@ enum Undo {
             return 2
         }
         let log = ConsoleLogSink.shared
-        let store = SnapshotStore(directory: SnapshotStore.defaultDirectory, log: log)
+        let store = PresetStore(directory: PresetStore.defaultDirectory, log: log)
         let engine = RestoreEngine(
             store: store,
             spaces: SpaceAdapterBridge(SpaceAdapter(log: log)),
@@ -38,7 +38,7 @@ enum Undo {
             }
             return report.failCount == 0 ? 0 : 1
         } catch RestoreEngineError.undoSnapshotMissing {
-            print("FAIL: 无可用回滚快照（undo-<拓扑键>.json 不存在），撤销入口禁用（spec §7.4：仅文件存在时可用）")
+            print("FAIL: 无可用回滚快照（<拓扑键>/undo.json 不存在），撤销入口禁用（spec §7.4：仅文件存在时可用）")
             return 2
         } catch RestoreEngineError.undoSnapshotCorrupt(let why) {
             print("FAIL: 回滚快照不可用，撤销入口禁用（损坏文件已按 §7.4 隔离挪开，下次恢复将重写）：\(why)")

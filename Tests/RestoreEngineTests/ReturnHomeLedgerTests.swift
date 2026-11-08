@@ -5,15 +5,15 @@ import Foundation
 import XCTest
 
 // ReturnHomeLedgerTests — 冻结点账本（拔屏冻结拔屏前快照、插回时选恢复源 / 拦中间态）。
-// 接缝：ReturnHomeLedger（真实 SnapshotStore 落临时目录）。事件时序/防抖/日志由 TriggerChainTests 端到端覆盖。
+// 接缝：ReturnHomeLedger（真实 TransitionalLiveSnapshots 内存现势快照）。事件时序/防抖/日志由 TriggerChainTests 端到端覆盖。
 final class ReturnHomeLedgerTests: XCTestCase {
     private let a = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
     private let b = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
     private let c = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
-    private var store: SnapshotStore!
+    private var store: TransitionalLiveSnapshots!
 
     override func setUpWithError() throws {
-        store = SnapshotStore(directory: try makeTempDir())
+        store = TransitionalLiveSnapshots()
     }
 
     private func snap(_ uuids: [String], _ bundle: String) -> Snapshot {
@@ -27,7 +27,7 @@ final class ReturnHomeLedgerTests: XCTestCase {
     @discardableResult
     private func writeLive(_ uuids: [String], _ bundle: String) throws -> Snapshot {
         let s = snap(uuids, bundle)
-        try store.write(s, topologyKey: SnapshotStore.topologyKey(forDisplayUUIDs: uuids))
+        store.write(s, topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: uuids))
         return s
     }
 

@@ -7,7 +7,7 @@ import Foundation
 //       无变化不写盘；有变化防抖 1s 落盘（连续变化合并为一次写入）。
 // 加速器：应用启退（NSWorkspace didLaunch/didTerminate）、屏幕事件（didChangeScreenParameters）
 //       触发立即差分一次；Space 切换加速器由票 17/18 观察方调 pollNow() 接入（公开入口即差分入口）。
-// 存储：经 Core/SnapshotStore —— 现势 1 份 + 滚动历史 4 份（最旧淘汰，文件名格式票 11 冻结）。
+// 存储：经 Core/TransitionalLiveSnapshots —— 每拓扑 1 份内存现势快照（票 02 删除落盘与滚动历史；票 03 改一次性拍快照）。
 // 零 AX：轮询环只读 CG（见 WindowSampling.swift）；AX 仅写盘路径（见 MinimalAXReader.swift）。
 // 门控：readinessGate 默认恒就绪；未就绪 = 照常轮询但零落盘（票 18 接真实两项授权检查）。
 
@@ -30,7 +30,7 @@ public final class SnapshotEngine {
     private let session: SkyLightSession
     /// 上一轮各窗口可见性（首采样前为 nil = 不触发迁移）
     private var lastOnscreenByWID: [UInt32: Bool] = [:]
-    private let store: SnapshotStore
+    private let store: TransitionalLiveSnapshots
     private let composer: SnapshotComposer
     private let enumerator: WindowEnumerating
     private let displaysProvider: () -> [Displays.Info]
@@ -47,7 +47,7 @@ public final class SnapshotEngine {
     private var pollTimer: DispatchSourceTimer?
     private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
 
-    public init(store: SnapshotStore,
+    public init(store: TransitionalLiveSnapshots,
                 spaces: SpaceProviding?,
                 log: LogWriting? = nil,
                 enumerator: WindowEnumerating = CGWindowListEnumerator(),
@@ -196,7 +196,7 @@ public final class SnapshotEngine {
         }
         let snapshot = composer.compose(sample: enumerator.sample(), displays: displays, capturedAt: Date(),
                                         geometryOverrides: deferredGeometry?.geometryOverrides() ?? [:])
-        let key = SnapshotStore.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
+        let key = TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid).filter { !$0.isEmpty })
         // 采样（SLS/AX，插拔中可达数秒）期间显示器变了 → 内容是拔插中途态，键却是起点拓扑：丢弃。
         // 实测 11-03 09:08:16：拔屏开始 2.2s 后这样一份写盘落进 live-3，0.3s 后被冻结为拔屏前基线，
         // 插回时结构门槛 6 轮不过放弃恢复。拓扑已变的指纹会让下一轮差分按新拓扑重写
@@ -205,10 +205,6 @@ public final class SnapshotEngine {
             log?.write("[snapshot] action=write path=live-\(key).json result=skip detail=topology-changed-while-composing")
             return
         }
-        do {
-            try store.write(snapshot, topologyKey: key)  // 现势 1 + 滚动历史 4（SnapshotStore 内滚动）
-        } catch {
-            log?.write("[snapshot] action=write path=live-\(key).json result=fail detail=\(error)")
-        }
+        store.write(snapshot, topologyKey: key)
     }
 }
