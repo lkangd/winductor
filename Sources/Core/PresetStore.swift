@@ -7,7 +7,7 @@ import Foundation
 //   <presets>/<拓扑键>/undo.json            回滚快照（每拓扑一份，恢复引擎读写）
 // 自动标记只存在 topology.json 的 autoPresetID 一处：「至多一个自动」由结构保证，设/取消自动只写一个文件。
 // 写入一律原子（SnapshotStore.atomicWrite）；解析失败 = 损坏 → 隔离改名（SnapshotStore.quarantine 口径）后跳过；
-// 版本拒用不隔离、原位保留跳过。
+// 版本拒用不隔离、原位保留跳过。读-改-写在写锁内：进程内 NSLock + 根目录 .write.lock 的 flock（跨进程）。
 
 public let presetSchemaVersion = 1
 
@@ -57,8 +57,9 @@ public struct PresetStore: Sendable {
     private let log: LogWriting?
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> String
-    /// 进程内写串行（读-改-写多文件；菜单/管理窗口与恢复管线线程可能并发写同一拓扑元数据）
-    private static let writeLock = NSLock()
+    /// 进程内写串行（读-改-写多文件；菜单/管理窗口与恢复管线线程可能并发写同一拓扑元数据）；
+    /// 跨进程（app 与 DebugCLI 同写一个目录）另由 writeLockURL 上的 flock 串行，见 acquireWriteLock
+    private static let processWriteLock = NSLock()
 
     public init(directory: URL, log: LogWriting? = nil,
                 now: @escaping @Sendable () -> Date = Date.init,
@@ -113,7 +114,7 @@ public struct PresetStore: Sendable {
     /// 名称去首尾空白；同拓扑撞名抛 duplicateName。
     @discardableResult
     public func addPreset(name: String, snapshot: Snapshot, topology: ObservedTopology) throws -> Preset {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         guard !topology.isMirrored else { throw PresetStoreError.mirrored }
         let key = topology.identity.key
         let existing = loadPresetFiles(key: key)
@@ -134,7 +135,7 @@ public struct PresetStore: Sendable {
     /// 只能覆盖观测拓扑下的预设（调用方保证「仅当前拓扑」）。
     @discardableResult
     public func overwritePreset(id: String, snapshot: Snapshot, topology: ObservedTopology) throws -> Preset {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         guard !topology.isMirrored else { throw PresetStoreError.mirrored }
         let key = topology.identity.key
         var meta = try metaForExistingPreset(id, key: key)
@@ -153,7 +154,7 @@ public struct PresetStore: Sendable {
 
     /// 改名（spec §4.1）：同拓扑唯一；改成自己现有名字为空操作
     public func renamePreset(id: String, topologyKey key: String, to newName: String) throws {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         let records = loadPresetFiles(key: key)
         guard var record = records.first(where: { $0.id == id }) else {
             throw PresetStoreError.presetNotFound(topologyKey: key, presetID: id)
@@ -165,7 +166,7 @@ public struct PresetStore: Sendable {
 
     /// 设/取消自动（spec §4.2）：设为自动 = 同拓扑其他预设自动清除；取消非自动预设为空操作
     public func setAuto(_ isAuto: Bool, presetID: String, topologyKey key: String) throws {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         var meta = try metaForExistingPreset(presetID, key: key)
         if isAuto {
             meta.autoPresetID = presetID
@@ -179,7 +180,7 @@ public struct PresetStore: Sendable {
     /// 删除预设（spec §4.2）：删的是自动预设则拓扑变为「无自动」，不转移；最近恢复记录同步清除。
     /// 拓扑目录与元数据（别名等）保留。
     public func deletePreset(id: String, topologyKey key: String) throws {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         var meta = try metaForExistingPreset(id, key: key)
         try FileManager.default.removeItem(at: presetURL(key, id: id))
         if meta.autoPresetID == id || meta.lastRestoredPresetID == id {
@@ -192,7 +193,7 @@ public struct PresetStore: Sendable {
 
     /// 改别名（spec §3.2）：去首尾空白，空 = 清除（回到默认屏名组合）
     public func setAlias(_ alias: String?, topologyKey key: String) throws {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         guard topology(key: key) != nil else { throw PresetStoreError.topologyNotFound(key) }
         var meta = loadMeta(key: key) ?? TopologyMeta(key: key)
         let trimmed = alias?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -203,11 +204,56 @@ public struct PresetStore: Sendable {
 
     /// 记录最近一次恢复所用预设（spec §4.4，验证器默认基准）
     public func recordRestored(presetID: String, topologyKey key: String) throws {
-        Self.writeLock.lock(); defer { Self.writeLock.unlock() }
+        let held = try acquireWriteLock(); defer { held.release() }
         var meta = try metaForExistingPreset(presetID, key: key)
         meta.lastRestoredPresetID = presetID
         try writeMeta(meta)
         log?.write("[preset] action=record-restored topology=\(key) preset=\(presetID) result=ok")
+    }
+
+    // MARK: 写锁
+
+    /// 跨进程写锁文件（存储根目录下；文件不是目录，不会被当作拓扑列出）。
+    /// 所有写入方（app、DebugCLI）对它 flock(LOCK_EX) 后才做读-改-写
+    public var writeLockURL: URL {
+        directory.appendingPathComponent(".write.lock")
+    }
+
+    /// 持有中的写锁（release 依次放 flock 与进程内锁）
+    private struct WriteLockHold {
+        let fd: Int32
+
+        func release() {
+            flock(fd, LOCK_UN)
+            close(fd)
+            PresetStore.processWriteLock.unlock()
+        }
+    }
+
+    /// 取写锁：先进程内 NSLock（同进程多线程不必各开 fd 排队），再对锁文件 flock 阻塞等待（跨进程）
+    private func acquireWriteLock() throws -> WriteLockHold {
+        Self.processWriteLock.lock()
+        func fail(_ what: String, _ code: Int32) -> Error {
+            Self.processWriteLock.unlock()
+            return NSError(domain: NSPOSIXErrorDomain, code: Int(code),
+                           userInfo: [NSLocalizedDescriptionKey: "\(what) \(writeLockURL.lastPathComponent) failed"])
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            Self.processWriteLock.unlock()
+            throw error
+        }
+        let fd = open(writeLockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { throw fail("open", errno) }
+        while flock(fd, LOCK_EX) != 0 {
+            let code = errno
+            guard code == EINTR else {
+                close(fd)
+                throw fail("flock", code)
+            }
+        }
+        return WriteLockHold(fd: fd)
     }
 
     /// 去首尾空白 + 同拓扑唯一（excluding = 改名时自身 id）

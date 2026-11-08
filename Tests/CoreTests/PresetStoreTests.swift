@@ -266,6 +266,37 @@ final class PresetStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), legacy.sorted())
     }
 
+    // MARK: 跨进程写串行
+
+    /// 读-改-写跨进程互斥：另一进程（DebugCLI / app）持有存储目录的写锁文件期间，本进程写入等待，释放后完成
+    func testWritesWaitForWriteLockHeldByAnotherProcess() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // 另开一个文件描述（flock 按打开的文件描述互斥，同进程内亦可模拟另一进程持锁）
+        let fd = open(store.writeLockURL.path, O_RDWR | O_CREAT, 0o644)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        let done = expectation(description: "写入在锁释放后完成")
+        let store = self.store!, topology = dual(), snapshot = snap("a")
+        DispatchQueue.global().async {
+            _ = try? store.addPreset(name: "工作", snapshot: snapshot, topology: topology)
+            done.fulfill()
+        }
+
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertNil(store.topology(key: topology.identity.key), "持锁期间写入不得落盘")
+        flock(fd, LOCK_UN)
+        close(fd)
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(store.topology(key: topology.identity.key)?.presets.map(\.name), ["工作"])
+    }
+
+    /// 写锁文件在存储根目录，不被当作拓扑列出
+    func testWriteLockFileIsNotListedAsTopology() throws {
+        try store.addPreset(name: "工作", snapshot: snap("a"), topology: dual())
+        XCTAssertEqual(store.writeLockURL.deletingLastPathComponent().standardizedFileURL, root.standardizedFileURL)
+        XCTAssertEqual(store.topologies().count, 1)
+    }
+
     // MARK: 回滚快照位置
 
     /// 回滚快照每拓扑一份、落在拓扑目录内；只有回滚快照的目录不算已存拓扑
