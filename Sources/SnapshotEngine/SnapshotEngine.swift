@@ -1,7 +1,7 @@
 import Core
 import Foundation
 
-// SnapshotEngine.swift — 一次性拍快照（display-presets spec §4.3/§8，票 03；取代票 12 的 2s 轮询差分 + 防抖落盘）。
+// SnapshotEngine.swift — 一次性拍快照（display-presets 票 03，spec §4.3/§8；取代票 12 的 2s 轮询差分 + 防抖落盘）。
 // 只在调用方显式请求时（保存/覆盖预设、调试命令）执行一次：CG 枚举 → 组装（AX 读标题/几何、SLS Space 归属、
 // 屏归属口径，见 SnapshotComposer）→ 连同组装起点的观测拓扑一并返回。引擎无 timer、无通知观察、不落盘，
 // 存储归调用方（PresetStore）。未就绪/镜像中的门控归调用方（保存流程）；恢复管线独占 SkyLight 时拒绝。

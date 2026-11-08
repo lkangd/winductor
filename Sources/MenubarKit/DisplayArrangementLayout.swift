@@ -1,7 +1,7 @@
 import Core
 import CoreGraphics
 
-// DisplayArrangementLayout.swift — 预设管理窗口排列图的布局计算（display-presets spec §6.4 右上，票 07）。
+// DisplayArrangementLayout.swift — 预设管理窗口排列图的布局计算（display-presets 票 07，spec §6.4 右上）。
 // 仿系统设置「显示器」：按拓扑展示数据（§3.2，最近一次见到的全局 point frame）的相对位置与比例绘制各屏——
 // 全部屏的包围盒等比缩放进画布（减四周内边距）并居中；竖屏照实（frame 本身已是旋转后的宽高）。
 // 画布坐标左上原点、y 向下，与 CGDisplayBounds 全局坐标同向，无需翻转。纯函数，视图只负责画矩形与标注。

@@ -6,7 +6,7 @@ import Foundation
 // → 计算当前拓扑（TopologyIdentity：UUID 集合 + 邻接排列 + 旋转）→ 判定表：
 //   未就绪 / 镜像中 → 零动作；拓扑无预设 → 零动作（并要求收起恢复提示）；
 //   有自动预设 → 直接恢复（RestoreEngine 一次性管线）→ 记录最近恢复 → 自动恢复告知；
-//   有预设无自动 → 请求恢复提示。判定结果经 onOutcome 接缝交给菜单栏 UI（票 05）。
+//   有预设无自动 → 请求恢复提示。判定结果经 onOutcome 接缝交给菜单栏 UI（display-presets 票 05）。
 // 拓扑变化事件一到（防抖之前）先经 onOutcome 发 topologyChanging，旧提示即刻收起（§6.2「拓扑再变」）；
 // Space 稳定判据采样到上限仍未稳定也照样判定（§5.1「任何拓扑变化都判定」）。
 // 不区分集合变大/变小（拔到单屏也判定）；拓扑未变的事件（睡眠唤醒/锁屏/分辨率调整）零动作；应用启动不判定。
@@ -107,7 +107,7 @@ public protocol SnapshotRestoring: Sendable {
     /// 覆盖会让「撤销」回到乱序态而非恢复前）。协议 requirement：existential 动态分派到实现
     @discardableResult
     func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport
-    /// cancellation = 协作式取消令牌（触发链在恢复中拓扑变化时 cancel；票 04）。协议 requirement：
+    /// cancellation = 协作式取消令牌（触发链在恢复中拓扑变化时 cancel；display-presets 票 04）。协议 requirement：
     /// 装饰器（菜单栏图标）须转发，否则令牌在 existential 默认实现处丢失
     @discardableResult
     func restore(snapshot: Snapshot, preserveUndo: Bool, cancellation: RestoreCancellation?) throws -> RestoreReport
@@ -183,7 +183,7 @@ public final class TriggerChain: @unchecked Sendable {
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
     /// 手动恢复完成通知（系统通知投递；自动恢复的告知走 onOutcome）
     private let onNotice: @Sendable (RestoreNotice) -> Void
-    /// 判定结果接缝（票 05 恢复提示 / 自动恢复告知 popover 挂这里）
+    /// 判定结果接缝（display-presets 票 05 恢复提示 / 自动恢复告知 popover 挂这里）
     private let onOutcome: @Sendable (TriggerOutcome) -> Void
 
     // stateLock 保护以下状态；恢复引擎调用在锁外执行（见 runRestore）
@@ -672,7 +672,7 @@ public final class TriggerChain: @unchecked Sendable {
         onNotice(notice)
     }
 
-    /// 判定结果投递（票 05 UI 接缝）；每条都落 outcome 日志行，链路到此收束
+    /// 判定结果投递（display-presets 票 05 UI 接缝）；每条都落 outcome 日志行，链路到此收束
     private func emit(_ outcome: TriggerOutcome) {
         log?.write(chainLine(step: "outcome", result: outcome.kind))
         onOutcome(outcome)

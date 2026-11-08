@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import MenubarKit
 
-// 票 07：预设管理窗口的呈现状态（display-presets spec §6.4）。
+// display-presets 票 07：预设管理窗口的呈现状态（display-presets spec §6.4）。
 // 接缝：PresetManagerState.make(...) —— 存储内容 + 当前观测拓扑 + 可用性 → 左栏拓扑列表（排序/高亮/标题）、
 // 选中拓扑的排列图数据与预设行（逐行操作可用性）。纯函数；存储用真实 PresetStore 写出输入。
 final class PresetManagerStateTests: XCTestCase {
@@ -140,7 +140,7 @@ final class PresetManagerStateTests: XCTestCase {
                        [0, 0])
     }
 
-    /// 排列图点选的屏（详情筛选，票 08 用）：不属于选中拓扑时清除
+    /// 排列图点选的屏（详情筛选，display-presets 票 08 用）：不属于选中拓扑时清除
     func testSelectedDisplayClearedWhenNotInSelectedTopology() throws {
         try save("工作", on: officeDesk)
 

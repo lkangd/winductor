@@ -1,7 +1,7 @@
 import Foundation
 
 // PresetSummary.swift — 从预设快照推导的人读摘要（display-presets spec §6.2 恢复提示摘要、§5.3 Space 不足提示）。
-// 纯函数，恢复提示（票 05）与预设详情（票 08）共用同一推导与文案。
+// 纯函数，恢复提示（display-presets 票 05）与预设详情（display-presets 票 08）共用同一推导与文案。
 // 口径：
 //   - 屏顺序 = 快照 topology 按 frame 自左而右（同 x 自上而下），与排列直觉一致
 //   - 屏名 = 拓扑展示数据（TopologyDisplayInfo.name）优先，缺失回退快照 localizedName；同名屏按顺序加「#n」区分

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-// SnapshotStore.swift — 快照文件原语：原子写、损坏隔离、应用支持目录。票 11 起步，票 02（display-presets）
+// SnapshotStore.swift — 快照文件原语：原子写、损坏隔离、应用支持目录。票 11 起步，display-presets 票 02
 // 删除 live/history 布局与 UUID 集合拓扑键：预设与回滚快照的落盘布局见 PresetStore.swift，
 // 旧 live-*/history-*/undo-* 文件不再读取（不兼容、不迁移）。
 // 损坏隔离：原文件名追加 ".corrupt-<ISO8601时间戳>"（时间戳冒号以 "-" 代替，Finder 友好）。

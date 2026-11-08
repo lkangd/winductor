@@ -7,7 +7,7 @@ import XCTest
 @testable import Core  // 构造 Displays.Info（memberwise init 为 internal，Seams.swift 冻结不可改）
 @testable import RestoreEngine  // 构造 RestoreReport（memberwise init 为 internal）
 
-// 票 19 → 票 06：菜单接线协调器（display-presets spec §6.1 菜单 + 状态行四态；§8.5 通知 + §8.1 图标三态沿用）。
+// 票 19 → display-presets 票 06：菜单接线协调器（display-presets spec §6.1 菜单 + 状态行四态；§8.5 通知 + §8.1 图标三态沿用）。
 // 接缝：MenuRestoreCoordinator 的全量菜单（makeReadyMenu，经菜单项 target/action 点击）对注入接缝的输出——
 //   SnapshotRestoring fake（断言恢复调用、所恢复的快照与图标装饰顺序）、UndoPerforming fake（撤销调用与 §8.6 通知）、
 //   SystemNotifying fake（通知投递）、LoginItemServicing fake、StatusIconControlling fake、文件夹打开/菜单刷新闭包。
@@ -316,7 +316,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         try addPreset("工作")
         try addPreset("家")
         let submenu = try XCTUnwrap(item(coordinator.makeReadyMenu(), "恢复预设")?.submenu)
-        // 预设之后是分隔线 +「用当前布局覆盖 ▸」（票 07）
+        // 预设之后是分隔线 +「用当前布局覆盖 ▸」（display-presets 票 07）
         XCTAssertEqual(submenu.items.map(\.title), ["工作（自动）", "家", "", "用当前布局覆盖"])
 
         mirrored = true
@@ -368,7 +368,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(notifier.deliveries.map(\.title), ["未恢复预设"])
     }
 
-    /// 「恢复预设 ▸」→「用当前布局覆盖 ▸」（spec §4.3，票 07）：确认后把当前布局写进所点预设，名称与自动保留，刷新菜单
+    /// 「恢复预设 ▸」→「用当前布局覆盖 ▸」（spec §4.3，display-presets 票 07）：确认后把当前布局写进所点预设，名称与自动保留，刷新菜单
     func testOverwriteSubmenuItemOverwritesPresetWithCurrentLayout() throws {
         try addPreset("工作")
         let home = try addPreset("家")
@@ -424,7 +424,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         guard case .notice(let notice, _)? = popover.rendered.last else { return XCTFail("应弹自动恢复告知") }
         XCTAssertEqual(notice.headline, "已按『工作』恢复")
         XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败")
-        XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行三态）")
+        XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行四态）")
 
         // 告知「撤销」走菜单同款撤销管线（离主线程 + 撤销完成通知）
         undo.canUndoValue = true
@@ -434,7 +434,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(notifier.deliveries.first?.title, "撤销完成")
     }
 
-    // MARK: 保存当前布局为预设…（票 03 SavePresetFlow）
+    // MARK: 保存当前布局为预设…（display-presets 票 03 SavePresetFlow）
 
     /// 点击：拍快照 → 输入框 → 存入当前拓扑；保存后刷新菜单，状态行与「恢复预设 ▸」随之更新
     func testSavePresetItemRunsFlowAndRefreshesMenu() throws {
@@ -475,7 +475,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(item(coordinator.makeReadyMenu(), "保存当前布局为预设…")?.isEnabled, false)
     }
 
-    // MARK: 管理预设…（窗口归票 07，此处只验入口接缝）
+    // MARK: 管理预设…（窗口归 display-presets 票 07，此处只验入口接缝）
 
     func testManagePresetsRoutesToInjectedOpener() throws {
         XCTAssertEqual(item(makeCoordinator().makeReadyMenu(), "管理预设…")?.isEnabled, false, "未装配窗口：置灰")

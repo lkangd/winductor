@@ -2,7 +2,7 @@ import XCTest
 @testable import Core
 
 // SnapshotStoreTests — 文件原语验收（原子写、损坏隔离）。
-// 接缝：SnapshotStore。live/history 布局已删（票 02），预设布局见 PresetStoreTests。
+// 接缝：SnapshotStore。live/history 布局已删（display-presets 票 02），预设布局见 PresetStoreTests。
 // 日志经 spy LogWriting 捕获，不真写盘。
 final class SnapshotStoreTests: XCTestCase {
     private var root: URL!

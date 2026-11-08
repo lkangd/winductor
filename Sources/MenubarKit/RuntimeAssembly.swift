@@ -5,8 +5,8 @@ import RestoreEngine
 import SnapshotEngine
 import SpaceAdapter
 
-// RuntimeAssembly.swift — 装配件（票 18：未就绪门控；票 19：全量恢复栈组装；票 03：保存预设流程见 SavePresetFlow.swift；
-// 票 07：覆盖流程见 OverwritePresetFlow.swift，预设管理窗口见 PresetManagerWindow.swift）。
+// RuntimeAssembly.swift — 装配件（票 18：未就绪门控；票 19：全量恢复栈组装；display-presets 票 03：保存预设流程见 SavePresetFlow.swift；
+// display-presets 票 07：覆盖流程见 OverwritePresetFlow.swift，预设管理窗口见 PresetManagerWindow.swift）。
 // app 入口 target 只依赖 MenubarKit（Package.swift 禁改，不能直 import SnapshotEngine/RestoreEngine/
 // SpaceAdapter），故生产组装全部在此：
 //   SpaceAdapter（探针/Space 归属）→ 恢复引擎 + 触发链 + 保存预设流程
@@ -54,18 +54,18 @@ public enum RuntimeAssembly {
         // 「保存当前布局为预设…」：一次性拍快照（与恢复管线共用 session 独占、共用延迟几何覆盖）
         let savePreset = makeSavePresetFlow(gatedBy: monitor, store: presetStore, spaces: adapter, session: session,
                                             deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
-        // 「用当前布局覆盖」（票 07）：管理窗口与「恢复预设 ▸」共用一个实例，可用性与保存同口径
+        // 「用当前布局覆盖」（display-presets 票 07）：管理窗口与「恢复预设 ▸」共用一个实例，可用性与保存同口径
         let overwritePreset = makeOverwritePresetFlow(availability: { savePreset.availability() }, store: presetStore,
                                                       spaces: adapter, session: session,
                                                       deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
-        // 预设管理窗口（票 07）：「恢复」走菜单协调器同一入口；协调器后构造，经弱引用箱回填
+        // 预设管理窗口（display-presets 票 07）：「恢复」走菜单协调器同一入口；协调器后构造，经弱引用箱回填
         let coordinatorBox = WeakCoordinatorBox()
         let presetManager = PresetManagerWindowController(model: PresetManagerModel(
             store: presetStore,
             overwrite: overwritePreset,
             restore: { id, key in coordinatorBox.coordinator?.restorePreset(id: id, topologyKey: key) },
             dialogs: AlertPresetManagerDialogs(),
-            // 预设详情的 Space 不足对比（票 08）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
+            // 预设详情的 Space 不足对比（display-presets 票 08）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
             currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
             appName: ApplicationNames.localizedName(bundleID:)))
 

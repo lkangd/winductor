@@ -1,7 +1,7 @@
 import Foundation
 
 // PresetDetail.swift — 预设详情「屏幕 → Space → 应用」三层树推导（display-presets spec §6.4「预设详情」）。
-// 纯函数，管理窗口（票 08）展开预设行时渲染；屏顺序与命名与恢复提示同源（TopologyNaming.orderedDisplays）。
+// 纯函数，管理窗口（display-presets 票 08）展开预设行时渲染；屏顺序与命名与恢复提示同源（TopologyNaming.orderedDisplays）。
 // 口径：
 //   - Space 按 index 升序；用户桌面按该屏用户桌面的序数称「桌面 N」（与调度中心一致，全屏 Space 不占号）
 //   - Space 下按 bundleID 聚合窗口：窗口数含最小化窗口，另注「其中 N 个最小化」

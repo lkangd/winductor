@@ -2,7 +2,7 @@ import AppKit
 import Core
 import SwiftUI
 
-// PresetManagerWindow.swift — 预设管理窗口的宿主（display-presets spec §6.4，票 07）。
+// PresetManagerWindow.swift — 预设管理窗口的宿主（display-presets 票 07，spec §6.4）。
 // 单实例：首次 show() 建窗，之后再打开只前置（关闭 = 隐藏，不释放）。
 // 实时刷新：打开/激活时、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，
 // 经 reloadIfVisible，装配方挂在菜单刷新同一处）重读存储与当前拓扑。

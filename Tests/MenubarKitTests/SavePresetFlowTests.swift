@@ -4,7 +4,7 @@ import SnapshotEngine
 import XCTest
 @testable import MenubarKit
 
-// SavePresetFlowTests — 「保存当前布局为预设…」流程（display-presets spec §4.3，票 03）。
+// SavePresetFlowTests — 「保存当前布局为预设…」流程（display-presets 票 03，spec §4.3）。
 // 接缝：SavePresetFlow 公共接口（availability() / run()）；拍快照经注入闭包（fake 快照 + 观测拓扑），
 // 输入框经 PresetNamePrompting（fake 按脚本应答），存储用真实 PresetStore（临时目录）。
 final class SavePresetFlowTests: XCTestCase {
@@ -158,7 +158,7 @@ final class SavePresetFlowTests: XCTestCase {
         XCTAssertEqual(store.topologies(), [])
     }
 
-    // MARK: 菜单路径（票 06）：拍快照离开主线程，输入框与写盘回到主线程
+    // MARK: 菜单路径（display-presets 票 06）：拍快照离开主线程，输入框与写盘回到主线程
 
     /// 拍快照经后台执行器，输入框与写盘经主线程执行器，完成回调带结果
     func testRunAsyncCapturesInBackgroundThenPromptsOnMain() throws {

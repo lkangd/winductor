@@ -1,9 +1,9 @@
 import Core
 import SwiftUI
 
-// PresetManagerView.swift — 预设管理窗口视图（display-presets spec §6.4，票 07）。薄视图：只读
+// PresetManagerView.swift — 预设管理窗口视图（display-presets 票 07，spec §6.4）。薄视图：只读
 // PresetManagerModel.state、只调 model 方法；排序/高亮/可用性见 PresetManagerState，排列图几何见 DisplayArrangementLayout。
-// 布局：左栏拓扑列表 | 右上排列图（点屏 = 详情筛选，票 08）| 右下预设列表（每行：展开、名称/时间、自动开关、恢复、更多）。
+// 布局：左栏拓扑列表 | 右上排列图（点屏 = 详情筛选，display-presets 票 08）| 右下预设列表（每行：展开、名称/时间、自动开关、恢复、更多）。
 
 struct PresetManagerView: View {
     @ObservedObject var model: PresetManagerModel
@@ -163,7 +163,7 @@ private struct PresetRowView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .fixedSize()
-                    .help("拓扑变化后命中自动预设即直接恢复；每个屏幕排列至多一个")
+                    .help("屏幕排列变化后命中自动预设即直接恢复；每个屏幕排列至多一个")
                 Button("恢复") { model.restore(presetID: row.id) }
                     .disabled(!row.canRestore)
                 Menu {

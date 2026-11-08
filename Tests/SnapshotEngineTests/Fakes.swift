@@ -31,7 +31,7 @@ final class FakeEnumerator: WindowEnumerating, @unchecked Sendable {
     }
 }
 
-/// AX 读取桩：计数调用（轮询环零 AX 的结构性断言用）；minimized/fullScreen 按窗口 ID 预置
+/// AX 读取桩：计数调用（AX 按需探测的断言用）；minimized/fullScreen 按窗口 ID 预置
 final class FakeAXProber: WindowAXProbing, @unchecked Sendable {
     private let lock = NSLock()
     private let minimizedIDs: Set<UInt32>

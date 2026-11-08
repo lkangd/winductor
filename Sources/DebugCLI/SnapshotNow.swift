@@ -3,7 +3,7 @@ import Foundation
 import SnapshotEngine
 import SpaceAdapter
 
-// SnapshotNow.swift — 调试子命令 snapshot-now（票 12；票 03 起一次性拍快照；票 09 起拍完即保存为当前拓扑的预设）。
+// SnapshotNow.swift — 调试子命令 snapshot-now（票 12；display-presets 票 03 起一次性拍快照；display-presets 票 09 起拍完即保存为当前拓扑的预设）。
 // 拍一次快照 → PresetStore.addPreset（拓扑无预设时默认自动，spec §4.2）；打印耗时、拓扑键、快照摘要与预设。
 // --out 另把快照写成文件（供 VerifyCLI --snapshot 使用）。Space 经 SpaceAdapter 实读（与菜单保存同口径）。
 // 用法：swift run DebugCLI snapshot-now [--name <名称>] [--out <文件>]

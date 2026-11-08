@@ -1,4 +1,4 @@
-// StatusLineState.swift — 菜单状态行四态（display-presets spec §6.1，票 06；取代票 19 的现势快照三态）。
+// StatusLineState.swift — 菜单状态行四态（display-presets 票 06，spec §6.1；取代票 19 的现势快照三态）。
 // 「N 屏 · M 个预设（自动：X）」／「N 屏 · M 个预设」／「N 屏 · 无预设」／「镜像中」——
 // 按当前观测拓扑（屏数、镜像态）与该拓扑的预设记录判定。N、M 用阿拉伯数字。
 // 未就绪态不经此处（占位骨架 + 引导，见 PlaceholderMenu / ScreenCaptureReconfirmGuide）。

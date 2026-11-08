@@ -5,7 +5,7 @@ import Foundation
 import SnapshotEngine
 import XCTest
 
-// TriggerChainTests — 触发链按预设判定（display-presets spec §5.1，票 04；fake 注入单测）。
+// TriggerChainTests — 触发链按预设判定（display-presets 票 04，spec §5.1；fake 注入单测）。
 // 断言口径：[trigger] 结构化日志的 step 序列 + at= 时间戳链、恢复器收到的快照、onOutcome 收到的判定结果、
 // PresetStore 公开读接口（最近恢复记录）。拓扑经注入的 ObservedTopology 源驱动，预设存于临时目录的真实 PresetStore。
 

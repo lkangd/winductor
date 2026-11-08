@@ -55,7 +55,7 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
     }
 }
 
-/// 恢复通知（系统通知投递接缝的载荷类型；票 04 起只剩完成通知，部分拓扑通知随 spec §5.1 删除）
+/// 恢复通知（系统通知投递接缝的载荷类型；display-presets 票 04 起只剩完成通知，部分拓扑通知随 spec §5.1 删除）
 public enum RestoreNotice: Equatable, Sendable {
     case completed(RestoreCompletionNotice)
 
@@ -86,7 +86,7 @@ public enum RestoreNotice: Equatable, Sendable {
     }
 }
 
-/// 触发链判定结果（display-presets spec §5.1 判定表 → 菜单栏 UI；票 05 popover 挂 TriggerChain.onOutcome）。
+/// 触发链判定结果（display-presets spec §5.1 判定表 → 菜单栏 UI；display-presets 票 05 popover 挂 TriggerChain.onOutcome）。
 /// 只在拓扑变化后产出（拓扑未变的事件、应用启动、被中止的恢复轮次均不产出）：
 /// 每轮变化先发 topologyChanging（事件一到），稳定后再发判定结果。
 public enum TriggerOutcome: Equatable, Sendable {

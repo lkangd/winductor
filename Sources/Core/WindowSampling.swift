@@ -2,9 +2,9 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-// WindowSampling.swift — CG 窗口采样（spec §7.5）。快照引擎轮询环、恢复引擎实况收集、
+// WindowSampling.swift — CG 窗口采样（spec §7.5）。一次性拍快照（SnapshotComposer）、恢复引擎实况收集、
 // VerifyCLI 实时枚举共用这一份（verify 要能对引擎产出的快照做同口径枚举比对）。
-// 本文件是「轮询环零 AX」的结构性保证：不调用任何 AX API，采样仅读
+// 采样本身零 AX（AX 只经 WindowAXProbing 按需另探）：本文件不调用任何 AX API，采样仅读
 // CGWindowListCopyWindowInfo(.optionAll)（kCGWindowName 随调用免费返回）；
 // AppKit 只用于 NSRunningApplication 的 bundleID 兜底。
 // 候选过滤口径：
@@ -31,7 +31,7 @@ public struct CGWindowSample: Equatable, Sendable {
 }
 
 /// 窗口采样源接缝：默认 CGWindowList 实现，测试注入 fake（票面「注入 fake 的单元测试」）。
-/// 实现约定：只做 CG 读取，禁止 AX 调用（轮询环零 AX 的结构性约束）。
+/// 实现约定：只做 CG 读取，禁止 AX 调用（采样零 AX 的结构性约束；AX 按需另探）。
 public protocol WindowEnumerating: Sendable {
     func sample() -> [CGWindowSample]
 }

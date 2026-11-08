@@ -1,7 +1,7 @@
 import XCTest
 @testable import MenubarKit
 
-// 票 06：菜单状态行四态（display-presets spec §6.1）。
+// display-presets 票 06：菜单状态行四态（display-presets spec §6.1）。
 // 接缝：StatusLineState 的公开判定入口——按当前屏数、镜像态、当前拓扑的预设数与自动预设名产出状态行标题。
 // 独立事实来源：spec §6.1 逐字措辞（测试自带字面量，不用实现常量自证）。
 final class StatusLineStateTests: XCTestCase {

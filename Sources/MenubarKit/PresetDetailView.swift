@@ -1,7 +1,7 @@
 import Core
 import SwiftUI
 
-// PresetDetailView.swift — 预设详情展开区（display-presets spec §6.4「预设详情」，票 08）。
+// PresetDetailView.swift — 预设详情展开区（display-presets 票 08，spec §6.4「预设详情」）。
 // 薄视图：只渲染 PresetManagerModel.expandedDetail（推导见 Core/PresetDetail：屏 → Space → 应用，
 // 「其中 N 个最小化」、「全屏 · 应用名」、随排列图点屏筛选、Space 不足提示仅当前拓扑）。
 

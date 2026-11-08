@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import MenubarKit
 
-// 票 10 → 票 06：未就绪态占位菜单骨架（结构随 display-presets spec §6.1 菜单）。
+// 票 10 → display-presets 票 06：未就绪态占位菜单骨架（结构随 display-presets spec §6.1 菜单）。
 // 接缝：PlaceholderMenu.build() 的公开产物——菜单结构与项的可用性。
 // 独立事实来源：spec §6.1 的定稿菜单（状态行 + 动作项骨架 + 分隔线位置 + 退出）。
 final class PlaceholderMenuTests: XCTestCase {

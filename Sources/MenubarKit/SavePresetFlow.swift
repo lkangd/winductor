@@ -2,11 +2,11 @@ import AppKit
 import Core
 import SnapshotEngine
 
-// SavePresetFlow.swift — 「保存当前布局为预设…」（display-presets spec §4.3，票 03）。
+// SavePresetFlow.swift — 「保存当前布局为预设…」（display-presets 票 03，spec §4.3）。
 // 流程：可用性门（未就绪 / 镜像中 / 恢复进行中 → 禁用）→ 一次性拍快照（SnapshotEngine.capture，点击时刻的布局，
 // 先于输入框拍：输入期间的窗口变化与输入框自身不入快照）→ 输入框（默认名「MM-dd HH:mm」，可改）
 // → 存入拍快照时的拓扑（PresetStore.addPreset；拓扑首个预设默认自动）。撞名/空名提示后重弹，取消不写。
-// 菜单项接线（票 06）：可用性取 availability()（非 .available 置灰），点击调 runAsync()——拍快照经 captureExecutor
+// 菜单项接线（display-presets 票 06）：可用性取 availability()（非 .available 置灰），点击调 runAsync()——拍快照经 captureExecutor
 // 离开主线程，输入框（模态）与写盘经 mainExecutor 回到主线程（两段执行器、拍快照判定与装配见 LayoutCaptureSupport.swift）。
 
 /// 预设名输入框接缝（生产：AlertPresetNamePrompt；测试：脚本假件）
@@ -161,7 +161,7 @@ public final class SavePresetFlow {
 }
 
 extension RuntimeAssembly {
-    /// 组装保存预设流程（票 06 在 assembleAppRoot 内以同一 presetStore/adapter/session/deferredGeometry 调用）：
+    /// 组装保存预设流程（display-presets 票 06 在 assembleAppRoot 内以同一 presetStore/adapter/session/deferredGeometry 调用）：
     /// 拍快照 = makeLayoutCapture（与覆盖共用：一次性 SnapshotEngine，本应用自身窗口不入快照），
     /// 未就绪门 = monitor，恢复进行中 = session 独占持有/排队，镜像 = 实况拓扑。
     public static func makeSavePresetFlow(gatedBy monitor: PermissionMonitor,

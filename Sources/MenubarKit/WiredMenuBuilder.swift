@@ -1,10 +1,10 @@
 import AppKit
 
-// WiredMenuBuilder.swift — 全量菜单构建（display-presets spec §6.1，票 06；取代票 19 的 §8.2 七项结构）。
+// WiredMenuBuilder.swift — 全量菜单构建（display-presets 票 06，spec §6.1；取代票 19 的 §8.2 七项结构）。
 // 结构：状态行（纯文本四态）──── 保存当前布局为预设…／恢复预设 ▸／撤销上次恢复 ──── 管理预设… ────
 // 登录时启动 ✓／打开预设文件夹／打开日志文件夹 ──── 能力状态行 ──── 退出 Winductor。
 // 「恢复预设 ▸」子菜单 = 当前拓扑预设（调用方给定顺序），自动预设标「（自动）」；无预设整项置灰。
-// 装配了覆盖动作时子菜单末尾另有「用当前布局覆盖 ▸」（票 07，spec §4.3），同序列出预设。
+// 装配了覆盖动作时子菜单末尾另有「用当前布局覆盖 ▸」（display-presets 票 07，spec §4.3），同序列出预设。
 // 动作经 NSObject 载体路由到注入闭包（NSMenuItem.target 为 unsafe unretained——每个动作项一个载体，
 // 同时挂在该项 representedObject（强引用）上保活，测试直接 perform 捕获）。
 // 状态/可用性由调用方在构建时刻判定传入，构建器不做 IO。
@@ -45,7 +45,7 @@ public struct WiredMenuContent {
     public let onToggleLoginLaunch: () -> Void
     public let onOpenPresetsFolder: () -> Void
     public let onOpenLogsFolder: () -> Void
-    /// 「恢复预设 ▸」内「用当前布局覆盖 ▸」可用性（票 07：与保存同口径）
+    /// 「恢复预设 ▸」内「用当前布局覆盖 ▸」可用性（display-presets 票 07：与保存同口径）
     public let canOverwritePreset: Bool
     /// 覆盖当前拓扑下的指定预设，参数 = 预设 id（nil = 未装配，不显示覆盖组）
     public let onOverwritePreset: ((String) -> Void)?
@@ -102,7 +102,7 @@ public enum WiredMenuBuilder {
         menu.addItem(item("撤销上次恢复", content.canUndo ? content.onUndo : nil))
         menu.addItem(.separator())
 
-        // 管理窗口入口（窗口本体归票 07）
+        // 管理窗口入口（窗口本体归 display-presets 票 07）
         menu.addItem(item("管理预设…", content.onManagePresets))
         menu.addItem(.separator())
 
@@ -152,7 +152,7 @@ public enum WiredMenuBuilder {
         return parent
     }
 
-    /// 「用当前布局覆盖 ▸」（spec §4.3，票 07）：同序列出当前拓扑预设，逐项路由预设 id；不可用置灰不挂子菜单
+    /// 「用当前布局覆盖 ▸」（spec §4.3，display-presets 票 07）：同序列出当前拓扑预设，逐项路由预设 id；不可用置灰不挂子菜单
     private static func overwriteItem(_ entries: [RestorePresetMenuEntry], enabled: Bool,
                                       _ onOverwrite: @escaping (String) -> Void) -> NSMenuItem {
         let parent = NSMenuItem(title: "用当前布局覆盖", action: nil, keyEquivalent: "")

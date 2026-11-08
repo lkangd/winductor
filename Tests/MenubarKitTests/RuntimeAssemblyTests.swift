@@ -10,7 +10,7 @@ final class Unboxed<T> {
     init(_ value: T) { self.value = value }
 }
 
-// 票 03：保存预设流程的装配接线（未就绪门 = PermissionMonitor；恢复进行中 = SkyLightSession 独占）。
+// display-presets 票 03：保存预设流程的装配接线（未就绪门 = PermissionMonitor；恢复进行中 = SkyLightSession 独占）。
 // 接缝：RuntimeAssembly.makeSavePresetFlow 产物的 availability()。
 final class RuntimeAssemblyTests: XCTestCase {
     /// 可用性跟着观察者与恢复管线走：未就绪 → notReady；就绪 → available；管线独占中 → restoring

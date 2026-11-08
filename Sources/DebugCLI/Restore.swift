@@ -4,7 +4,7 @@ import RestoreEngine
 import SnapshotEngine
 import SpaceAdapter
 
-// Restore.swift — 调试子命令 restore（票 14 验收：restore 调试命令 + spec §6.3 单轮 best-effort；票 09 起按预设名）。
+// Restore.swift — 调试子命令 restore（票 14 验收：restore 调试命令 + spec §6.3 单轮 best-effort；display-presets 票 09 起按预设名）。
 // 用法：restore <预设名>
 // 在当前拓扑下按名称取预设（仅当前拓扑，display-presets spec §5.2）→ 跑一轮恢复管线
 // （回滚快照落盘 → L2 桥接移窗 → L1 几何摆位，one-shot 放完即停）→ 记录为最近恢复（VerifyCLI 缺省基准）。

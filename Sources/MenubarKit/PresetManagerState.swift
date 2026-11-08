@@ -1,14 +1,14 @@
 import Core
 import Foundation
 
-// PresetManagerState.swift — 预设管理窗口的呈现状态（display-presets spec §6.4，票 07）。纯函数，无 IO。
+// PresetManagerState.swift — 预设管理窗口的呈现状态（display-presets 票 07，spec §6.4）。纯函数，无 IO。
 // 输入：PresetStore.topologies() + 当前观测拓扑 + 保存/覆盖可用性 + 视图选择（选中拓扑、排列图点选的屏）。
 // 输出：
 //   左栏 entries —— 当前拓扑置顶高亮（尚无预设也按实况屏幕列出），其他拓扑灰显、按最近保存时间倒序；
 //     标题别名优先，否则屏名组合（同名合并「×N」）；镜像中无当前拓扑（§3.3）。
 //   selected —— 选中拓扑的排列图数据（当前拓扑用实况屏幕，其他用存储的展示数据 §3.2）与预设行；
 //     行内恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；改名、删除、设自动任何拓扑都可。
-//   selectedDisplayUUID / expandedPresetID —— 预设详情（票 08）的筛选与展开接缝。
+//   selectedDisplayUUID / expandedPresetID —— 预设详情（display-presets 票 08）的筛选与展开接缝。
 
 /// 左栏的一个拓扑
 public struct TopologyListEntry: Equatable, Identifiable {
@@ -53,9 +53,9 @@ public struct PresetManagerState: Equatable {
     public let entries: [TopologyListEntry]
     public let selectedKey: String?
     public let selected: SelectedTopologyState?
-    /// 排列图点选的屏（nil = 全部屏；票 08 预设详情据此只显示该屏）
+    /// 排列图点选的屏（nil = 全部屏；display-presets 票 08 预设详情据此只显示该屏）
     public let selectedDisplayUUID: String?
-    /// 展开详情的预设（票 08）
+    /// 展开详情的预设（display-presets 票 08）
     public let expandedPresetID: String?
 
     public static let empty = PresetManagerState(entries: [], selectedKey: nil, selected: nil,

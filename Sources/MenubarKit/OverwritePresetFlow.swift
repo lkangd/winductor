@@ -2,7 +2,7 @@ import AppKit
 import Core
 import SnapshotEngine
 
-// OverwritePresetFlow.swift — 「用当前布局覆盖」（display-presets spec §4.2/§4.3，票 07）。
+// OverwritePresetFlow.swift — 「用当前布局覆盖」（display-presets 票 07，spec §4.2/§4.3）。
 // 入口两处共用本流程：预设管理窗口的预设行、菜单「恢复预设 ▸」子菜单的「用当前布局覆盖 ▸」。
 // 流程：可用性门（与保存同口径：未就绪 / 镜像中 / 恢复进行中 → 禁用）→ 确认框（覆盖不可撤回，带预设名）
 // → 一次性拍快照（SnapshotEngine.capture，离主线程）→ 仅当拍快照时的拓扑 = 预设所属拓扑才写

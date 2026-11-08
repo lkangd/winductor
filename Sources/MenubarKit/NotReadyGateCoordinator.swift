@@ -57,7 +57,7 @@ public final class NotReadyGateCoordinator {
     }
 
     /// 启动：接线观察者回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3）。
-    /// 无后台快照引擎可启（票 03：快照只在保存预设时一次性拍）。
+    /// 无后台快照引擎可启（display-presets 票 03：快照只在保存预设时一次性拍）。
     public func start() {
         monitor.onStatusChange = { [weak self] status in self?.apply(status) }
         monitor.start()  // 立即首检，就绪门随即反映真实现状

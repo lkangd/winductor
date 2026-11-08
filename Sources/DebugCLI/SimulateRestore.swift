@@ -2,7 +2,7 @@ import Core
 import Foundation
 import RestoreEngine
 
-// SimulateRestore.swift — 调试子命令 simulate-restore（retro 优化：多屏行为免硬件可验；票 09 起按预设名）。
+// SimulateRestore.swift — 调试子命令 simulate-restore（retro 优化：多屏行为免硬件可验；display-presets 票 09 起按预设名）。
 // 用法：simulate-restore <预设名> <fixture.json> [--topology <拓扑键>]
 // fixture 描述显示器/Space/存活窗（坐标为全局绝对点），注入恢复管线全部接缝后干跑真实管线：
 // 只记录动作不动真实窗口；回滚快照照 §7.4 照写但落临时目录，不碰真实预设库，也不记最近恢复。

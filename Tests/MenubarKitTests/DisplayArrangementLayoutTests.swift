@@ -3,7 +3,7 @@ import CoreGraphics
 import XCTest
 @testable import MenubarKit
 
-// 票 07：排列图布局计算（display-presets spec §6.4 右上排列图，仿系统设置「显示器」）。
+// display-presets 票 07：排列图布局计算（display-presets spec §6.4 右上排列图，仿系统设置「显示器」）。
 // 接缝：DisplayArrangementLayout.layout(_:in:padding:) —— 展示数据（全局 point frame）→ 画布内缩放后的视图矩形。
 // 独立事实来源：手算的等比缩放 + 居中结果（画布左上原点、y 向下，与 CGDisplayBounds 全局坐标同向）。
 final class DisplayArrangementLayoutTests: XCTestCase {

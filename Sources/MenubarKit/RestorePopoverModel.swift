@@ -3,7 +3,7 @@ import Foundation
 import RestoreEngine
 
 // RestorePopoverModel.swift — 恢复提示（spec §6.2）与自动恢复告知（§6.3）的视图模型，纯值类型。
-// 摘要与 Space 不足文案来自 Core/PresetSummary（与预设详情票 08 同源）；AppKit 呈现见 RestorePopoverView.swift。
+// 摘要与 Space 不足文案来自 Core/PresetSummary（与预设详情 display-presets 票 08 同源）；AppKit 呈现见 RestorePopoverView.swift。
 
 /// 恢复提示里的一个预设选项（摘要与 Space 不足提示按预设预先算好，切换单选不再读实时状态）
 public struct RestorePromptOption: Equatable {

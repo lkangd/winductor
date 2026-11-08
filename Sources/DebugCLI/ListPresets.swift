@@ -1,7 +1,7 @@
 import Core
 import Foundation
 
-// ListPresets.swift — 调试子命令 list-presets（票 09）：只读列出预设库全部拓扑与预设，
+// ListPresets.swift — 调试子命令 list-presets（display-presets 票 09）：只读列出预设库全部拓扑与预设，
 // 标当前拓扑、自动预设、最近恢复预设；输出格式由 Core.PresetListing 给出。
 // 用法：swift run DebugCLI list-presets
 

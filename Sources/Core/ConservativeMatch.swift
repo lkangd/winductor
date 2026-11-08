@@ -9,7 +9,7 @@ import Foundation
 //         比例几何位置最近邻、欧氏距离 ≤ 0.15（spec §10.3）。
 //   仍配不上 → 跳过（保守匹配：不猜、不启动，spec §6.4）。
 
-/// 存活窗口的最小匹配描述（app 轮询环与 verify 枚举共用）。
+/// 存活窗口的最小匹配描述（恢复引擎实况收集与 verify 枚举共用）。
 /// x/y/w/h 为所属屏归一比例坐标；cgWindowID 仅会话内辅助，不参与匹配键（spec §7.1）。
 public struct LiveWindow: Equatable, Sendable {
     public let cgWindowID: UInt32

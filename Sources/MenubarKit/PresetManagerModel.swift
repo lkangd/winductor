@@ -2,7 +2,7 @@ import Combine
 import Core
 import Foundation
 
-// PresetManagerModel.swift — 预设管理窗口的操作与状态源（display-presets spec §6.4，票 07）。
+// PresetManagerModel.swift — 预设管理窗口的操作与状态源（display-presets 票 07，spec §6.4）。
 // 视图（PresetManagerView）只读 state、只调本类方法；规则全在存储（§4.1/§4.2：同拓扑唯一名、自动互斥、
 // 删自动不转移）与 PresetManagerState（排序/高亮/逐行可用性），本类只做「对话框 → 存储 → 重读」编排：
 //   改名 / 改别名 → 输入框（撞名/空名提示后重弹）→ PresetStore.renamePreset / setAlias；
@@ -26,9 +26,9 @@ public protocol PresetManagerDialogs: AnyObject {
 
 public final class PresetManagerModel: ObservableObject {
     @Published public private(set) var state: PresetManagerState = .empty
-    /// 选中拓扑的存储记录（含预设快照；当前拓扑尚无预设时为 nil）。票 08 预设详情据此展开「屏幕 → Space → 应用」
+    /// 选中拓扑的存储记录（含预设快照；当前拓扑尚无预设时为 nil）。display-presets 票 08 预设详情据此展开「屏幕 → Space → 应用」
     public private(set) var selectedTopologyRecord: PresetTopology?
-    /// 展开行的预设详情（票 08：屏 → Space → 应用，随点屏筛选；Space 不足提示仅当前拓扑）。未展开为 nil
+    /// 展开行的预设详情（display-presets 票 08：屏 → Space → 应用，随点屏筛选；Space 不足提示仅当前拓扑）。未展开为 nil
     @Published public private(set) var expandedDetail: PresetDetail?
 
     private let store: PresetStore
@@ -97,13 +97,13 @@ public final class PresetManagerModel: ObservableObject {
         reload()
     }
 
-    /// 排列图点选屏：再点同一块 = 取消筛选（票 08 预设详情据 state.selectedDisplayUUID 只显示该屏）
+    /// 排列图点选屏：再点同一块 = 取消筛选（display-presets 票 08 预设详情据 state.selectedDisplayUUID 只显示该屏）
     public func selectDisplay(_ uuid: String?) {
         selectedDisplayUUID = uuid == selectedDisplayUUID ? nil : uuid
         reload()
     }
 
-    /// 展开/收起预设详情（票 08）
+    /// 展开/收起预设详情（display-presets 票 08）
     public func toggleExpanded(presetID: String) {
         expandedPresetID = expandedPresetID == presetID ? nil : presetID
         reload()

@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import MenubarKit
 
-// 票 06：全量菜单构建（display-presets spec §6.1；取代票 19 的 spec §8.2 七项口径）。
+// display-presets 票 06：全量菜单构建（display-presets spec §6.1；取代票 19 的 spec §8.2 七项口径）。
 // 接缝：WiredMenuBuilder.build(WiredMenuContent) 的公开产物——菜单结构、逐字文案、
 //       勾选/禁用态、「恢复预设 ▸」子菜单与动作路由（经 NSObject target/action 路由到注入闭包，测试直接 perform 捕获）。
 // 独立事实来源：spec §6.1 定稿菜单逐字。
@@ -123,7 +123,7 @@ final class WiredMenuBuilderTests: XCTestCase {
         XCTAssertEqual(calls, ["restore:p-work", "restore:p-home"])
     }
 
-    /// 「恢复预设 ▸」末尾「用当前布局覆盖 ▸」（spec §4.3，票 07）：预设列表后分隔线 + 同序预设子菜单，按 id 路由
+    /// 「恢复预设 ▸」末尾「用当前布局覆盖 ▸」（spec §4.3，display-presets 票 07）：预设列表后分隔线 + 同序预设子菜单，按 id 路由
     func testOverwriteSubmenuFollowsRestoreEntriesAndRoutesByID() throws {
         let submenu = try XCTUnwrap(item(makeMenu(content: makeContent(overwriteWired: true)), titled: "恢复预设")?.submenu)
         XCTAssertEqual(submenu.items.map(\.isSeparatorItem), [false, false, true, false])

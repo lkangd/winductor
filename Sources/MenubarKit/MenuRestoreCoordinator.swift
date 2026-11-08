@@ -3,14 +3,14 @@ import Core
 import RestoreEngine
 import SnapshotEngine
 
-// MenuRestoreCoordinator.swift — 菜单接线协调器（票 19 起步；票 06 改为 display-presets spec §6.1 菜单）。
+// MenuRestoreCoordinator.swift — 菜单接线协调器（票 19 起步；display-presets 票 06 改为 display-presets spec §6.1 菜单）。
 // 职责：组装 TriggerChain（按预设判定）并把菜单各项接到引擎/服务——
 //   状态行 → StatusLineState 四态（当前观测拓扑 + PresetStore 中该拓扑的预设）；
 //   保存当前布局为预设… → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
 //   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
 //   「恢复中」同步图形（§8.1 三态，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
-//   管理预设… → 注入的打开入口（窗口归票 07；未注入置灰）；
+//   管理预设… → 注入的打开入口（窗口归 display-presets 票 07；未注入置灰）；
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
@@ -134,8 +134,8 @@ public final class MenuRestoreCoordinator {
     /// - presetStore / topologyProvider：触发链按预设判定（display-presets §5.1）与状态行、恢复预设子菜单同源
     /// - readiness：触发链未就绪门
     /// - savePreset：「保存当前布局为预设…」流程（RuntimeAssembly.makeSavePresetFlow）
-    /// - openPresetManager：「管理预设…」打开入口（票 07 注入；nil = 置灰）
-    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（票 07，与管理窗口同一实例；nil = 不显示）
+    /// - openPresetManager：「管理预设…」打开入口（display-presets 票 07 注入；nil = 置灰）
+    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（display-presets 票 07，与管理窗口同一实例；nil = 不显示）
     public init(presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
@@ -231,7 +231,7 @@ public final class MenuRestoreCoordinator {
 
     // MARK: 屏幕参数变化（观察者入口；单测直调）
 
-    /// 事件 → 触发链（防抖 1.5s 起；预判为插屏余震时 0.5s）+ 菜单刷新（状态行三态随拓扑切换）
+    /// 事件 → 触发链（防抖 1.5s 起；预判为插屏余震时 0.5s）+ 菜单刷新（状态行四态随拓扑切换）
     func screenParametersDidChange() {
         chain.screenParametersChanged()
         refreshMenuOnMain()

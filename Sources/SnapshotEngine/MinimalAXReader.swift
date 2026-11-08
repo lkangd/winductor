@@ -18,7 +18,7 @@ public struct WindowAXState: Sendable {
     }
 }
 
-/// AX 探测接缝：引擎只在写盘路径调用；测试注入 FakeAXProber 断言「轮询环零 AX」。
+/// AX 探测接缝：拍快照组装与恢复实况收集按需调用（CG 采样本身零 AX）；测试注入 FakeAXProber 计数调用。
 public protocol WindowAXProbing: Sendable {
     func probe(pid: Int32, windowID: UInt32) -> WindowAXState
 }

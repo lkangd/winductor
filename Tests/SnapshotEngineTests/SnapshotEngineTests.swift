@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import SnapshotEngine
 
-// SnapshotEngineTests — 一次性拍快照（display-presets spec §4.3/§8，票 03）：
+// SnapshotEngineTests — 一次性拍快照（display-presets 票 03，spec §4.3/§8）：
 //   不再后台轮询/差分/防抖落盘；capture() 按调用一次性组装（CG 枚举 + AX + SLS + 屏归属，口径见 SnapshotComposer），
 //   连同组装时刻的观测拓扑一并返回，存储归调用方（保存预设 → PresetStore）。
 // 接缝：SnapshotEngine.capture() + 注入 fake 枚举/AX/Spaces/拓扑。
