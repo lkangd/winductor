@@ -3,7 +3,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-// SnapshotComposer.swift — 快照内容映射（spec §7.3/§7.5）。仅在写盘路径执行。
+// SnapshotComposer.swift — 快照内容映射（spec §7.3）。仅在一次性拍快照路径执行（SnapshotEngine.capture）。
 // 口径：
 //   - 窗口→displayUUID + 比例几何：Core.LiveWindowLocator（Space 所属屏优先，无 Space 按 frame 兜底；
 //     归属屏无稳定 UUID 的窗不入快照）
@@ -30,8 +30,6 @@ public struct WindowGeometryOverride: Equatable, Sendable {
 public protocol DeferredGeometryPort: AnyObject, Sendable {
     /// 待补写窗的快照几何覆盖（windowID → 目标几何）
     func geometryOverrides() -> [UInt32: WindowGeometryOverride]
-    /// poller 检出「上轮不可见 → 本轮可见」的窗口（补写时机之一；实现方异步处理，不阻塞轮询）
-    func windowsBecameVisible(_ windowIDs: [UInt32])
 }
 
 public struct SnapshotComposer: Sendable {

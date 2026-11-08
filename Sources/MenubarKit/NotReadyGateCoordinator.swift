@@ -1,5 +1,4 @@
 import AppKit
-import SnapshotEngine
 
 // NotReadyGateCoordinator.swift — 未就绪链路协调器（票 18，spec §4.6/§8.3/§8.4）。
 // 职责：把 PermissionMonitor 的状态变化接到三处呈现——
@@ -29,11 +28,6 @@ public final class NotReadyGateCoordinator {
     public let monitor: PermissionMonitor
 
     private let statusItem: StatusPresenting
-    /// 就绪门已接线的快照引擎（RuntimeAssembly 产物；app 入口 target 不能 import SnapshotEngine，
-    /// 故由本协调器持有并在 start/stop 时同启同停。未就绪 = 引擎照常轮询但零落盘）
-    private let snapshotEngine: SnapshotEngine?
-    /// Workspace 事件加速器（spec §7.5 应用启退/Space 切换；全量装配注入，随引擎同启同停）
-    private let eventAccelerator: WorkspaceEventAccelerator?
     private let makeGuideWindow: () -> GuideWindowPresenting
     private var guideWindow: GuideWindowPresenting?
     /// 首启弹窗决策只做一次：此后任何状态变化不再创建引导窗（§8.4 运行中降级不弹窗）
@@ -52,35 +46,27 @@ public final class NotReadyGateCoordinator {
 
     public init(monitor: PermissionMonitor,
                 statusItem: StatusPresenting,
-                snapshotEngine: SnapshotEngine? = nil,
-                eventAccelerator: WorkspaceEventAccelerator? = nil,
                 makeGuideWindow: @escaping () -> GuideWindowPresenting = { PermissionGuideWindow() },
                 openScreenCaptureSettings: @escaping () -> Void = { SystemSettingsOpener.open(.screenCapture) },
                 makeReadyMenu: @escaping () -> NSMenu = { PlaceholderMenu.build() }) {
         self.monitor = monitor
         self.statusItem = statusItem
-        self.snapshotEngine = snapshotEngine
-        self.eventAccelerator = eventAccelerator
         self.makeGuideWindow = makeGuideWindow
         self.makeReadyMenu = makeReadyMenu
         self.menuActionCarrier = MenuActionCarrier(openScreenCaptureSettings)
     }
 
-    /// 启动：接线观察者回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3），
-    /// 并启动快照引擎与 Workspace 事件加速器（就绪门已接 monitor，未就绪零落盘）。
+    /// 启动：接线观察者回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3）。
+    /// 无后台快照引擎可启（票 03：快照只在保存预设时一次性拍）。
     public func start() {
         monitor.onStatusChange = { [weak self] status in self?.apply(status) }
         monitor.start()  // 立即首检，就绪门随即反映真实现状
         apply(monitor.status)
-        snapshotEngine?.start()
-        eventAccelerator?.start()
     }
 
-    /// 停止观察者、加速器与引擎（应用退出前由装配方调用）
+    /// 停止观察者（应用退出前由装配方调用）
     public func stop() {
-        eventAccelerator?.stop()
         monitor.stop()
-        snapshotEngine?.stop()
     }
 
     /// 强制重建菜单（票 19：恢复/撤销/屏幕拓扑变化等权限外事件后的刷新入口；
