@@ -55,7 +55,7 @@ public enum RuntimeAssembly {
         let sink = appLog ?? FileLogSink(directory: SnapshotStore.defaultLogDirectory, fileName: "app.log")
         let collector = DegradeCollectingLog(inner: sink)
         let adapter = SpaceAdapter(log: collector)
-        // 预设存储（此票只承载回滚快照；预设读写由票 03/04 接线）+ 过渡期内存现势快照（票 03/04 删除）
+        // 预设存储（回滚快照 + 触发链按预设判定；手动保存由票 03 接线）+ 过渡期内存现势快照（票 03/06 删除）
         let presetStore = PresetStore(directory: storeDirectory, log: collector)
         let liveSnapshots = TransitionalLiveSnapshots(log: collector)
         // 恢复/撤销管线独占 SkyLight：poller 采样/写盘与 pending 补写在管线运行期间让出
@@ -88,8 +88,10 @@ public enum RuntimeAssembly {
         let refreshBox = MenuRefreshBox()
         let menuCoordinator = MenuRestoreCoordinator(
             store: liveSnapshots,
+            presetStore: presetStore,
             restorer: restoreEngine,
             spaces: ManagedSpaceListProvider(adapter),
+            readiness: { [monitor] in monitor.status.isReady },
             scheduler: DispatchTriggerScheduler(),
             log: collector,
             degradeCollector: collector,

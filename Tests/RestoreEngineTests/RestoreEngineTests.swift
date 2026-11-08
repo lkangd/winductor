@@ -1367,3 +1367,63 @@ private final class Unchecked<T>: @unchecked Sendable {
     var value: T
     init(_ value: T) { self.value = value }
 }
+
+// MARK: - 协作式取消（display-presets 票 04：恢复中拓扑变化 → 中止本轮，已移动窗口不回滚）
+
+extension RestorePipelineTests {
+    /// 首个桥接移动期间被取消 → 剩余条目不再移动、不写几何，报告标记 cancelled；回滚快照照常保留
+    func testCancellationStopsRemainingItemsAndKeepsUndoSnapshot() throws {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("B-uuid", index: 1)],
+            windows: [
+                World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+                World.snapshotWindow(bundleID: "com.t.b", title: "Mail", sibling: 0,
+                                     display: "A-uuid", space: 1, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+            ])
+        let samples = [
+            World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
+            World.sample(wid: 202, bundleID: "com.t.b", title: "Mail",
+                         displayOrigin: bOrigin, displaySize: screenSize, x: 0.5, y: 0.1, w: 0.4, h: 0.4),
+        ]
+        let bridge = FakeBridge(
+            entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
+            byWindow: [101: 6, 202: 6])
+        let cancellation = RestoreCancellation()
+        bridge.moveHook = { cancellation.cancel() }  // 第一个窗口移动期间拓扑变了
+        let geometry = FakeGeometry()
+        let log = LogSpy()
+        let store = PresetStore(directory: try makeTempDir())
+        let engine = RestoreEngine(
+            store: store, spaces: bridge, enumerator: FakeEnumerator(samples), ax: FakeAX(),
+            geometry: geometry,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+
+        let report = try engine.restore(snapshot: snapshot, preserveUndo: false, cancellation: cancellation)
+
+        XCTAssertTrue(report.cancelled, "报告标记本轮被中止")
+        XCTAssertEqual(bridge.moves.count, 1, "取消后剩余条目不再桥接移动（已移动的不回滚）")
+        XCTAssertTrue(geometry.calls.isEmpty, "取消后不再写几何")
+        XCTAssertTrue(log.all.contains { $0.contains("[restore] action=cancelled") }, "中止落日志")
+        let key = Displays.topologyIdentity(of: World.displays(), rotation: { _ in 0 }).key
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.undoURL(topologyKey: key).path),
+                      "回滚快照照常保留（可撤销）")
+    }
+
+    /// 未取消的令牌不改变管线行为
+    func testUncancelledTokenRunsFullPipeline() throws {
+        let world = makeWorld()
+        let engine = makeEngine(world)
+        let report = try engine.restore(snapshot: world.snapshot, preserveUndo: false,
+                                        cancellation: RestoreCancellation())
+        XCTAssertFalse(report.cancelled)
+        XCTAssertEqual(report.okCount, 1)
+    }
+}

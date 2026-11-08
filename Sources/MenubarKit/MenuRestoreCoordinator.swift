@@ -5,12 +5,13 @@ import SnapshotEngine
 
 // MenuRestoreCoordinator.swift — 菜单接线协调器（票 19，spec §8.1/§8.2/§8.5/§8.6）。
 // 职责：组装 TriggerChain（票 17 状态机）并把菜单七项接到引擎/服务——
-//   立即恢复 → chain.restoreNow()（best-effort，A6 命令级一致）；恢复经图标装饰器切「恢复中」同步图形
+//   立即恢复 → chain.restoreNow()（过渡：当前拓扑默认预设，票 06 删除）；恢复经图标装饰器切「恢复中」同步图形
 //   （§8.1 三态，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp，唯一设置项 §8.2）；
 //   Finder 入口 → 目录打开接缝（目录不存在先创建，09 四）；
-//   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新（状态行三态 §8.2）。
+//   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新（状态行三态 §8.2）；
+//   触发链判定结果（display-presets §5.1）→ handle(outcome:)（过渡：系统通知；票 05 换成 popover）。
 // 全部系统单例经协议注入（UNUserNotificationCenter/SMAppService 不可单测；可测接缝全走 fake）。
 
 /// 系统通知投递接缝（生产：UserNotificationPoster 包 UNUserNotificationCenter；测试：fake 收集）
@@ -64,6 +65,13 @@ final class RestoringIconDecorator: SnapshotRestoring, @unchecked Sendable {
         return try inner.restore(snapshot: snapshot, preserveUndo: preserveUndo)
     }
 
+    /// 取消令牌必须转发（触发链恢复中拓扑变化即中止本轮）
+    func restore(snapshot: Snapshot, preserveUndo: Bool, cancellation: RestoreCancellation?) throws -> RestoreReport {
+        Self.runOnMain { [icon] in icon.showRestoringIcon() }
+        defer { Self.runOnMain { [icon] in icon.showNormalIcon() } }
+        return try inner.restore(snapshot: snapshot, preserveUndo: preserveUndo, cancellation: cancellation)
+    }
+
     /// 图标属 UI 状态：恢复管线现跑在后台队列（自动路径调度队列 / 手动路径 restoreEnqueue），
     /// NSStatusItem 换图必须主线程（防跨线程 UI 变异）
     private static func runOnMain(_ work: @escaping () -> Void) {
@@ -71,18 +79,18 @@ final class RestoringIconDecorator: SnapshotRestoring, @unchecked Sendable {
     }
 }
 
-/// 通知汇集盒（init 两段初始化用：onNotice 闭包先接盒，全部存储属性就绪后再挂 self 处理器）
-private final class NoticeSink: @unchecked Sendable {
+/// 回调汇集盒（init 两段初始化用：onNotice/onOutcome 闭包先接盒，全部存储属性就绪后再挂 self 处理器）
+private final class NoticeSink<Payload>: @unchecked Sendable {
     private let lock = NSLock()
-    private var handler: ((RestoreNotice) -> Void)?
+    private var handler: ((Payload) -> Void)?
 
-    func set(_ newHandler: @escaping (RestoreNotice) -> Void) {
+    func set(_ newHandler: @escaping (Payload) -> Void) {
         lock.lock()
         handler = newHandler
         lock.unlock()
     }
 
-    func call(_ notice: RestoreNotice) {
+    func call(_ notice: Payload) {
         lock.lock()
         let current = handler
         lock.unlock()
@@ -115,10 +123,15 @@ public final class MenuRestoreCoordinator {
     }
     private let menuWillOpenCarrier: MenuWillOpenCarrier = MenuWillOpenCarrier()
 
+    /// - store：过渡期内存现势快照，仅供状态行旧三态（票 06 换成预设口径后删除）
+    /// - presetStore / topologyProvider / readiness：触发链按预设判定（display-presets §5.1）
     public init(store: TransitionalLiveSnapshots,
+                presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
                 displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
+                topologyProvider: @escaping () -> ObservedTopology = ObservedTopology.current,
+                readiness: @escaping () -> Bool = { true },
                 scheduler: TriggerChainScheduling = DispatchTriggerScheduler(),
                 restoreEnqueue: @escaping (@escaping @Sendable () -> Void) -> Void = { work in
                     DispatchQueue(label: "winductor.restore", qos: .userInitiated).async(execute: work)
@@ -148,19 +161,23 @@ public final class MenuRestoreCoordinator {
         self.log = log
         // 图标三态装饰（恢复开始/结束换图；§8.1），降级不换图
         let decorated = RestoringIconDecorator(inner: restorer, icon: icon)
-        let noticeSink = NoticeSink()
-        chain = TriggerChain(store: store,
+        let noticeSink = NoticeSink<RestoreNotice>()
+        let outcomeSink = NoticeSink<TriggerOutcome>()
+        chain = TriggerChain(presets: presetStore,
                              restorer: decorated,
                              spaces: spaces,
-                             displaysProvider: displaysProvider,
+                             topologyProvider: topologyProvider,
+                             readiness: readiness,
                              scheduler: scheduler,
                              log: log,
                              degradeCollector: degradeCollector,
                              restoreEnqueue: restoreEnqueue,
-                             onNotice: { noticeSink.call($0) })
+                             onNotice: { noticeSink.call($0) },
+                             onOutcome: { outcomeSink.call($0) })
         // 引用 self 的成员放在全部存储属性初始化之后
         menuWillOpenCarrier.coordinator = self
         noticeSink.set { [weak self] notice in self?.handle(notice: notice) }
+        outcomeSink.set { [weak self] outcome in self?.handle(outcome: outcome) }
     }
 
     deinit {
@@ -200,6 +217,21 @@ public final class MenuRestoreCoordinator {
     /// 通知桥接（TriggerChain onNotice → 系统通知投递 + 菜单刷新）
     func handle(notice: RestoreNotice) {
         notifier.deliver(title: notice.title, body: notice.body)
+        refreshMenuOnMain()
+    }
+
+    /// 判定结果桥接（TriggerChain onOutcome，spec §5.1）。过渡形态：自动恢复 / 请求提示走系统通知，
+    /// 收起提示无 UI 可收；票 05 把这里换成恢复提示与自动恢复告知 popover（§6.2/§6.3）。
+    func handle(outcome: TriggerOutcome) {
+        switch outcome {
+        case .autoRestored(let restored):
+            notifier.deliver(title: restored.notice.title, body: "已按「\(restored.presetName)」恢复。" + restored.notice.body)
+        case .promptNeeded(let topology):
+            notifier.deliver(title: "有可用预设",
+                             body: "当前屏幕组合有 \(topology.presets.count) 个预设，可用菜单「立即恢复」恢复。")
+        case .dismissPrompt:
+            break
+        }
         refreshMenuOnMain()
     }
 

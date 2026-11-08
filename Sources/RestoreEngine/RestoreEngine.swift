@@ -55,6 +55,27 @@ public struct RestoreReport: Equatable, Sendable {
     public let untouchedLiveCount: Int
     /// 回滚快照落点
     public let undoSnapshotURL: URL?
+    /// 本轮被协作式取消（触发链：恢复中拓扑变化）：已动的窗口不回滚，剩余条目计 skip
+    public var cancelled: Bool = false
+}
+
+/// 恢复协作式取消令牌（display-presets spec §5.1「恢复进行中拓扑变了：立即中止本轮」）。
+/// 触发链持有并在拓扑变化时 cancel()；引擎在逐窗口/逐层之间检查，已移动的窗口不回滚，
+/// 回滚快照照常保留（可撤销）。线程安全：事件线程写、管线线程读。
+public final class RestoreCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _cancelled = false
+
+    public init() {}
+
+    public func cancel() {
+        lock.lock(); _cancelled = true; lock.unlock()
+    }
+
+    public var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _cancelled
+    }
 }
 
 /// 撤销结果（票 16，spec §6.3/§8.6）：计数口径与 RestoreReport 一致，另带两段式撤销的全屏待办数。
@@ -183,16 +204,24 @@ public final class RestoreEngine: @unchecked Sendable {
     /// 打乱的恢复结果，重写会让「撤销」回到乱序态而非首轮恢复前）
     @discardableResult
     public func restore(snapshot: Snapshot, preserveUndo: Bool) throws -> RestoreReport {
+        try restore(snapshot: snapshot, preserveUndo: preserveUndo, cancellation: nil)
+    }
+
+    /// cancellation = 协作式取消令牌（触发链传入；nil = 不可取消）。取消后剩余条目计 skip，
+    /// 报告 cancelled = true；回滚快照已在动手前写好，照常可撤销
+    @discardableResult
+    public func restore(snapshot: Snapshot, preserveUndo: Bool,
+                        cancellation: RestoreCancellation?) throws -> RestoreReport {
         // 拓扑在独占内读取：排队等前一条管线期间可能插拔屏
         let counts = try session.exclusive("restore") { () throws -> PipelineCounts in
             let displays = try activeDisplays(label: "restore")
             return try runPipelineExclusive(snapshot: snapshot, mode: .restore, displays: displays,
-                                            preserveUndo: preserveUndo)
+                                            preserveUndo: preserveUndo, cancellation: cancellation)
         }
         return RestoreReport(
             okCount: counts.okCount, skipCount: counts.skipCount, failCount: counts.failCount,
             matchedCount: counts.matchedCount, untouchedLiveCount: counts.untouchedLiveCount,
-            undoSnapshotURL: counts.undoSnapshotURL)
+            undoSnapshotURL: counts.undoSnapshotURL, cancelled: counts.cancelled)
     }
 
     /// 撤销入口（票 16，spec §6.3/§8.6）：读回滚快照整体回滚——把恢复前实况当作恢复目标跑一次恢复语义
@@ -280,11 +309,13 @@ public final class RestoreEngine: @unchecked Sendable {
         let untouchedLiveCount: Int
         let fullscreenPendingCount: Int
         let undoSnapshotURL: URL
+        let cancelled: Bool
     }
 
     /// 调用方须持有 session.exclusive（拓扑与回滚快照也须在独占内读取）
     private func runPipelineExclusive(snapshot: Snapshot, mode: RunMode,
-                                      displays: [Displays.Info], preserveUndo: Bool) throws -> PipelineCounts {
+                                      displays: [Displays.Info], preserveUndo: Bool,
+                                      cancellation: RestoreCancellation? = nil) throws -> PipelineCounts {
         let undoURL = store.undoURL(topologyKey: topologyKey(of: displays))
         // 分段计时（恢复提速：每轮一行 perf，定位瓶颈段）
         let tStart = Date()
@@ -354,14 +385,25 @@ public final class RestoreEngine: @unchecked Sendable {
         // 管线死线：无论哪层被系统级楔死拖慢，通知计数必须有界到达（用户实测通知迟到数分钟）
         let deadline = Date().addingTimeInterval(pipelineDeadlineSeconds)
         runPendingGeometry = []
+        // deadlineHit = 本轮停手（死线 或 协作式取消）：剩余项一律计 skip，后续层不再动手
         var deadlineHit = false
+        var cancelled = false
         func deadlineExceeded(_ processed: Int, _ total: Int) -> Bool {
-            if Date() < deadline { return false }
-            if !deadlineHit {
+            if deadlineHit { return true }
+            if cancellation?.isCancelled == true {
                 deadlineHit = true
-                log?.write("[restore] action=deadline detail=waited=\(Int(pipelineDeadlineSeconds))s remaining=\(total - processed) items-marked-skip")
+                cancelled = true
+                log?.write("[restore] action=cancelled detail=remaining=\(total - processed) items-marked-skip")
+                return true
             }
+            if Date() < deadline { return false }
+            deadlineHit = true
+            log?.write("[restore] action=deadline detail=waited=\(Int(pipelineDeadlineSeconds))s remaining=\(total - processed) items-marked-skip")
             return true
+        }
+        /// 层间取消点（只查取消，不查死线：死线语义沿用「L2 内触发即后续层不动手」）
+        func stopBeforeLayer(_ processed: Int, _ total: Int) -> Bool {
+            deadlineHit || (cancellation?.isCancelled == true && deadlineExceeded(processed, total))
         }
         var actProcessed = 0
         lastBridgeMoveAt = nil
@@ -390,10 +432,12 @@ public final class RestoreEngine: @unchecked Sendable {
         // → 全程上限 ≈ ceil(N/8)×1.5s；超时项转延迟几何（消费轮询补写），通知秒级到达
         var deferredCount = 0
         let tL1 = Date()
-        if !deadlineHit {
+        if !stopBeforeLayer(actProcessed, actItems.count) {
             var outcomes = [PlaceOutcome?](repeating: nil, count: actItems.count)
             DispatchQueue.concurrentPerform(iterations: actItems.count) { i in
-                let outcome = place(actItems[i], activeSpaceIDs: activeSpaceIDs)
+                // 协作式取消点（逐窗）：取消后未开写的窗计 skip
+                let outcome = cancellation?.isCancelled == true
+                    ? .skipped : place(actItems[i], activeSpaceIDs: activeSpaceIDs)
                 l1Lock.lock(); outcomes[i] = outcome; l1Lock.unlock()
             }
             for (i, outcome) in outcomes.enumerated() {
@@ -415,7 +459,7 @@ public final class RestoreEngine: @unchecked Sendable {
         let tL3 = Date()
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
         var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
-        if !deadlineHit {
+        if !stopBeforeLayer(actProcessed, actItems.count) {
             restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
             layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: spaces.isBridgeAvailable(),
                                     mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
@@ -425,7 +469,7 @@ public final class RestoreEngine: @unchecked Sendable {
         let l4Items = plan.filter(\.isMinimizedRestore)
         let minimizedLayerOK = spaces.isLayerAvailable(.minimized)
         var ok4 = 0, skip4 = 0, fail4 = 0
-        if !deadlineHit {
+        if !stopBeforeLayer(actProcessed, actItems.count) {
             for item in l4Items {
                 restoreMinimizedWindow(item, layerOK: minimizedLayerOK,
                                        ok: &ok4, skipped: &skip4, failed: &fail4)
@@ -462,7 +506,8 @@ public final class RestoreEngine: @unchecked Sendable {
             matchedCount: outcome.matches.count,
             untouchedLiveCount: outcome.unmatchedLiveIndexes.count,
             fullscreenPendingCount: pending,
-            undoSnapshotURL: undoURL)
+            undoSnapshotURL: undoURL,
+            cancelled: cancelled)
     }
 
     // MARK: - 行动计划（匹配结果 → 每条目动作/跳过判定；skip 行只记一次）

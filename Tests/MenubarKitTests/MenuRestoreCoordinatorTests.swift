@@ -95,6 +95,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var openedFolders: [URL] = []
     private var refreshCalls = 0
     private var store: TransitionalLiveSnapshots!
+    private var presetStore: PresetStore!
     private var restorer: FakeRestorer!
     private var undo: FakeUndo!
     private var enqueueUsed = false
@@ -113,6 +114,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         openedFolders = []
         refreshCalls = 0
         store = TransitionalLiveSnapshots()
+        presetStore = PresetStore(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("winductor-menutests-\(UUID().uuidString)"))
         restorer = FakeRestorer()
         undo = FakeUndo()
         notifier = FakeNotifier()
@@ -129,7 +132,15 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
-    /// 现势快照写入（与 displays 的 UUID 集合一致 → matchSnapshot 精确命中）
+    /// 当前 displays 的拓扑观测（屏并排贴合；不读真实 CG）
+    private var observedTopology: ObservedTopology {
+        ObservedTopology(screens: displays.map {
+            TopologyScreen(uuid: $0.uuid ?? "", name: "屏", frame: $0.bounds, pixelWidth: 2000, pixelHeight: 1200,
+                           rotation: 0, isMirrored: false)
+        })
+    }
+
+    /// 现势快照写入（状态行旧三态）+ 当前拓扑存一个预设（首个默认自动；触发链与立即恢复按预设判定）
     private func writeLiveSnapshot() throws {
         let topology = displays.map {
             TopologyDisplay(uuid: $0.uuid ?? "", localizedName: "屏",
@@ -139,14 +150,17 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         let spaces = topology.map { SnapshotSpace(displayUUID: $0.uuid, index: 1, kind: .user, fullscreenAppBundleID: nil) }
         let snapshot = Snapshot(capturedAt: Date(), topology: topology, spaces: spaces, windows: [])
         store.write(snapshot, topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: displays.compactMap(\.uuid)))
+        try presetStore.addPreset(name: "工作", snapshot: snapshot, topology: observedTopology)
     }
 
     private func makeCoordinator() -> MenuRestoreCoordinator {
         MenuRestoreCoordinator(
             store: store,
+            presetStore: presetStore,
             restorer: restorer,
             spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
+            topologyProvider: { [weak self] in self?.observedTopology ?? ObservedTopology(screens: []) },
             scheduler: scheduler,
             restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
             undo: undo,
@@ -193,9 +207,11 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         collector.write("[degrade] layer=L2 reason=no-op detail=x")
         let coordinator = MenuRestoreCoordinator(
             store: store,
+            presetStore: presetStore,
             restorer: restorer,
             spaces: FakeSpaceList(["d-1#1#0", "d-2#1#0", "d-3#1#0", "d-4#1#0"]),
             displaysProvider: { [weak self] in self?.displays ?? [] },
+            topologyProvider: { [weak self] in self?.observedTopology ?? ObservedTopology(screens: []) },
             scheduler: scheduler,
             restoreEnqueue: { [weak self] work in self?.enqueueUsed = true; work() },
             degradeCollector: collector,
@@ -216,17 +232,19 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     func testScreenParametersChangeDrivesAutoRestoreAndNotice() throws {
         try writeLiveSnapshot()
         let coordinator = makeCoordinator()
-        // 模拟插回：集合变大（链基线在 start 时建立；此处直接改 displays 后发事件）
+        // 模拟插屏：拓扑变化（链基线在构造时建立；此处直接改 displays 后发事件）
         displays = Self.makeDisplays(["d-1", "d-2", "d-3", "d-4"])
-        try writeLiveSnapshot()  // 新拓扑的现势快照
+        try writeLiveSnapshot()  // 新拓扑的自动预设
         coordinator.screenParametersDidChange()
 
         scheduler.fireAll()  // 防抖 1.5s 到点
         scheduler.fireAll()  // 稳定判据第 1 轮到点
         scheduler.fireAll()  // 稳定判据第 2 轮到点 → 触发恢复
 
-        XCTAssertEqual(restorer.restoreCalls, 1, "集合变大且精确匹配快照 → 自动恢复一次")
+        XCTAssertEqual(restorer.restoreCalls, 1, "新拓扑有自动预设 → 自动恢复一次")
         XCTAssertEqual(notifier.deliveries.first?.title, "恢复完成")
+        XCTAssertEqual(notifier.deliveries.first?.body, "已按「工作」恢复。恢复完成：12 窗口归位、1 跳过、0 失败",
+                       "过渡：自动恢复告知暂走系统通知（票 05 换 popover）")
         XCTAssertEqual(refreshCalls >= 1, true, "屏幕变化必须刷新菜单（状态行三态）")
     }
 
@@ -321,13 +339,16 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
 
     // MARK: 通知桥接与菜单刷新
 
-    /// 部分拓扑提示通知经桥接投递（§6.2 A5）
-    func testPartialTopologyNoticeBridgesToNotifier() {
+    /// 判定结果桥接（过渡形态，票 05 换 popover）：请求提示 → 系统通知；收起提示 → 无投递
+    func testOutcomeBridgeDeliversPromptAndIgnoresDismiss() throws {
         let coordinator = makeCoordinator()
-        coordinator.handle(notice: .partialTopology(PartialTopologyNotice(currentDisplayCount: 2)))
+        try writeLiveSnapshot()
+        let topology = try XCTUnwrap(presetStore.topology(key: observedTopology.identity.key))
 
-        XCTAssertEqual(notifier.deliveries.count, 1)
-        XCTAssertEqual(notifier.deliveries.first?.title, "未能自动恢复")
+        coordinator.handle(outcome: .dismissPrompt)
+        XCTAssertTrue(notifier.deliveries.isEmpty)
+        coordinator.handle(outcome: .promptNeeded(topology))
+        XCTAssertEqual(notifier.deliveries.first?.title, "有可用预设")
     }
 
     /// 菜单打开时原位刷新：状态行/撤销可用性按构建时刻现状重算

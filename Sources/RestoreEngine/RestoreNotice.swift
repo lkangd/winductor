@@ -1,7 +1,7 @@
 import Core
 import Foundation
 
-// RestoreNotice.swift — 恢复通知结构（票 17，spec §8.5/§6.2）。
+// RestoreNotice.swift — 恢复通知结构（票 17，spec §8.5）+ 触发链判定结果（display-presets 票 04，spec §5.1）。
 // 只产出结构（计数 + 降级附注 + 文案），系统通知投递归票 19（UNUserNotificationCenter 接线）。
 // 降级附注来源：与 RestoreEngine/SpaceAdapter 共用的 [degrade] 日志收集 sink（DegradeCollectingLog）。
 
@@ -50,54 +50,74 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
     }
 }
 
-/// 部分拓扑提示通知（spec §6.2「插回后仍少一块屏：不自动恢复，通知提示」，A5）
-public struct PartialTopologyNotice: Equatable, Sendable {
-    /// 当前屏幕数（提示语境）
-    public let currentDisplayCount: Int
-
-    public init(currentDisplayCount: Int) {
-        self.currentDisplayCount = currentDisplayCount
-    }
-
-    public var title: String { "未能自动恢复" }
-
-    /// 文案照 09 通知风格；指向菜单「立即恢复」best-effort 单屏恢复入口（03 #8）
-    public var body: String {
-        "当前屏幕集合与任何快照都不完全一致，未自动恢复；可用菜单「立即恢复」按当前屏幕 best-effort 恢复。"
-    }
-}
-
-/// 恢复通知（票 19 投递接缝的载荷类型）
+/// 恢复通知（系统通知投递接缝的载荷类型；票 04 起只剩完成通知，部分拓扑通知随 spec §5.1 删除）
 public enum RestoreNotice: Equatable, Sendable {
     case completed(RestoreCompletionNotice)
-    case partialTopology(PartialTopologyNotice)
 
     /// 日志 kind= 字段用（短横线形）
     public var kind: String {
         switch self {
         case .completed: return "completed"
-        case .partialTopology: return "partial-topology"
         }
     }
 
     public var title: String {
         switch self {
         case .completed(let notice): return notice.title
-        case .partialTopology(let notice): return notice.title
         }
     }
 
     public var body: String {
         switch self {
         case .completed(let notice): return notice.body
-        case .partialTopology(let notice): return notice.body
         }
     }
 
-    /// 完成通知的触发方式（部分拓扑提示无此字段）
+    /// 完成通知的触发方式
     public var trigger: RestoreTriggerKind? {
-        if case .completed(let notice) = self { return notice.trigger }
-        return nil
+        switch self {
+        case .completed(let notice): return notice.trigger
+        }
+    }
+}
+
+/// 触发链判定结果（display-presets spec §5.1 判定表 → 菜单栏 UI；票 05 popover 挂 TriggerChain.onOutcome）。
+/// 只在拓扑变化后的判定产出（拓扑未变的事件、应用启动、被中止的恢复轮次均不产出）。
+public enum TriggerOutcome: Equatable, Sendable {
+    /// 有自动预设：已直接恢复（§6.3 自动恢复告知；含失败——notice.failureDetail 非 nil）
+    case autoRestored(AutoRestoredOutcome)
+    /// 有预设但无自动：请求弹出 / 替换恢复提示（§6.2）；载荷 = 判定时刻的拓扑与预设列表
+    case promptNeeded(PresetTopology)
+    /// 新拓扑无预设 / 镜像中 / 未就绪：不恢复不弹，若恢复提示开着则收起（§6.2「新拓扑无预设则收起」）
+    case dismissPrompt
+
+    /// 日志 result= 字段用
+    public var kind: String {
+        switch self {
+        case .autoRestored: return "auto-restored"
+        case .promptNeeded: return "prompt"
+        case .dismissPrompt: return "dismiss-prompt"
+        }
+    }
+}
+
+/// 自动恢复结果（§6.3 告知所需：预设名、计数与降级附注、是否附「改用其他预设…」）
+public struct AutoRestoredOutcome: Equatable, Sendable {
+    public let topologyKey: String
+    public let presetID: String
+    public let presetName: String
+    /// 计数 + 降级附注（口径同手动恢复完成通知）
+    public let notice: RestoreCompletionNotice
+    /// 拓扑下还有其他预设（告知附「改用其他预设…」）
+    public let hasOtherPresets: Bool
+
+    public init(topologyKey: String, presetID: String, presetName: String,
+                notice: RestoreCompletionNotice, hasOtherPresets: Bool) {
+        self.topologyKey = topologyKey
+        self.presetID = presetID
+        self.presetName = presetName
+        self.notice = notice
+        self.hasOtherPresets = hasOtherPresets
     }
 }
 
