@@ -259,6 +259,9 @@ private final class Rig {
     }
 
     func key(_ screens: [TopologyScreen]) -> String { ObservedTopology(screens: screens).identity.key }
+
+    /// 判定结果（去掉每轮变化先行的 topologyChanging）
+    var judgements: [TriggerOutcome] { outcomes.items.filter { $0 != .topologyChanging } }
 }
 
 // MARK: - 判定表（spec §5.1 四行）
@@ -279,15 +282,17 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(rig.restorer.snapshots.map { $0.windows.first?.bundleID }, ["工作"], "恢复的是该拓扑的自动预设")
         XCTAssertEqual(rig.restorer.preserveUndoFlags, [false])
         let steps = triggerSteps(rig.spy.all)
-        XCTAssertEqual(steps, ["baseline", "event", "debounce-settle", "space-stable", "space-stable",
+        // 事件后紧跟的 outcome = topologyChanging（作废旧提示），链末 outcome = 判定结果
+        XCTAssertEqual(steps, ["baseline", "event", "outcome", "debounce-settle", "space-stable", "space-stable",
                                "topology-match", "restore-start", "restore-done", "outcome"])
         let stamps = triggerTimestamps(rig.spy.all)
         XCTAssertEqual(stamps.count, steps.count)
-        XCTAssertEqual(stamps[2].timeIntervalSince(stamps[1]), 1.5, accuracy: 0.001, "防抖静默期 1.5s")
-        XCTAssertEqual(stamps[4].timeIntervalSince(stamps[3]), 0.5, accuracy: 0.001, "Space 稳定轮间隔 500ms")
+        XCTAssertEqual(stamps[2].timeIntervalSince(stamps[1]), 0, accuracy: 0.001, "作废旧提示不等防抖")
+        XCTAssertEqual(stamps[3].timeIntervalSince(stamps[1]), 1.5, accuracy: 0.001, "防抖静默期 1.5s")
+        XCTAssertEqual(stamps[5].timeIntervalSince(stamps[4]), 0.5, accuracy: 0.001, "Space 稳定轮间隔 500ms")
         XCTAssertEqual(rig.store.topology(key: rig.key([screenA, screenB]))?.lastRestoredPresetID, preset.id,
                        "恢复成功后记录最近恢复预设")
-        XCTAssertEqual(rig.outcomes.items, [.autoRestored(AutoRestoredOutcome(
+        XCTAssertEqual(rig.judgements, [.autoRestored(AutoRestoredOutcome(
             topologyKey: rig.key([screenA, screenB]), presetID: preset.id, presetName: "工作",
             notice: RestoreCompletionNotice(trigger: .auto, okCount: 2, skipCount: 1, failCount: 0,
                                             degradedLayerNames: [], failureDetail: nil),
@@ -307,7 +312,7 @@ final class TriggerChainTests: XCTestCase {
 
         XCTAssertTrue(rig.restorer.snapshots.isEmpty, "无自动预设不恢复")
         let topology = try XCTUnwrap(rig.store.topology(key: rig.key([screenA, screenB])))
-        XCTAssertEqual(rig.outcomes.items, [.promptNeeded(topology)])
+        XCTAssertEqual(rig.judgements, [.promptNeeded(topology)])
         XCTAssertEqual(topology.presets.map(\.id).first, first.id)
         XCTAssertEqual(triggerResults(rig.spy.all).suffix(2), ["prompt", "prompt"], "topology-match=prompt → outcome=prompt")
     }
@@ -321,7 +326,7 @@ final class TriggerChainTests: XCTestCase {
         rig.change(to: [screenA, screenB])
 
         XCTAssertTrue(rig.restorer.snapshots.isEmpty)
-        XCTAssertEqual(rig.outcomes.items, [.dismissPrompt])
+        XCTAssertEqual(rig.judgements, [.dismissPrompt])
         XCTAssertEqual(triggerSteps(rig.spy.all).filter { $0 == "restore-start" }.count, 0)
         XCTAssertTrue(rig.spy.all.contains { $0.contains("step=topology-match") && $0.contains("result=no-preset") })
     }
@@ -337,7 +342,7 @@ final class TriggerChainTests: XCTestCase {
         rig.change(to: [screenA, mirroredB])
 
         XCTAssertTrue(rig.restorer.snapshots.isEmpty, "镜像中不自动恢复")
-        XCTAssertEqual(rig.outcomes.items, [.dismissPrompt], "镜像中不弹提示（开着的提示收起）")
+        XCTAssertEqual(rig.judgements, [.dismissPrompt], "镜像中不弹提示（开着的提示收起）")
         XCTAssertTrue(rig.spy.all.contains { $0.contains("result=mirrored") })
     }
 
@@ -351,7 +356,7 @@ final class TriggerChainTests: XCTestCase {
         rig.change(to: [screenA, screenB])
 
         XCTAssertTrue(rig.restorer.snapshots.isEmpty)
-        XCTAssertEqual(rig.outcomes.items, [.dismissPrompt])
+        XCTAssertEqual(rig.judgements, [.dismissPrompt])
         XCTAssertTrue(rig.spy.all.contains { $0.contains("result=not-ready") })
     }
 
@@ -480,6 +485,38 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertFalse(triggerSteps(rig.spy.all).contains("restore-cancel"))
     }
 
+    // MARK: - 拓扑再变：旧提示即刻作废（spec §6.2）
+
+    /// 拓扑变化事件一到（防抖/稳定判据之前）就发 topologyChanging，开着的旧提示不再可点；每轮变化只发一次
+    func testTopologyChangeEventInvalidatesPromptBeforeDebounce() throws {
+        let rig = try rig(start: [screenA, screenB])
+        try rig.addPreset("单屏", on: [screenA], auto: false)
+        rig.makeChain()
+
+        rig.topology.set([screenA])
+        rig.chain.screenParametersChanged()
+        XCTAssertEqual(rig.outcomes.items, [.topologyChanging], "事件到达即作废旧提示，不等防抖")
+
+        rig.chain.screenParametersChanged()  // 二段事件：同一轮变化不重复发
+        rig.scheduler.runUntilIdle()
+
+        let topology = try XCTUnwrap(rig.store.topology(key: rig.key([screenA])))
+        XCTAssertEqual(rig.outcomes.items, [.topologyChanging, .promptNeeded(topology)])
+    }
+
+    /// 事件时拓扑源尚未反映变化：settle 判出「变了」时补发 topologyChanging（先于判定结果）
+    func testLateTopologyChangeInvalidatesPromptAtSettle() throws {
+        let rig = try rig(start: [screenA, screenB])
+        rig.makeChain()
+
+        rig.chain.screenParametersChanged()
+        XCTAssertTrue(rig.outcomes.items.isEmpty)
+        rig.topology.set([screenA])
+        rig.scheduler.runUntilIdle()
+
+        XCTAssertEqual(rig.outcomes.items, [.topologyChanging, .dismissPrompt])
+    }
+
     // MARK: - Space 稳定判据
 
     func testSpaceInstabilityRestartsConsecutiveRounds() throws {
@@ -492,6 +529,34 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(rig.restorer.snapshots.count, 1)
         XCTAssertEqual(triggerResults(rig.spy.all.filter { $0.contains("step=space-stable") }),
                        ["sampled", "changed", "stable"])
+    }
+
+    /// Space 列表长期不可用 → 稳定判据放弃采样，但这次拓扑变化照样判定（spec §5.1「任何拓扑变化都判定」）
+    func testStabilityGiveUpOnUnavailableSpacesStillJudges() throws {
+        let rig = try rig(start: [screenA], spaces: FakeSpaceLists(queue: [nil]))
+        try rig.addPreset("工作", on: [screenA, screenB], auto: false)
+        rig.makeChain()
+
+        rig.change(to: [screenA, screenB])
+
+        let topology = try XCTUnwrap(rig.store.topology(key: rig.key([screenA, screenB])))
+        XCTAssertEqual(rig.outcomes.items.last, .promptNeeded(topology), "放弃采样后仍按当前拓扑判定")
+        XCTAssertTrue(rig.spy.all.contains { $0.contains("step=space-stable") && $0.contains("result=give-up") })
+        XCTAssertEqual(rig.scheduler.pendingCount, 0)
+    }
+
+    /// Space 持续抖动超上限 → 放弃采样后照样判定；新拓扑无预设 → 收起开着的提示（不留旧提示）
+    func testStabilityGiveUpOnChurnStillJudges() throws {
+        let churn = (0..<TriggerChainConstants.spaceStableMaxSamples).map { ["s\($0)"] as [String]? }
+        let rig = try rig(start: [screenA, screenB], spaces: FakeSpaceLists(queue: churn))
+        try rig.addPreset("工作", on: [screenA, screenB])
+        rig.makeChain()
+
+        rig.change(to: [screenA])
+
+        XCTAssertEqual(rig.outcomes.items.last, .dismissPrompt)
+        XCTAssertTrue(rig.spy.all.contains { $0.contains("result=give-up") && $0.contains("churning") })
+        XCTAssertTrue(rig.restorer.snapshots.isEmpty)
     }
 
     /// 稳定判据进行中来了拓扑不变的新事件：防抖重置后回到采样继续，不落零动作分支
@@ -508,7 +573,7 @@ final class TriggerChainTests: XCTestCase {
 
         XCTAssertEqual(rig.restorer.snapshots.count, 1)
         XCTAssertEqual(triggerSteps(rig.spy.all),
-                       ["baseline", "event", "debounce-settle", "space-stable", "event", "debounce-settle",
+                       ["baseline", "event", "outcome", "debounce-settle", "space-stable", "event", "debounce-settle",
                         "space-stable", "topology-match", "restore-start", "restore-done", "outcome"])
         XCTAssertTrue(rig.spy.all.filter { $0.contains("step=debounce-settle") }[1].contains("resume=stability"))
     }
@@ -523,7 +588,7 @@ final class TriggerChainTests: XCTestCase {
 
         rig.change(to: [screenA, screenB])
 
-        guard case .autoRestored(let restored)? = rig.outcomes.items.first else {
+        guard case .autoRestored(let restored)? = rig.judgements.first else {
             return XCTFail("应产出自动恢复结果（含失败）：\(rig.outcomes.items)")
         }
         XCTAssertEqual(restored.notice.title, "恢复失败")
@@ -548,7 +613,7 @@ final class TriggerChainTests: XCTestCase {
         chain.screenParametersChanged()
         rig.scheduler.runUntilIdle()
 
-        guard case .autoRestored(let restored)? = outcomes.items.first else { return XCTFail("\(outcomes.items)") }
+        guard case .autoRestored(let restored)? = outcomes.items.last else { return XCTFail("\(outcomes.items)") }
         XCTAssertEqual(restored.notice.degradedLayerNames, ["Space 归属"])
         XCTAssertTrue(restored.hasOtherPresets, "拓扑下还有其他预设 → 告知附「改用其他预设…」")
     }
@@ -666,7 +731,7 @@ final class TriggerChainAftershockTests: XCTestCase {
 
         XCTAssertEqual(rig.restorer.snapshots.map { $0.windows.first?.bundleID }, ["工作", "工作"])
         XCTAssertEqual(rig.restorer.preserveUndoFlags, [false, true], "重放不得覆盖首轮的回滚快照")
-        XCTAssertEqual(rig.outcomes.items.count, 1, "重放不重复告知")
+        XCTAssertEqual(rig.judgements.count, 1, "重放不重复告知")
         let lines = Array(rig.spy.all.dropFirst(before))
         XCTAssertEqual(triggerSteps(lines), ["event", "debounce-settle", "aftershock-reapply", "space-stable",
                                              "restore-start", "restore-done"])

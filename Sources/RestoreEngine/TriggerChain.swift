@@ -7,6 +7,8 @@ import Foundation
 //   未就绪 / 镜像中 → 零动作；拓扑无预设 → 零动作（并要求收起恢复提示）；
 //   有自动预设 → 直接恢复（RestoreEngine 一次性管线）→ 记录最近恢复 → 自动恢复告知；
 //   有预设无自动 → 请求恢复提示。判定结果经 onOutcome 接缝交给菜单栏 UI（票 05）。
+// 拓扑变化事件一到（防抖之前）先经 onOutcome 发 topologyChanging，旧提示即刻收起（§6.2「拓扑再变」）；
+// Space 稳定判据采样到上限仍未稳定也照样判定（§5.1「任何拓扑变化都判定」）。
 // 不区分集合变大/变小（拔到单屏也判定）；拓扑未变的事件（睡眠唤醒/锁屏/分辨率调整）零动作；应用启动不判定。
 // 恢复进行中拓扑变了：经 RestoreCancellation 协作式中止本轮（已移动窗口不回滚），恢复结束后按新拓扑重判。
 // 余震重放（自动恢复后 10s 内拓扑不变的事件）保留：macOS 插屏后 2–6s 二次发事件并重排窗口与触发口径无关，
@@ -22,8 +24,8 @@ public enum TriggerChainConstants {
     public static let debounceQuietPeriod: TimeInterval = 1.5
     /// Space 稳定判据：两轮间隔 500ms（03 #4）
     public static let spaceStableInterval: TimeInterval = 0.5
-    /// Space 稳定性采样总轮次上限（含不可用/变化重采）：SLS 长期不可用或 Space 持续抖动时
-    /// 单轮放弃回 idle，防无限采样空转（恢复本身仍是一次性，不构成重试循环）
+    /// Space 稳定性采样总轮次上限（含不可用/变化重采）：SLS 长期不可用或 Space 持续抖动时停止采样、
+    /// 按当前拓扑照样判定，防无限采样空转（恢复本身仍是一次性，不构成重试循环）
     public static let spaceStableMaxSamples = 6
     /// 余震窗（秒）：自动恢复结束后此窗内的「拓扑不变」settle 视为插屏余震，用同一预设快照重放恢复。
     /// 实测 macOS 插回末屏后 2–6s 还会再发一次屏幕事件并重排窗口（11-03），提速后恢复先于余震结束
@@ -208,6 +210,8 @@ public final class TriggerChain: @unchecked Sendable {
     private var lastAutoRestore: AutoRestoreRecord?
     /// 本次防抖按余震预判走了短静默期（settle 时预判落空则补足普通静默期）
     private var debouncedAsAftershock = false
+    /// 本轮拓扑变化已发过 topologyChanging（判定后清零：每轮只发一次）
+    private var promptInvalidated = false
 
     /// [trigger] 行自带 at= 时间戳（ISO8601 带小数秒），时间戳链不依赖外层 sink 是否加戳
     private static let stampFormatter: ISO8601DateFormatter = {
@@ -259,6 +263,9 @@ public final class TriggerChain: @unchecked Sendable {
     public func screenParametersChanged() {
         stateLock.lock()
         let current = TopologyState(topologyProvider())
+        // 拓扑再变（§6.2）：事件一到就作废开着的旧提示，不等防抖与稳定判据
+        let invalidate = current != settled && claimPromptInvalidationLocked()
+        defer { if invalidate { emit(.topologyChanging) } }
         if phase == .restoring {
             eventDuringRestore = true
             if let active = activeRestore, current.key != active.key || current.isMirrored {
@@ -288,6 +295,13 @@ public final class TriggerChain: @unchecked Sendable {
             self?.settleTopology()
         }
         stateLock.unlock()
+    }
+
+    /// 本轮变化是否轮到发 topologyChanging（调用方持 stateLock；每轮只发一次，判定后清零）
+    private func claimPromptInvalidationLocked() -> Bool {
+        guard !promptInvalidated else { return false }
+        promptInvalidated = true
+        return true
     }
 
     /// 余震判据（调用方持 stateLock）：自动恢复刚结束（窗内）、拓扑未变、重放额度未用尽
@@ -327,6 +341,8 @@ public final class TriggerChain: @unchecked Sendable {
         log?.write(chainLine(step: "debounce-settle", result: changed ? "changed" : "unchanged",
                              detail: "displays=\(current.displayCount) key=\(current.key)"
                                  + (resuming ? " resume=stability" : "")))
+        // 事件时拓扑源尚未反映变化（落在 settle 才判出「变了」）：此刻补发作废旧提示
+        let invalidate = changed && claimPromptInvalidationLocked()
         if changed {
             settled = current
             lastAutoRestore = nil
@@ -348,6 +364,7 @@ public final class TriggerChain: @unchecked Sendable {
             return
         }
         stateLock.unlock()
+        if invalidate { emit(.topologyChanging) }
         sampleSpaceStability()
     }
 
@@ -375,11 +392,10 @@ public final class TriggerChain: @unchecked Sendable {
         let atCap = totalSamples >= TriggerChainConstants.spaceStableMaxSamples
         guard let signature = spaces?.spaceList() else {
             if atCap {
-                // Space 列表长期不可用：单轮放弃回 idle（防采样空转；不构成恢复重试）
-                abandonStabilization()
+                // Space 列表长期不可用：停止采样（防采样空转；不构成恢复重试），本次拓扑变化照样判定
                 log?.write(chainLine(step: "space-stable", result: "give-up", round: round,
                                      detail: "space-list-unavailable"))
-                stateLock.unlock()
+                giveUpStabilizationLocked(stableSignature: nil)
                 return
             }
             consecutiveSamples = 0
@@ -422,11 +438,10 @@ public final class TriggerChain: @unchecked Sendable {
             return
         }
         if atCap {
-            // Space 持续抖动超上限：放弃本轮（回 idle；下一次屏幕事件重新走链）
-            abandonStabilization()
+            // Space 持续抖动超上限：停止采样，本次拓扑变化照样判定
             log?.write(chainLine(step: "space-stable", result: "give-up", round: roundNow,
                                  detail: "signature=\(signatureText) churning"))
-            stateLock.unlock()
+            giveUpStabilizationLocked(stableSignature: stableSignature)
             return
         }
         let outcome = (matchesPrevious || isFirstSample) ? "sampled" : "changed"
@@ -436,11 +451,20 @@ public final class TriggerChain: @unchecked Sendable {
         scheduleNextSpaceSample()
     }
 
-    /// 调用方持 stateLock
-    private func abandonStabilization() {
-        phase = .idle
+    /// 稳定判据放弃采样（调用方持 stateLock，本函数内解锁）。拓扑变化轮：settle 时已推进基线，
+    /// 不判定就再也不会判定（旧提示也一直开着），故照样判定（spec §5.1「任何拓扑变化都判定」）；
+    /// 余震重放轮：拓扑未变、首轮已判定过，直接回 idle
+    private func giveUpStabilizationLocked(stableSignature: [String]?) {
         stabilizationPending = false
-        pendingReapply = nil
+        guard pendingReapply == nil else {
+            pendingReapply = nil
+            phase = .idle
+            stateLock.unlock()
+            return
+        }
+        let decision = decideLocked()
+        stateLock.unlock()
+        execute(decision, stableSignature: stableSignature)
     }
 
     private func scheduleNextSpaceSample() {
@@ -457,6 +481,7 @@ public final class TriggerChain: @unchecked Sendable {
         let current = TopologyState(observed)
         settled = current
         phase = .idle
+        promptInvalidated = false
         func match(_ result: String, _ detail: String = "") -> String {
             chainLine(step: "topology-match", result: result,
                       detail: "key=\(current.key) displays=\(current.displayCount)" + detail)
@@ -481,7 +506,7 @@ public final class TriggerChain: @unchecked Sendable {
         return .autoRestore(preset: auto, topology: topology, cancellation: claimRestoreLocked(key: current.key))
     }
 
-    private func execute(_ decision: Decision, stableSignature: [String]) {
+    private func execute(_ decision: Decision, stableSignature: [String]?) {
         switch decision {
         case .outcome(let outcome):
             emit(outcome)

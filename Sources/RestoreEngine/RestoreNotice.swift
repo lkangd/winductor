@@ -87,8 +87,12 @@ public enum RestoreNotice: Equatable, Sendable {
 }
 
 /// 触发链判定结果（display-presets spec §5.1 判定表 → 菜单栏 UI；票 05 popover 挂 TriggerChain.onOutcome）。
-/// 只在拓扑变化后的判定产出（拓扑未变的事件、应用启动、被中止的恢复轮次均不产出）。
+/// 只在拓扑变化后产出（拓扑未变的事件、应用启动、被中止的恢复轮次均不产出）：
+/// 每轮变化先发 topologyChanging（事件一到），稳定后再发判定结果。
 public enum TriggerOutcome: Equatable, Sendable {
+    /// 拓扑变化事件已到达、尚未判定（防抖/稳定判据进行中）：开着的恢复提示属于旧拓扑，即刻收起
+    /// （§6.2「拓扑再变：替换内容」，防旧提示在防抖期间仍可点；display-presets 票 05 评审修复）
+    case topologyChanging
     /// 有自动预设：已直接恢复（§6.3 自动恢复告知；含失败——notice.failureDetail 非 nil）
     case autoRestored(AutoRestoredOutcome)
     /// 有预设但无自动：请求弹出 / 替换恢复提示（§6.2）；载荷 = 判定时刻的拓扑与预设列表
@@ -99,6 +103,7 @@ public enum TriggerOutcome: Equatable, Sendable {
     /// 日志 result= 字段用
     public var kind: String {
         switch self {
+        case .topologyChanging: return "topology-changing"
         case .autoRestored: return "auto-restored"
         case .promptNeeded: return "prompt"
         case .dismissPrompt: return "dismiss-prompt"

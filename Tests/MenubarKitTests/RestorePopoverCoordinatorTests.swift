@@ -103,6 +103,19 @@ final class RestorePopoverCoordinatorTests: XCTestCase {
         XCTAssertEqual(renderer.last, .hidden)
     }
 
+    /// 拓扑再变（§6.2）：变化事件一到即收起旧提示，之后点「恢复」不生效
+    func testTopologyChangingCollapsesStalePromptAndDisablesRestore() throws {
+        try save("工作")
+        let coordinator = makeCoordinator()
+        coordinator.handle(outcome: .promptNeeded(topology))
+
+        coordinator.handle(outcome: .topologyChanging)
+        renderer.onEvent?(.restoreTapped)
+
+        XCTAssertEqual(renderer.last, .hidden)
+        XCTAssertTrue(restored.isEmpty, "旧拓扑的提示不再可点")
+    }
+
     // MARK: 自动恢复告知
 
     private func autoRestored(_ preset: Preset, hasOtherPresets: Bool) -> TriggerOutcome {

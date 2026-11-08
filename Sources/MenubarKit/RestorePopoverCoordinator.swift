@@ -59,7 +59,8 @@ public final class RestorePopoverCoordinator {
             event = promptEvent(for: topology)
         case .autoRestored(let restored):
             event = .autoRestored(AutoRestoreNoticeContent.make(restored))
-        case .dismissPrompt:
+        case .dismissPrompt, .topologyChanging:
+            // 拓扑再变（§6.2）：事件一到即收起旧拓扑的提示/告知，新判定结果到达后再替换
             event = .dismiss
         }
         Self.runOnMain { [weak self] in self?.send(event) }
