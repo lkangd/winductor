@@ -3,14 +3,16 @@ import Core
 import RestoreEngine
 import SnapshotEngine
 
-// MenuRestoreCoordinator.swift — 菜单接线协调器（票 19，spec §8.1/§8.2/§8.5/§8.6）。
-// 职责：组装 TriggerChain（票 17 状态机）并把菜单七项接到引擎/服务——
-//   立即恢复 → chain.restoreNow()（过渡：当前拓扑默认预设，票 06 删除）；恢复经图标装饰器切「恢复中」同步图形
-//   （§8.1 三态，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
+// MenuRestoreCoordinator.swift — 菜单接线协调器（票 19 起步；票 06 改为 display-presets spec §6.1 菜单）。
+// 职责：组装 TriggerChain（按预设判定）并把菜单各项接到引擎/服务——
+//   状态行 → StatusLineState 四态（当前观测拓扑 + PresetStore 中该拓扑的预设）；
+//   保存当前布局为预设… → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
+//   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
+//   「恢复中」同步图形（§8.1 三态，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
-//   登录时启动 → LoginItemServicing（SMAppService.mainApp，唯一设置项 §8.2）；
-//   Finder 入口 → 目录打开接缝（目录不存在先创建，09 四）；
-//   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新（状态行三态 §8.2）；
+//   管理预设… → 注入的打开入口（窗口归票 07；未注入置灰）；
+//   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
+//   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
 //   popover，§6.2/§6.3；提示「恢复」= chain.restorePresetAsync，告知「撤销」= 菜单同款撤销管线）。
 // 全部系统单例经协议注入（UNUserNotificationCenter/SMAppService 不可单测；可测接缝全走 fake）。
@@ -107,13 +109,15 @@ public final class MenuRestoreCoordinator {
     private let loginItem: LoginItemServicing
     /// 能力状态行数据源（生产：SpaceAdapterCapabilityProbe；测试：fake 层数组）
     private let capabilityLayers: () -> [CapabilityLayerStatus]
-    private let snapshotsFolder: URL
+    private let presetsFolder: URL
     private let logsFolder: URL
     private let openFolder: (URL) -> Void
     private let refreshMenu: () -> Void
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
-    private let store: TransitionalLiveSnapshots
-    private let displaysProvider: () -> [Displays.Info]
+    private let presetStore: PresetStore
+    private let topologyProvider: () -> ObservedTopology
+    private let savePreset: SavePresetFlow
+    private let openPresetManager: (() -> Void)?
     private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
     /// 恢复提示 / 自动恢复告知（init 尾部构造：撤销闭包要引用 self）
@@ -126,13 +130,13 @@ public final class MenuRestoreCoordinator {
     }
     private let menuWillOpenCarrier: MenuWillOpenCarrier = MenuWillOpenCarrier()
 
-    /// - store：过渡期内存现势快照，仅供状态行旧三态（票 06 换成预设口径后删除）
-    /// - presetStore / topologyProvider / readiness：触发链按预设判定（display-presets §5.1）
-    public init(store: TransitionalLiveSnapshots,
-                presetStore: PresetStore,
+    /// - presetStore / topologyProvider：触发链按预设判定（display-presets §5.1）与状态行、恢复预设子菜单同源
+    /// - readiness：触发链未就绪门
+    /// - savePreset：「保存当前布局为预设…」流程（RuntimeAssembly.makeSavePresetFlow）
+    /// - openPresetManager：「管理预设…」打开入口（票 07 注入；nil = 置灰）
+    public init(presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
-                displaysProvider: @escaping () -> [Displays.Info] = Displays.active,
                 topologyProvider: @escaping () -> ObservedTopology = ObservedTopology.current,
                 readiness: @escaping () -> Bool = { true },
                 scheduler: TriggerChainScheduling = DispatchTriggerScheduler(),
@@ -146,23 +150,27 @@ public final class MenuRestoreCoordinator {
                 notifier: SystemNotifying,
                 loginItem: LoginItemServicing,
                 capabilityLayers: @escaping () -> [CapabilityLayerStatus],
-                snapshotsFolder: URL,
+                savePreset: SavePresetFlow,
+                openPresetManager: (() -> Void)? = nil,
+                presetsFolder: URL,
                 logsFolder: URL,
                 openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
                 refreshMenu: @escaping () -> Void,
                 currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
                 popover: RestorePopoverRendering? = nil) {
-        self.store = store
+        self.presetStore = presetStore
+        self.topologyProvider = topologyProvider
+        self.savePreset = savePreset
+        self.openPresetManager = openPresetManager
         self.restoreEnqueue = restoreEnqueue
         self.undo = undo
         self.notifier = notifier
         self.loginItem = loginItem
         self.capabilityLayers = capabilityLayers
-        self.snapshotsFolder = snapshotsFolder
+        self.presetsFolder = presetsFolder
         self.logsFolder = logsFolder
         self.openFolder = openFolder
         self.refreshMenu = refreshMenu
-        self.displaysProvider = displaysProvider
         self.log = log
         // 图标三态装饰（恢复开始/结束换图；§8.1），降级不换图
         let decorated = RestoringIconDecorator(inner: restorer, icon: icon)
@@ -239,10 +247,10 @@ public final class MenuRestoreCoordinator {
 
     // MARK: 全量菜单（注入 NotReadyGateCoordinator.makeReadyMenu）
 
-    /// 按 §8.2 构建全量菜单（状态/可用性取构建时刻现状）
+    /// 按 spec §6.1 构建全量菜单（状态/可用性取构建时刻现状）
     public func makeReadyMenu() -> NSMenu {
         let menu = WiredMenuBuilder.build(currentContent())
-        menu.delegate = menuWillOpenCarrier  // 打开时原位重算（拓扑/撤销/勾选态跟随现状）
+        menu.delegate = menuWillOpenCarrier  // 打开时原位重算（拓扑/预设/撤销/勾选态跟随现状）
         return menu
     }
 
@@ -257,42 +265,50 @@ public final class MenuRestoreCoordinator {
         }
     }
 
-    /// 构建时刻的菜单内容（状态行三态 §8.2、canUndo §7.4、登录勾选态、能力状态行 §8.5）
+    /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」；票 07 管理窗口「恢复」同入口）：
+    /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 恢复进行中则不恢复（链内记日志）
+    public func restorePreset(id: String, topologyKey: String) {
+        chain.restorePresetAsync(id: id, topologyKey: topologyKey)
+    }
+
+    /// 构建时刻的菜单内容（状态行四态、恢复预设子菜单、保存可用性、canUndo、登录勾选态、能力状态行）
     private func currentContent() -> WiredMenuContent {
-        WiredMenuContent(
-            statusLineTitle: currentStatusLineTitle(),
+        let observed = topologyProvider()
+        let key = observed.identity.key
+        // 镜像中整体禁用（spec §3.3）：不列预设
+        let record = observed.isMirrored ? nil : presetStore.topology(key: key)
+        let presets = record?.presets ?? []
+        return WiredMenuContent(
+            statusLineTitle: StatusLineState.title(displayCount: observed.displays.count,
+                                                   isMirrored: observed.isMirrored,
+                                                   presetCount: presets.count,
+                                                   autoPresetName: record?.autoPreset?.name),
+            canSavePreset: savePreset.availability() == .available,
+            restorePresets: presets.map { RestorePresetMenuEntry(id: $0.id, name: $0.name, isAuto: $0.isAuto) },
             canUndo: undo.canUndo(),
             loginLaunchChecked: loginItem.isEnabled,
             capabilityTitle: CapabilityStatusLine.title(for: capabilityLayers()),
-            onRestoreNow: { [weak self] in self?.restoreNowTapped() },
+            onSavePreset: { [weak self] in self?.savePresetTapped() },
+            // 绑定构建时刻的拓扑键：点击前拓扑已变 → 链按 topology-mismatch 拒绝
+            onRestorePreset: { [weak self] id in self?.restorePreset(id: id, topologyKey: key) },
             onUndo: { [weak self] in self?.undoLastTapped() },
+            onManagePresets: openPresetManager,
             onToggleLoginLaunch: { [weak self] in self?.toggleLoginLaunchTapped() },
-            onOpenSnapshotsFolder: { [weak self] in self?.openSnapshotsFolderTapped() },
+            onOpenPresetsFolder: { [weak self] in self?.openPresetsFolderTapped() },
             onOpenLogsFolder: { [weak self] in self?.openLogsFolderTapped() })
-    }
-
-    /// 状态行三态判定（spec §8.2）：当前显示器数 + 现势快照（live-<拓扑键>）集合精确匹配
-    private func currentStatusLineTitle() -> String {
-        let displays = displaysProvider()
-        let uuids = displays.compactMap(\.uuid).filter { !$0.isEmpty }
-        let hasMatch: Bool = {
-            guard !uuids.isEmpty,
-                  let snapshot = store.loadLive(topologyKey: TransitionalLiveSnapshots.topologyKey(forDisplayUUIDs: uuids)) else {
-                return false
-            }
-            return Set(snapshot.topology.map(\.uuid)) == Set(uuids)
-        }()
-        return StatusLineState.state(displayCount: displays.count, hasMatchingLiveSnapshot: hasMatch).title
     }
 
     // MARK: 菜单动作（经 WiredMenuBuilder 载体路由；与真实点击同路径）
 
-    private func restoreNowTapped() {
-        chain.restoreNowAsync()  // 管线离主线程（修复 2 屏拓扑点立即恢复卡死）；完成通知经 onNotice 桥接投递（§8.5 计数 + 降级附注）
+    private func savePresetTapped() {
+        // 拍快照离主线程、输入框回主线程；存入后刷新（状态行与「恢复预设 ▸」随之更新）
+        savePreset.runAsync { [weak self] outcome in
+            if case .saved = outcome { self?.refreshMenuOnMain() }
+        }
     }
 
     private func undoLastTapped() {
-        // undo 跑全量回滚管线（分钟级），与立即恢复同修复：经执行器离主线程；
+        // undo 跑全量回滚管线（分钟级）：经执行器离主线程；
         // 通知投递线程安全（UNUserNotificationCenter），菜单刷新自带主线程汇编
         restoreEnqueue { [weak self] in
             self?.performUndoAndNotify()
@@ -335,8 +351,8 @@ public final class MenuRestoreCoordinator {
         refreshMenuOnMain()
     }
 
-    private func openSnapshotsFolderTapped() {
-        openFolder(snapshotsFolder)
+    private func openPresetsFolderTapped() {
+        openFolder(presetsFolder)
     }
 
     private func openLogsFolderTapped() {

@@ -157,6 +157,70 @@ final class SavePresetFlowTests: XCTestCase {
         XCTAssertTrue(prompt.asked.isEmpty)
         XCTAssertEqual(store.topologies(), [])
     }
+
+    // MARK: 菜单路径（票 06）：拍快照离开主线程，输入框与写盘回到主线程
+
+    /// 拍快照经后台执行器，输入框与写盘经主线程执行器，完成回调带结果
+    func testRunAsyncCapturesInBackgroundThenPromptsOnMain() throws {
+        let background = ManualExecutor(), main = ManualExecutor()
+        let prompt = ScriptedPrompt(["家"])
+        final class Counter { var captures = 0 }
+        let counter = Counter()
+        let fixture = capture
+        let flow = makeFlow(prompt: prompt, capture: { counter.captures += 1; return fixture },
+                            background: background, main: main)
+        var outcomes: [SavePresetOutcome] = []
+
+        XCTAssertTrue(flow.runAsync { outcomes.append($0) })
+        XCTAssertEqual(counter.captures, 0, "拍快照不在调用线程（主线程）执行")
+
+        background.drain()
+        XCTAssertEqual(counter.captures, 1)
+        XCTAssertTrue(prompt.asked.isEmpty, "输入框不在后台线程弹")
+
+        main.drain()
+        XCTAssertEqual(prompt.asked.count, 1)
+        XCTAssertEqual(outcomes, [.saved(name: "家", topologyKey: capture.topology.identity.key)])
+        XCTAssertEqual(store.topology(key: capture.topology.identity.key)?.presets.map(\.name), ["家"])
+    }
+
+    /// 进行中再次点击：不受理（不二拍、不二弹）；结束后可再次受理
+    func testRunAsyncRejectsReentryWhileInFlight() {
+        let background = ManualExecutor(), main = ManualExecutor()
+        let flow = makeFlow(prompt: ScriptedPrompt([nil, nil]), background: background, main: main)
+        var outcomes: [SavePresetOutcome] = []
+
+        XCTAssertTrue(flow.runAsync { outcomes.append($0) })
+        XCTAssertFalse(flow.runAsync { outcomes.append($0) }, "拍快照/输入中不受理第二次")
+        background.drain()
+        XCTAssertFalse(flow.runAsync { outcomes.append($0) })
+        main.drain()
+        XCTAssertEqual(outcomes, [.cancelled])
+
+        XCTAssertTrue(flow.runAsync { outcomes.append($0) }, "上一轮结束后恢复受理")
+    }
+
+    /// 禁用态：不派发拍快照，完成回调立即给出不可用
+    func testRunAsyncWhileDisabledCompletesImmediately() {
+        let background = ManualExecutor(), main = ManualExecutor()
+        let flow = makeFlow(prompt: ScriptedPrompt(["名"]), isMirrored: { true }, background: background, main: main)
+        var outcomes: [SavePresetOutcome] = []
+
+        flow.runAsync { outcomes.append($0) }
+
+        XCTAssertEqual(outcomes, [.unavailable(.mirrored)])
+        XCTAssertTrue(background.isEmpty)
+    }
+}
+
+/// 手动驱动的执行器（测试控制「后台 / 主线程」两段的推进时机）
+final class ManualExecutor {
+    private var pending: [() -> Void] = []
+    var isEmpty: Bool { pending.isEmpty }
+    func enqueue(_ work: @escaping () -> Void) { pending.append(work) }
+    func drain() {
+        while !pending.isEmpty { pending.removeFirst()() }
+    }
 }
 
 // MARK: - 工具
@@ -181,7 +245,9 @@ extension SavePresetFlowTests {
                   isReady: @escaping () -> Bool = { true },
                   isMirrored: @escaping () -> Bool = { false },
                   isRestoring: @escaping () -> Bool = { false },
-                  capture: (() throws -> LayoutCapture)? = nil) -> SavePresetFlow {
+                  capture: (() throws -> LayoutCapture)? = nil,
+                  background: ManualExecutor? = nil,
+                  main: ManualExecutor? = nil) -> SavePresetFlow {
         let fixture = self.capture
         return SavePresetFlow(store: store,
                               capture: capture ?? { fixture },
@@ -190,6 +256,8 @@ extension SavePresetFlowTests {
                               isMirrored: isMirrored,
                               isRestoring: isRestoring,
                               now: { [fixedNow] in fixedNow },
-                              timeZone: TimeZone(secondsFromGMT: 0)!)
+                              timeZone: TimeZone(secondsFromGMT: 0)!,
+                              captureExecutor: { work in (background ?? ManualExecutor()).enqueue(work) },
+                              mainExecutor: { work in (main ?? ManualExecutor()).enqueue(work) })
     }
 }
