@@ -5,9 +5,12 @@ import Foundation
 import Core
 import SpaceAdapter
 
-// VerifyCLI — 验证器（票 11 起步雏形，票 14 升级全量比对，spec §9.1）。
-// 用法：swift run VerifyCLI [--snapshot <file.json>]
-//   --snapshot <file.json>  指定快照文件（票 02 删除现势快照后为必需；预设基准 --preset / 最近恢复预设归票 09）
+// VerifyCLI — 验证器（票 11 起步雏形，票 14 升级全量比对；基准口径见 display-presets spec §7）。
+// 用法：swift run VerifyCLI [--preset <名称> | --snapshot <file.json>]
+//   缺省                    当前拓扑最近一次恢复所用的预设
+//   --preset <名称>         当前拓扑下的指定预设
+//   --snapshot <file.json>  指定快照文件
+// 基准选择由 Core.VerifyBaseline 给出；无基准报「无比对基准」并以用法错误码退出。
 // 从已授权终端运行（继承宿主 TCC；CLI 本身无需签名授权）。
 // 实时枚举：CGWindowListCopyWindowInfo(.optionAll) 全量窗口（含其他 Space/最小化）
 //   + _AXUIElementGetWindow 配对（照 05 spike 写法）。
@@ -15,13 +18,16 @@ import SpaceAdapter
 //   Core.ConservativeMatcher，08 #1）；本文件只负责枚举与报告渲染。
 //   逐条 PASS / FAIL / SKIP + 屏幕归属比对；Space 归属（L2）经 SpaceAdapter 查 SLS，
 //   本进程无授权/符号缺失时相关项按「无法核验」标注（不崩、不阻断）。
-// 退出码：0 = 报告产出；2 = 用法/快照错误；3 = 授权未齐（明确提示，不崩溃）。
+// 退出码：0 = 报告产出；2 = 用法/基准/快照错误；3 = 授权未齐（明确提示，不崩溃）。
 
 private let usage = """
-usage: swift run VerifyCLI [--snapshot <file.json>]
-  --snapshot <file.json>   指定快照文件（必需；缺省报「无比对基准」）
-全量比对：逐条 PASS/FAIL/SKIP + 屏幕归属 + Space 归属（无法核验时标注不阻断，spec §9.1）
-exit codes: 0 报告产出 / 2 用法或快照错误 / 3 授权未齐
+usage: swift run VerifyCLI [--preset <名称> | --snapshot <file.json>]
+  （缺省）                 当前拓扑最近一次恢复所用的预设
+  --preset <名称>          当前拓扑下的指定预设
+  --snapshot <file.json>   指定快照文件
+  无基准时报「无比对基准」
+全量比对：逐条 PASS/FAIL/SKIP + 屏幕归属 + Space 归属（无法核验时标注不阻断）
+exit codes: 0 报告产出 / 2 用法、基准或快照错误 / 3 授权未齐
 """
 
 // MARK: - 私有 API 加载（照 spike：dlsym，无链接期依赖）
@@ -112,6 +118,29 @@ private func geoString(_ s: SnapshotWindow) -> String {
     "(\(String(format: "%.4f", s.x)),\(String(format: "%.4f", s.y)),\(String(format: "%.4f", s.w)),\(String(format: "%.4f", s.h)))"
 }
 
+// MARK: - 基准读取
+
+/// --snapshot 文件读取；任何错误按用法错误退出（exit 2）
+private func loadSnapshotFile(_ path: String) -> Snapshot {
+    let snapshotURL = URL(fileURLWithPath: path)
+    guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
+        fputs("verify: 快照文件不存在：\(snapshotURL.path)\n", stderr)
+        exit(2)
+    }
+    do {
+        return try Snapshot.decode(from: Data(contentsOf: snapshotURL))
+    } catch SnapshotSchemaError.unsupportedVersion(let found, let supported) {
+        fputs("verify: 快照版本过高拒用（found=\(found) supported=\(supported)，spec §7.3 不迁移）：\(snapshotURL.path)\n", stderr)
+        exit(2)
+    } catch SnapshotSchemaError.invalidVersion(let found) {
+        fputs("verify: 快照 version 非法（\(found)）：\(snapshotURL.path)\n", stderr)
+        exit(2)
+    } catch {
+        fputs("verify: 快照解析失败（\((error as? DecodingError).map(String.init(describing:)) ?? "\(error)")）：\(snapshotURL.path)\n", stderr)
+        exit(2)
+    }
+}
+
 // MARK: - main
 
 func main() {
@@ -120,14 +149,42 @@ func main() {
         print(usage)
         exit(0)
     }
-    var snapshotPath: String?
-    var i = args.startIndex
-    while i < args.endIndex {
-        if args[i] == "--snapshot", args.indices.contains(i + 1) {
-            snapshotPath = args[i + 1]
-            i += 2
-        } else {
-            fputs("verify: 未知参数 \(args[i])\n\(usage)\n", stderr)
+    let baseline: VerifyBaseline
+    do {
+        baseline = try VerifyBaseline.parse(Array(args))
+    } catch let error as VerifyBaselineError {
+        fputs("verify: \(error.message)\n\(usage)\n", stderr)
+        exit(2)
+    } catch {
+        fputs("verify: \(error)\n", stderr)
+        exit(2)
+    }
+
+    // 基准先于授权判定：读预设库与显示器拓扑无需 TCC，无基准时一律 exit 2
+    let displays = Displays.active()
+    guard !displays.isEmpty else {
+        fputs("verify: 未枚举到任何显示器\n", stderr)
+        exit(2)
+    }
+    let topology = ObservedTopology.current()
+    let snapshot: Snapshot
+    let baselineLabel: String
+    switch baseline {
+    case .snapshotFile(let path):
+        snapshot = loadSnapshotFile(path)
+        baselineLabel = "快照文件 \(URL(fileURLWithPath: path).path)"
+    case .lastRestored, .preset:
+        do {
+            let preset = try baseline.resolvePreset(in: PresetStore(directory: PresetStore.defaultDirectory),
+                                                    topology: topology)
+            snapshot = preset.snapshot
+            let kind = baseline == .lastRestored ? "最近恢复预设" : "预设"
+            baselineLabel = "\(kind)「\(preset.name)」 id=\(preset.id) savedAt=\(ISO8601DateFormatter().string(from: preset.savedAt))"
+        } catch let error as VerifyBaselineError {
+            fputs("verify: \(error.message)\n", stderr)
+            exit(2)
+        } catch {
+            fputs("verify: \(error)\n", stderr)
             exit(2)
         }
     }
@@ -143,35 +200,6 @@ func main() {
         开启后重启终端再试。
         """, stderr)
         exit(3)
-    }
-
-    // 快照来源：--snapshot 指定（现势快照已删除；预设基准归票 09）
-    let displays = Displays.active()
-    guard !displays.isEmpty else {
-        fputs("verify: 未枚举到任何显示器\n", stderr)
-        exit(2)
-    }
-    guard let snapshotPath else {
-        fputs("verify: 无比对基准；用 --snapshot <file.json> 指定\n\(usage)\n", stderr)
-        exit(2)
-    }
-    let snapshotURL = URL(fileURLWithPath: snapshotPath)
-    guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
-        fputs("verify: 快照文件不存在：\(snapshotURL.path)\n", stderr)
-        exit(2)
-    }
-    let snapshot: Snapshot
-    do {
-        snapshot = try Snapshot.decode(from: Data(contentsOf: snapshotURL))
-    } catch SnapshotSchemaError.unsupportedVersion(let found, let supported) {
-        fputs("verify: 快照版本过高拒用（found=\(found) supported=\(supported)，spec §7.3 不迁移）：\(snapshotURL.path)\n", stderr)
-        exit(2)
-    } catch SnapshotSchemaError.invalidVersion(let found) {
-        fputs("verify: 快照 version 非法（\(found)）：\(snapshotURL.path)\n", stderr)
-        exit(2)
-    } catch {
-        fputs("verify: 快照解析失败（\((error as? DecodingError).map(String.init(describing:)) ?? "\(error)")）：\(snapshotURL.path)\n", stderr)
-        exit(2)
     }
 
     // Space 数据：经 SpaceAdapter 查 SLS，供屏归属（Space 所属屏优先）与 Space 归属（L2）比对。
@@ -215,10 +243,10 @@ func main() {
     // 报告
     let dateFormatter = ISO8601DateFormatter()
     print("== VerifyCLI 全量比对报告（票 14，spec §9.1）==")
-    print("快照: \(snapshotURL.path)")
+    print("基准: \(baselineLabel)")
     print("  version=\(snapshot.version) capturedAt=\(dateFormatter.string(from: snapshot.capturedAt)) "
         + "displays=\(snapshot.topology.count) spaces=\(snapshot.spaces.count) windows=\(snapshot.windows.count)")
-    print("实时: 当前拓扑 key=\(Displays.topologyIdentity(of: displays).key) 屏=\(displays.count) "
+    print("实时: 当前拓扑 key=\(topology.isMirrored ? "镜像中" : topology.identity.key) 屏=\(displays.count) "
         + "CG 窗口(layer0)=\(cgWindows.count) AX 配对=\(axByWid.count) 参与匹配=\(liveWindows.count)")
     print("授权: 辅助功能=✓ 屏幕录制=✓  Space 归属=\(slsAvailable ? "\(spaceEntryByWindowID.count) 窗口可查" : "无法核验（本进程无 SLS 授权）")")
     print(String(repeating: "-", count: 72))

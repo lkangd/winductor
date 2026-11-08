@@ -125,6 +125,12 @@ public struct SimulatedTopologyFixture: Codable, Equatable, Sendable {
         windows = try c.decode([Window].self, forKey: .windows)
         layers = try c.decodeIfPresent(Layers.self, forKey: .layers) ?? Layers()
     }
+
+    /// fixture 描述的拓扑身份（与干跑管线同一份合成显示器读数；simulate-restore 据此在预设库里查预设）
+    public var topologyIdentity: TopologyIdentity {
+        let seams = SimulatedSeams(fixture: self)
+        return Displays.topologyIdentity(of: seams.displays(), rotation: { seams.rotation(for: $0) })
+    }
 }
 
 // MARK: - 动作记录

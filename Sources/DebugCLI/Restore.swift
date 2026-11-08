@@ -4,14 +4,15 @@ import RestoreEngine
 import SnapshotEngine
 import SpaceAdapter
 
-// Restore.swift — 调试子命令 restore（票 14 验收：restore 调试命令 + spec §6.3 单轮 best-effort）。
-// 用法：restore <snapshot路径>
-// 读取快照 JSON → 跑一轮恢复管线（回滚快照落盘 → L2 桥接移窗 → L1 几何摆位，one-shot 放完即停），
+// Restore.swift — 调试子命令 restore（票 14 验收：restore 调试命令 + spec §6.3 单轮 best-effort；票 09 起按预设名）。
+// 用法：restore <预设名>
+// 在当前拓扑下按名称取预设（仅当前拓扑，display-presets spec §5.2）→ 跑一轮恢复管线
+// （回滚快照落盘 → L2 桥接移窗 → L1 几何摆位，one-shot 放完即停）→ 记录为最近恢复（VerifyCLI 缺省基准）。
 // 输出成功/跳过/失败计数与回滚快照落点。逐窗口结构化日志经 ConsoleLogSink 打到 stdout。
-// 退出码：0 = 完成（failCount=0）；1 = 管线中止或存在失败；2 = 用法/快照错误。
+// 退出码：0 = 完成（failCount=0）；1 = 管线中止、存在失败或镜像中；2 = 用法错误或当前拓扑无此预设。
 
 enum Restore {
-    static let usage = "usage: swift run DebugCLI restore <snapshot路径>"
+    static let usage = "usage: swift run DebugCLI restore <预设名>（预设名见 list-presets）"
 
     // args 已由 main.swift 去除子命令名（票 13 注册表约定）
     static func run(_ args: [String]) -> Int32 {
@@ -19,30 +20,28 @@ enum Restore {
             print(usage)
             return 2
         }
-        let url = URL(fileURLWithPath: args[0])
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            print("FAIL: 快照文件不存在：\(url.path)")
-            return 2
+        let topology = ObservedTopology.current()
+        guard !topology.isMirrored else {
+            print("FAIL: 镜像中，无拓扑，不恢复（spec §3.3）")
+            return 1
         }
-        let snapshot: Snapshot
-        do {
-            snapshot = try Snapshot.decode(from: Data(contentsOf: url))
-        } catch SnapshotSchemaError.unsupportedVersion(let found, let supported) {
-            print("FAIL: 快照版本过高拒用（found=\(found) supported=\(supported)，spec §7.3 不迁移）")
-            return 2
-        } catch {
-            print("FAIL: 快照解析失败：\(error)")
-            return 2
-        }
-
         let log = ConsoleLogSink.shared
         let store = PresetStore(directory: PresetStore.defaultDirectory, log: log)
+        let key = topology.identity.key
+        guard let preset = lookupPreset(named: args[0], topologyKey: key, store: store) else { return 2 }
+        print("restore：预设「\(preset.name)」 id=\(preset.id) topology=\(key)")
         let engine = RestoreEngine(
             store: store,
             spaces: SpaceAdapterBridge(SpaceAdapter(log: log)),
             log: log)
         do {
-            let report = try engine.restore(snapshot: snapshot)
+            let report = try engine.restore(snapshot: preset.snapshot)
+            // 与触发链同口径：管线跑完即记最近恢复（失败条目不影响记录）
+            do {
+                try store.recordRestored(presetID: preset.id, topologyKey: key)
+            } catch {
+                print("WARN: 最近恢复记录写失败：\(error)")
+            }
             print("restore 完成：ok=\(report.okCount) skip=\(report.skipCount) fail=\(report.failCount) "
                 + "matched=\(report.matchedCount) untouched=\(report.untouchedLiveCount)")
             if let undo = report.undoSnapshotURL {

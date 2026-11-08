@@ -26,6 +26,23 @@ final class SimulationTests: XCTestCase {
         XCTAssertTrue(fixture.layers.minimized)
     }
 
+    // MARK: - fixture 拓扑身份（simulate-restore 按预设名在 fixture 拓扑下查预设）
+
+    /// fixture 的拓扑身份 = 同排列同旋转的实况屏算出的身份（屏名/分辨率不参与）
+    func testFixtureTopologyIdentityMatchesEquivalentObservedScreens() {
+        let fixture = SimulatedTopologyFixture(
+            displays: [SimulatedTopologyFixture.Display(uuid: "U2", x: 1512, y: 0, w: 1920, h: 1080, rotation: 90),
+                       SimulatedTopologyFixture.Display(uuid: "U1", x: 0, y: 0, w: 1512, h: 982)],
+            spaces: [], windows: [])
+        let observed = ObservedTopology(screens: [
+            TopologyScreen(uuid: "U1", name: "内置", frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+                           pixelWidth: 3024, pixelHeight: 1964, rotation: 0, isMirrored: false),
+            TopologyScreen(uuid: "U2", name: "DELL", frame: CGRect(x: 1512, y: 0, width: 1920, height: 1080),
+                           pixelWidth: 1920, pixelHeight: 1080, rotation: 90, isMirrored: false),
+        ])
+        XCTAssertEqual(fixture.topologyIdentity, observed.identity)
+    }
+
     // MARK: - 三屏全匹配干跑
 
     /// 快照 3 屏各 1 窗；fixture 同拓扑、存活窗在错误 Space 且几何漂移 → 管线应全匹配全恢复。
