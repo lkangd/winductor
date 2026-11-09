@@ -74,6 +74,19 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 cp "$BIN" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+# 品牌资源（ui-refactor spec §3）：运行时由 MenubarKit 的 BrandAssets 只从 Contents/Resources 读——
+# 菜单栏两态原图原样拷入；应用图标由 appiconset 经 iconutil 生成 AppIcon.icns（Info.plist 的 CFBundleIconFile 指向它）
+BRAND_DIR="Resources/Brand"
+RES_DIR="$APP_DIR/Contents/Resources"
+ICONSET="$BUILD_DIR/AppIcon.iconset"
+mkdir -p "$RES_DIR"
+cp "$BRAND_DIR"/MenuBar*.png "$RES_DIR/"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+cp "$BRAND_DIR"/AppIcon.appiconset/icon_*.png "$ICONSET/" # iconutil 只认 .iconset 目录 + 规范文件名，不收 Contents.json
+iconutil -c icns "$ICONSET" -o "$RES_DIR/AppIcon.icns"
+rm -rf "$ICONSET"
+
 # Info.plist：CFBundleIdentifier 冻结；LSUIElement=true 即菜单栏 agent（无 Dock 图标）
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -84,6 +97,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleName</key>
     <string>$DISPLAY_NAME</string>
     <key>CFBundleDisplayName</key>
