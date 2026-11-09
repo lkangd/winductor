@@ -8,9 +8,9 @@ import XCTest
 //       屏幕变化）触发菜单重建。
 final class ReadyMenuInjectionTests: XCTestCase {
     private final class StatusSpy: StatusPresenting {
-        private(set) var warningDotVisible = false
+        private(set) var notReadyBadgeVisible = false
         private(set) var menus: [NSMenu] = []
-        func setShowsWarningDot(_ visible: Bool) { warningDotVisible = visible }
+        func setShowsNotReadyBadge(_ visible: Bool) { notReadyBadgeVisible = visible }
         func set(menu: NSMenu) { menus.append(menu) }
         var lastMenu: NSMenu? { menus.last }
     }
@@ -48,7 +48,7 @@ final class ReadyMenuInjectionTests: XCTestCase {
         let marker = NSMenu(title: "wired")
         let coordinator = makeCoordinator { marker }
         coordinator.start()
-        XCTAssertFalse(statusSpy.warningDotVisible)
+        XCTAssertFalse(statusSpy.notReadyBadgeVisible)
         XCTAssertTrue(statusSpy.lastMenu === marker, "就绪时必须用注入闭包的全量菜单")
     }
 
@@ -59,7 +59,7 @@ final class ReadyMenuInjectionTests: XCTestCase {
         let coordinator = makeCoordinator()
         coordinator.start()
 
-        XCTAssertTrue(statusSpy.warningDotVisible)
+        XCTAssertTrue(statusSpy.notReadyBadgeVisible)
         XCTAssertTrue(lastMenuTitles.contains("状态行（占位）"), "未就绪保持票 18 占位骨架")
         XCTAssertFalse(lastMenuTitles.contains("保存当前布局为预设…") && lastMenuTitles.contains("退出 Winductor")
                        && !lastMenuTitles.contains("状态行（占位）"))
@@ -89,7 +89,7 @@ final class ReadyMenuInjectionTests: XCTestCase {
         _ = coordinator.monitor.checkNow()
 
         XCTAssertFalse(coordinator.monitor.status.isReady)
-        XCTAssertTrue(statusSpy.warningDotVisible)
+        XCTAssertTrue(statusSpy.notReadyBadgeVisible)
         XCTAssertTrue(lastMenuTitles.contains(ScreenCaptureReconfirmGuide.statusLineTitle))
     }
 }

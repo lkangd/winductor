@@ -336,7 +336,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(presetStore.topology(key: currentKey)?.lastRestoredPresetID, home.id, "成功后记录最近恢复（spec §4.4）")
         XCTAssertEqual(notifier.deliveries.map(\.title), ["恢复完成"])
         XCTAssertEqual(notifier.deliveries.first?.body, "恢复完成：12 窗口归位、1 跳过、0 失败")
-        XCTAssertEqual(icon.sequence, ["restoring", "normal"], "恢复中临时同步图形，结束即回（§8.1）")
+        XCTAssertEqual(icon.sequence, ["restoring", "normal"], "恢复中图标，结束即回（ui-refactor §4.2）")
         XCTAssertGreaterThanOrEqual(refreshCalls, 1, "恢复后刷新菜单")
     }
 

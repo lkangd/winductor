@@ -8,7 +8,7 @@ import SnapshotEngine
 //   状态行 → StatusLineState 四态（当前观测拓扑 + PresetStore 中该拓扑的预设）；
 //   保存当前布局为预设… → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
 //   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
-//   「恢复中」同步图形（§8.1 三态，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
+//   「恢复中」交替图（ui-refactor §4.2，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
 //   管理预设… → 注入的打开入口（窗口归 display-presets 票 07；未注入置灰）；
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
@@ -29,11 +29,11 @@ public protocol LoginItemServicing: AnyObject {
     func disable() throws
 }
 
-/// 状态项图标接缝（§8.1 三态中的常态/恢复中两态；未就绪警示点归票 18 StatusPresenting）
+/// 状态项图标接缝（ui-refactor spec §4.2 三态中的常态/恢复中两态；未就绪徽记归 StatusPresenting）
 public protocol StatusIconControlling: AnyObject {
-    /// 常态网格图形
+    /// 常态图
     func showNormalIcon()
-    /// 恢复中临时同步图形（恢复结束由装饰器换回常态）
+    /// 恢复中（两图交替，恢复结束由装饰器换回常态）
     func showRestoringIcon()
 }
 
@@ -45,8 +45,8 @@ public protocol UndoPerforming: AnyObject {
 
 extension RestoreEngine: UndoPerforming {}
 
-/// 恢复中图标装饰器（§8.1「恢复中：临时换同步图形，结束即回」）：
-/// 包住真实恢复器，恢复开始切同步图形、结束（无论成败）即回常态。分层降级不改图标（§8.1）。
+/// 恢复中图标装饰器（ui-refactor spec §4.2「恢复中：两图交替，结束即回常态」）：
+/// 包住真实恢复器，恢复开始切恢复中、结束（无论成败）即回常态。分层降级不改图标（§8.1）。
 final class RestoringIconDecorator: SnapshotRestoring, @unchecked Sendable {
     private let inner: SnapshotRestoring
     private let icon: StatusIconControlling

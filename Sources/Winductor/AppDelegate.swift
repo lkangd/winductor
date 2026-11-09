@@ -3,7 +3,7 @@ import MenubarKit
 
 // AppDelegate — 应用装配（票 19 全量接线；票 18 未就绪链路延续）。
 // 启动顺序：单实例守卫（票底缺陷：同 bundle id 活实例 → 激活旧实例并退出自身）
-// → 状态项（常态网格图）→ 全量恢复栈组装（恢复引擎 + 触发链 + 全量菜单 +
+// → 状态项（构造即上屏常态图）→ 全量恢复栈组装（恢复引擎 + 触发链 + 全量菜单 +
 // 通知 + 登录启动 + Finder 入口）→ 未就绪门控启动（首检决策：未就绪弹引导窗/就绪静默）→ 屏幕观察者。
 // 退出前停观察者与定时器（applicationWillTerminate）。
 
@@ -17,7 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard SingleInstanceGuard.startupGuard(bundleIdentifier: Bundle.main.bundleIdentifier) else { return }
 
         let controller = StatusItemController()
-        controller.showPlaceholderIcon()
 
         let monitor = PermissionMonitor()
         // app 结构化日志在 assembleAppRoot 缺省落日志目录 app.log（「打开日志文件夹」所指）

@@ -2,14 +2,14 @@ import AppKit
 
 // NotReadyGateCoordinator.swift — 未就绪链路协调器（票 18，spec §4.6/§8.3/§8.4）。
 // 职责：把 PermissionMonitor 的状态变化接到三处呈现——
-//   1. 状态项警示点（§8.1 未就绪态：网格图 + 黄色警示点）
+//   1. 状态项未就绪徽记（ui-refactor spec §4.2：常态图 + 镂空「!」，画进模板图）
 //   2. 菜单：运行中屏幕录制重确认降级 → 顶部 §8.4 逐字引导块（不弹窗）；恢复 → 占位骨架回归
 //   3. 引导窗：仅首启未就绪弹一次（§8.3），就绪后窗内换重启提示；运行中降级绝不弹窗（§8.4）
 // 呈现经接缝注入（StatusPresenting/GuideWindowPresenting），单测用假件驱动。
 
 /// 状态项呈现接缝（生产：StatusItemController；测试：假件——无 Aqua 会话时 NSStatusBar 崩溃）
 public protocol StatusPresenting: AnyObject {
-    func setShowsWarningDot(_ visible: Bool)
+    func setShowsNotReadyBadge(_ visible: Bool)
     func set(menu: NSMenu)
 }
 
@@ -78,7 +78,7 @@ public final class NotReadyGateCoordinator {
     // MARK: 状态应用（主线程；观察者定时路径已投递主线程）
 
     private func apply(_ status: PermissionMonitor.Status) {
-        statusItem.setShowsWarningDot(!status.isReady)
+        statusItem.setShowsNotReadyBadge(!status.isReady)
         refreshMenu(status)
 
         if !hasDecidedInitialGuide {

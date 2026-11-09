@@ -18,7 +18,7 @@ public enum RuntimeAssembly {
     /// 全量应用装配（票 19）：返回（未就绪门控协调器, 菜单接线协调器）。
     /// 调用方：gate.start()（首检决策 + 菜单）→ menuCoordinator.start()（屏幕观察者）。
     /// - Parameters:
-    ///   - statusItem: 状态项呈现（警示点归 StatusPresenting，常态/恢复中图标归 StatusIconControlling）
+    ///   - statusItem: 状态项呈现（未就绪徽记归 StatusPresenting，常态/恢复中图标归 StatusIconControlling）
     ///   - notifier: 系统通知投递（生产 UserNotificationPoster；UNUserNotificationCenter 不可单测）
     ///   - popoverAnchor: 恢复提示 / 自动恢复告知 popover 的锚点（生产 = 状态项按钮；nil = 不弹 popover）
     ///   - appLog: app 结构化日志 sink（缺省 = FileLogSink 落日志目录 app.log，「打开日志文件夹」所指；
