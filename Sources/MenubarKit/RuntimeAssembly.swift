@@ -6,7 +6,7 @@ import SnapshotEngine
 import SpaceAdapter
 
 // RuntimeAssembly.swift — 装配件（票 18：未就绪门控；票 19：全量恢复栈组装；display-presets 票 03：保存预设流程见 SavePresetFlow.swift；
-// display-presets 票 07：覆盖流程见 OverwritePresetFlow.swift，预设管理窗口见 PresetManagerWindow.swift）。
+// display-presets 票 07：覆盖流程见 OverwritePresetFlow.swift；ui-refactor 票 03：统一主窗口见 MainWindowController.swift）。
 // app 入口 target 只依赖 MenubarKit（Package.swift 禁改，不能直 import SnapshotEngine/RestoreEngine/
 // SpaceAdapter），故生产组装全部在此：
 //   SpaceAdapter（探针/Space 归属）→ 恢复引擎 + 触发链 + 保存预设流程
@@ -58,16 +58,26 @@ public enum RuntimeAssembly {
         let overwritePreset = makeOverwritePresetFlow(availability: { savePreset.availability() }, store: presetStore,
                                                       spaces: adapter, session: session,
                                                       deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
-        // 预设管理窗口（display-presets 票 07）：「恢复」走菜单协调器同一入口；协调器后构造，经弱引用箱回填
+        // 统一主窗口（ui-refactor 票 03；拓扑页 = 预设管理，display-presets 票 07）：「恢复」与通用页动作走菜单协调器同一入口，
+        // 「授权引导…」走门控协调器；两者后构造，经弱引用箱回填
         let coordinatorBox = WeakCoordinatorBox()
-        let presetManager = PresetManagerWindowController(model: PresetManagerModel(
+        let presetManager = PresetManagerModel(
             store: presetStore,
             overwrite: overwritePreset,
             restore: { id, key in coordinatorBox.coordinator?.restorePreset(id: id, topologyKey: key) },
             dialogs: AlertPresetManagerDialogs(),
             // 预设详情的 Space 不足对比（display-presets 票 08）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
             currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
-            appName: ApplicationNames.localizedName(bundleID:)))
+            appName: ApplicationNames.localizedName(bundleID:))
+        let mainWindow = MainWindowController(model: MainWindowModel(
+            presets: presetManager,
+            permissionStatus: monitor.status,
+            menuContent: { coordinatorBox.coordinator?.menuContent() },
+            openPermissionGuide: { coordinatorBox.gate?.showPermissionGuide() },
+            presetsFolder: storeDirectory,
+            logsFolder: SnapshotStore.defaultLogDirectory))
+        // 通用页权限状态点实时跟随（观察者回调在主线程）
+        monitor.addStatusObserver { [weak mainWindow] status in mainWindow?.model.updatePermissionStatus(status) }
 
         // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
         let refreshBox = MenuRefreshBox()
@@ -85,12 +95,12 @@ public enum RuntimeAssembly {
             loginItem: loginItem,
             capabilityLayers: { capabilityProbe.probe() },
             savePreset: savePreset,
-            openPresetManager: { presetManager.show() },
+            openPresetManager: { mainWindow.showCurrentTopology() },
             overwritePreset: overwritePreset,
             presetsFolder: storeDirectory,
             logsFolder: SnapshotStore.defaultLogDirectory,
-            // 后台事件（恢复/保存/撤销完成）同时刷新开着的管理窗口
-            refreshMenu: { refreshBox.refresh(); presetManager.reloadIfVisible() },
+            // 后台事件（恢复/保存/撤销完成、登录项切换）同时刷新开着的主窗口
+            refreshMenu: { refreshBox.refresh(); mainWindow.reloadIfVisible() },
             // 恢复提示的 Space 不足对比：恢复/撤销管线独占 SkyLight 时让出（读不到 = 不提示）
             currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
             popover: popoverAnchor.map { StatusItemPopoverPresenter(anchor: $0) })
@@ -100,13 +110,15 @@ public enum RuntimeAssembly {
             statusItem: statusItem,
             makeReadyMenu: { menuCoordinator.makeReadyMenu() })
         refreshBox.targetProvider = gateCoordinator
+        coordinatorBox.gate = gateCoordinator
         return (gateCoordinator, menuCoordinator)
     }
 }
 
-/// 管理窗口「恢复」的协调器回填箱（弱引用：协调器持有窗口入口闭包，避免环）
+/// 主窗口动作的协调器回填箱（弱引用：协调器持有窗口入口闭包，避免环）
 private final class WeakCoordinatorBox {
     weak var coordinator: MenuRestoreCoordinator?
+    weak var gate: NotReadyGateCoordinator?
 }
 
 /// 菜单刷新目标接缝（NotReadyGateCoordinator.refreshMenuNow 的窄接口）
