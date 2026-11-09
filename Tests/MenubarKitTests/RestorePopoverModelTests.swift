@@ -99,6 +99,20 @@ final class RestorePopoverModelTests: XCTestCase {
         XCTAssertNil(clean.degradeNote)
     }
 
+    /// 票 17：全屏应用卡在其他屏 → 告知附注带可操作提示（无降级时单独成附注）
+    func testNoticeCarriesFullscreenOnOtherDisplayHint() {
+        let outcome = AutoRestoredOutcome(
+            topologyKey: "topo-1", presetID: "p1", presetName: "工作",
+            notice: RestoreCompletionNotice(trigger: .auto, okCount: 12, skipCount: 1, failCount: 0,
+                                            degradedLayerNames: [], failureDetail: nil,
+                                            fullscreenOnOtherDisplayCount: 1),
+            hasOtherPresets: false)
+        let notice = AutoRestoreNoticeContent.make(outcome)
+
+        XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败")
+        XCTAssertEqual(notice.degradeNote, "1 个全屏应用在其他屏幕上，退出全屏后可再次恢复")
+    }
+
     /// 管线中止（无显示器 / 回滚快照写失败）：报失败原因，不给撤销
     func testNoticeForFailedAutoRestoreHasNoUndo() {
         let notice = AutoRestoreNoticeContent.make(autoRestored(failure: "无活动显示器", hasOtherPresets: true))

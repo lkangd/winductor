@@ -618,6 +618,31 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertTrue(restored.hasOtherPresets, "拓扑下还有其他预设 → 告知附「改用其他预设…」")
     }
 
+    /// 票 17：全屏应用卡在其他屏（后台退出全屏不可达，L3 skip fullscreen-on-other-display）→ 附可操作提示
+    func testFullscreenOnOtherDisplayAddsActionableNote() throws {
+        let rig = try rig(start: [screenA])
+        try rig.addPreset("工作", on: [screenA, screenB])
+        var withElsewhere = report(ok: 3, skip: 2)
+        withElsewhere.fullscreenOnOtherDisplayCount = 2
+        rig.restorer.report = withElsewhere
+        let collector = DegradeCollectingLog(inner: rig.spy)
+        rig.restorer.onRestore = { _ in collector.write("[degrade] layer=L2 reason=probe-miss detail=forced") }
+        let topology = rig.topology, outcomes = rig.outcomes
+        let chain = TriggerChain(presets: rig.store, restorer: rig.restorer, spaces: rig.spaces,
+                                 topologyProvider: { topology.observed }, clock: rig.clock, scheduler: rig.scheduler,
+                                 log: collector, degradeCollector: collector, onOutcome: { outcomes.append($0) })
+
+        topology.set([screenA, screenB])
+        chain.screenParametersChanged()
+        rig.scheduler.runUntilIdle()
+
+        guard case .autoRestored(let restored)? = outcomes.items.last else { return XCTFail("\(outcomes.items)") }
+        XCTAssertEqual(restored.notice.degradeNote,
+                       "本次 Space 归属层失效（几何已恢复）；2 个全屏应用在其他屏幕上，退出全屏后可再次恢复")
+        XCTAssertEqual(restored.notice.body, "恢复完成：3 窗口归位、2 跳过、0 失败；"
+            + "本次 Space 归属层失效（几何已恢复）；2 个全屏应用在其他屏幕上，退出全屏后可再次恢复")
+    }
+
     // MARK: - 手动恢复（提示「恢复」/ 子菜单；与自动恢复同一管线）
 
     func testRestorePresetManuallyRecordsAndNotifies() throws {

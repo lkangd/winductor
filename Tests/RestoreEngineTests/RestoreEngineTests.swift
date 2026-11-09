@@ -290,8 +290,8 @@ extension RestorePipelineTests {
 
         let report = try engine.restore(snapshot: snapshot)
 
-        // 101（实况最小化，快照 Doc 未最小化）→ L4：目标 A#1(id5) 已在 → 直移 true，零首尾动作
-        XCTAssertEqual(bridge.directMinimizedMoves.map(\.windowID), [101])
+        // 101（实况最小化，快照 Doc 未最小化）→ L4：目标 A#1(id5) 已在 → 零动作 ok（票 17：不调直移）
+        XCTAssertTrue(bridge.directMinimizedMoves.isEmpty)
         // 102 走常规桥接；101 不出现在常规桥接列表（已走 L4 直移）
         XCTAssertEqual(bridge.moves.map(\.wids), [[102]])
         XCTAssertTrue(geometry.calls.map(\.windowID).contains(101) == false, "最小化窗几何不触碰")
@@ -508,7 +508,10 @@ extension RestorePipelineTests {
     /// A17 场景：双屏。快照 = A#1 user + B#1 user + B#2 fullscreen(com.t.fs)；
     /// 实况 = 101(com.t.a Doc，被折腾到 B#1) + 202(com.t.fs Full，全屏应用窗现落在 A 整屏)。
     /// 全屏应用不进 snapshot.windows（schema §7.3），由 fullscreen Space 携带 bundleID 表示。
-    func makeFullscreenWorld(fsWindowLive: Bool = true) -> (snapshot: Snapshot, bridge: FakeBridge,
+    /// leadingSamples：排在采样最前的额外实况窗（票 17：同 bundle 伴生条先于主窗出现）
+    func makeFullscreenWorld(fsWindowLive: Bool = true,
+                             leadingSamples: [(sample: CGWindowSample, spaceID: Int64)] = [])
+        -> (snapshot: Snapshot, bridge: FakeBridge,
                                                             geometry: FakeGeometry, fs: FakeFullScreen,
                                                             log: LogSpy, engine: RestoreEngine) {
         let snapshot = Snapshot(
@@ -525,7 +528,7 @@ extension RestorePipelineTests {
             ],
             windows: [World.snapshotWindow(bundleID: "com.t.a", title: "Doc", sibling: 0,
                                            display: "A-uuid", space: 1, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
-        var samples = [
+        var samples = leadingSamples.map(\.sample) + [
             World.sample(wid: 101, bundleID: "com.t.a", title: "Doc",
                          displayOrigin: bOrigin, displaySize: screenSize, x: 0.1, y: 0.1, w: 0.4, h: 0.4),
         ]
@@ -536,6 +539,7 @@ extension RestorePipelineTests {
         }
         var byWindow: [UInt32: Int64] = [101: 6]
         if fsWindowLive { byWindow[202] = 5 }
+        for extra in leadingSamples { byWindow[extra.sample.windowID] = extra.spaceID }
         let bridge = FakeBridge(
             entries: [World.entry("A-uuid", index: 1, id: 5), World.entry("B-uuid", index: 1, id: 6)],
             byWindow: byWindow)

@@ -24,15 +24,19 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
     public let degradedLayerNames: [String]
     /// 管线中止原因（无显示器 / 回滚快照写失败，RestoreEngineError）；nil = 正常完成
     public let failureDetail: String?
+    /// 卡在其他屏全屏 Space 而跳过的全屏应用数（RestoreReport 同名字段；display-presets 票 17）
+    public let fullscreenOnOtherDisplayCount: Int
 
     public init(trigger: RestoreTriggerKind, okCount: Int, skipCount: Int, failCount: Int,
-                degradedLayerNames: [String], failureDetail: String?) {
+                degradedLayerNames: [String], failureDetail: String?,
+                fullscreenOnOtherDisplayCount: Int = 0) {
         self.trigger = trigger
         self.okCount = okCount
         self.skipCount = skipCount
         self.failCount = failCount
         self.degradedLayerNames = degradedLayerNames
         self.failureDetail = failureDetail
+        self.fullscreenOnOtherDisplayCount = fullscreenOnOtherDisplayCount
     }
 
     public var title: String {
@@ -56,10 +60,17 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
         "\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
     }
 
-    /// 降级附注：本次 Space 归属层失效（几何已恢复）；无降级 → nil
+    /// 附注：降级层（本次 Space 归属层失效（几何已恢复））+ 他屏全屏可操作提示（票 17），「；」相连；都没有 → nil
     public var degradeNote: String? {
-        guard !degradedLayerNames.isEmpty else { return nil }
-        return "本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）"
+        var notes: [String] = []
+        if !degradedLayerNames.isEmpty {
+            notes.append("本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）")
+        }
+        if fullscreenOnOtherDisplayCount > 0 {
+            // 后台退出全屏不可达（§5.2）：用户在那块屏退出全屏后再恢复一次即可归位
+            notes.append("\(fullscreenOnOtherDisplayCount) 个全屏应用在其他屏幕上，退出全屏后可再次恢复")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: "；")
     }
 }
 

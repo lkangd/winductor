@@ -592,7 +592,8 @@ public final class TriggerChain: @unchecked Sendable {
                                  detail: "trigger=\(trigger.rawValue) ok=\(report.okCount) skip=\(report.skipCount) fail=\(report.failCount)"))
             return .completed(RestoreCompletionNotice(
                 trigger: trigger, okCount: report.okCount, skipCount: report.skipCount,
-                failCount: report.failCount, degradedLayerNames: degradedNames, failureDetail: nil))
+                failCount: report.failCount, degradedLayerNames: degradedNames, failureDetail: nil,
+                fullscreenOnOtherDisplayCount: report.fullscreenOnOtherDisplayCount))
         }
         let why = String(describing: failure ?? RestoreEngineError.noActiveDisplay)
         log?.write(chainLine(step: "restore-failed", detail: "trigger=\(trigger.rawValue) error=\(why)"))

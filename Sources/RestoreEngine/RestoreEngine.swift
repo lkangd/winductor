@@ -57,6 +57,9 @@ public struct RestoreReport: Equatable, Sendable {
     public let undoSnapshotURL: URL?
     /// 本轮被协作式取消（触发链：恢复中拓扑变化）：已动的窗口不回滚，剩余条目计 skip
     public var cancelled: Bool = false
+    /// 已计入 skip 的全屏应用中，实况卡在其它屏全屏 Space 的条目数（后台退出全屏不可达，§5.2；
+    /// 用户退出全屏后再次恢复即可归位——告知附可操作提示，display-presets 票 17）
+    public var fullscreenOnOtherDisplayCount: Int = 0
 }
 
 /// 恢复协作式取消令牌（display-presets spec §5.1「恢复进行中拓扑变了：立即中止本轮」）。
@@ -221,7 +224,8 @@ public final class RestoreEngine: @unchecked Sendable {
         return RestoreReport(
             okCount: counts.okCount, skipCount: counts.skipCount, failCount: counts.failCount,
             matchedCount: counts.matchedCount, untouchedLiveCount: counts.untouchedLiveCount,
-            undoSnapshotURL: counts.undoSnapshotURL, cancelled: counts.cancelled)
+            undoSnapshotURL: counts.undoSnapshotURL, cancelled: counts.cancelled,
+            fullscreenOnOtherDisplayCount: counts.fullscreenOnOtherDisplayCount)
     }
 
     /// 撤销入口（票 16，spec §6.3/§8.6）：读回滚快照整体回滚——把恢复前实况当作恢复目标跑一次恢复语义
@@ -308,6 +312,8 @@ public final class RestoreEngine: @unchecked Sendable {
         let matchedCount: Int
         let untouchedLiveCount: Int
         let fullscreenPendingCount: Int
+        /// 仅恢复模式非 0（撤销模式同情形计 fullscreenPendingCount）
+        let fullscreenOnOtherDisplayCount: Int
         let undoSnapshotURL: URL
         let cancelled: Bool
     }
@@ -458,11 +464,12 @@ public final class RestoreEngine: @unchecked Sendable {
 
         let tL3 = Date()
         // Pass L3（票 15）：快照 fullscreen Space（kind=fullscreen 携带 bundleID，不进 windows，§7.3）
-        var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0
+        var ok3 = 0, skip3 = 0, fail3 = 0, pending3 = 0, otherDisplay3 = 0
         if !stopBeforeLayer(actProcessed, actItems.count) {
             restoreFullscreenSpaces(snapshot: snapshot, live: live, entries: entries, displays: displays,
             layerOK: spaces.isLayerAvailable(.fullscreen), bridgeOK: spaces.isBridgeAvailable(),
-                                    mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3)
+                                    mode: mode, ok: &ok3, skipped: &skip3, failed: &fail3, pending: &pending3,
+                                    onOtherDisplay: &otherDisplay3)
         }
 
         // Pass L4（票 15，§6.8 顺序铁律最后一环）：最小化窗口送回快照 Space 并保持最小化
@@ -504,6 +511,7 @@ public final class RestoreEngine: @unchecked Sendable {
             matchedCount: outcome.matches.count,
             untouchedLiveCount: outcome.unmatchedLiveIndexes.count,
             fullscreenPendingCount: pending,
+            fullscreenOnOtherDisplayCount: otherDisplay3,
             undoSnapshotURL: undoURL,
             cancelled: cancelled)
     }
@@ -774,7 +782,7 @@ public final class RestoreEngine: @unchecked Sendable {
                                          entries: [SpaceEntry], displays: [Displays.Info],
                                          layerOK: Bool, bridgeOK: Bool, mode: RunMode,
                                          ok: inout Int, skipped: inout Int, failed: inout Int,
-                                         pending: inout Int) {
+                                         pending: inout Int, onOtherDisplay: inout Int) {
         var consumed = Set<UInt32>()  // 同应用多个全屏 Space 时，一个实况窗只消费一次
         for space in snapshot.spaces where space.kind == .fullscreen {
             let target = "\(space.displayUUID)/\(space.index)"
@@ -801,7 +809,17 @@ public final class RestoreEngine: @unchecked Sendable {
                 skipped += 1
                 continue
             }
-            guard let lw = live.first(where: { $0.bundleID == appID && !consumed.contains($0.cgWindowID) }) else {
+            // 同应用多窗取面积最大者（display-presets 票 17：首个同 bundle 窗常是 1512×54 工具条类伴生窗，
+            // 选中它去全屏必败）；面积按所属屏点数计（比例 × 屏尺寸，跨屏可比），并列保持采样序
+            func area(_ w: LiveRestoreWindow) -> Double {
+                let size = displays.first { $0.uuid == w.displayUUID }?.bounds.size ?? CGSize(width: 1, height: 1)
+                return w.w * w.h * Double(size.width * size.height)
+            }
+            let candidates = live.filter { $0.bundleID == appID && !consumed.contains($0.cgWindowID) }
+            guard let lw = candidates.reduce(nil as LiveRestoreWindow?, { best, w in
+                guard let best else { return w }
+                return area(w) > area(best) ? w : best
+            }) else {
                 // 应用已退出不启动（spec §6.4a）
                 log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: 0, app: appID,
                     action: .fullscreen, target: target, before: "-", after: "-", result: .skip,
@@ -811,32 +829,40 @@ public final class RestoreEngine: @unchecked Sendable {
             }
             consumed.insert(lw.cgWindowID)
             let wid = lw.cgWindowID
-            var before = "fullscreen=false disp=\(lw.displayUUID) space=\(lw.spaceID)"
+            // 实况真值：窗口所在 Space kind==全屏（恢复与撤销同口径，display-presets 票 17）
+            let current = entries.first { $0.spaceID == lw.spaceID }
+            let stuck = current?.kind == SpaceKind.fullscreen
+            var before = "fullscreen=\(stuck) disp=\(lw.displayUUID) space=\(lw.spaceID)"
 
-            // 撤销（票 16 §8.6）：按「是否仍卡在全屏 Space」分流两段式。
-            // 卡在目标屏 = 已达标幂等 ok（重复撤销无害）；卡在其它屏 = 后台退出不可达（§5.2），
-            // 第一段跳过计 pending（文案 N）；已不在全屏（用户已按 Esc：全屏 Space 销毁、窗口归原 Space）
-            // = 第二段补完，进入全屏后台可达（§5.2），落下方常规路径回目标屏重新全屏。
-            if mode == .undo {
-                let current = entries.first { $0.spaceID == lw.spaceID }
-                let stuck = current?.kind == SpaceKind.fullscreen
-                before = "fullscreen=\(stuck) disp=\(lw.displayUUID) space=\(lw.spaceID)"
-                if stuck {
-                    if current?.displayUUID == space.displayUUID {
-                        log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
-                            app: appID, action: .fullscreen, target: target, before: before,
-                            after: "fullscreen=true", result: .ok))
-                        log?.write("[restore] detail wid=\(wid) app=\(appID) action=fullscreen detail=already-at-target")
-                        ok += 1
-                        continue
-                    }
+            // 已在全屏 Space：桥接对全屏窗 no-op（还会标记本轮桥接失效连累 L4）、后台 Space 窗 AX 不可见
+            // （setFullScreen 必 elementInvalid）、后台退出全屏不可达（§5.2）——一律不桥接、不写 AX。
+            // 在目标屏 = 已达标 ok（重复恢复/撤销幂等无害）；在其它屏 = 不可达：
+            // 恢复计 skip（fullscreen-on-other-display，告知附可操作提示）；
+            // 撤销第一段计 pending（票 16 §8.6 文案 N），用户按 Esc（全屏 Space 销毁、窗口归原 Space）后
+            // 第二段落下方常规路径回目标屏重新全屏（进入全屏后台可达，§5.2）。
+            if stuck {
+                if current?.displayUUID == space.displayUUID {
+                    log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
+                        app: appID, action: .fullscreen, target: target, before: before,
+                        after: "fullscreen=true", result: .ok))
+                    log?.write("[restore] detail wid=\(wid) app=\(appID) action=fullscreen detail=already-at-target")
+                    ok += 1
+                    continue
+                }
+                switch mode {
+                case .undo:
                     log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
                         app: appID, action: .fullscreen, target: target, before: before,
                         after: "-", result: .skip, reason: "fullscreen-exit-pending"))
                     pending += 1
-                    skipped += 1
-                    continue
+                case .restore:
+                    log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid,
+                        app: appID, action: .fullscreen, target: target, before: before,
+                        after: "-", result: .skip, reason: "fullscreen-on-other-display"))
+                    onOtherDisplay += 1
                 }
+                skipped += 1
+                continue
             }
 
             // 目标屏就位（05 #4：窗口先到目标屏；已在目标屏则免桥接）。预移位落点取目标屏既有 Space 之一即可
@@ -938,6 +964,15 @@ public final class RestoreEngine: @unchecked Sendable {
                 logSpaceMerge(wid: wid, app: snap.bundleID, display: snap.displayUUID,
                               from: from, to: targetSpace.index)
             }
+            if lw.spaceID == targetSpace.spaceID {
+                // 已在目标 Space（display-presets 票 17）：零动作计 ok，先于任何桥接/取消最小化
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
+                    action: .minimize, target: target, before: before,
+                    after: "minimized=true space=\(targetSpace.spaceID)", result: .ok))
+                log?.write("[restore] detail wid=\(wid) app=\(snap.bundleID) action=minimize detail=already-at-target")
+                ok += 1
+                continue
+            }
             let move = MinimizedMove(lw: lw, snap: snap, targetSpace: targetSpace, target: target, before: before)
             if let g = groups.firstIndex(where: { $0.spaceID == targetSpace.spaceID }) {
                 groups[g].moves.append(move)
@@ -947,15 +982,31 @@ public final class RestoreEngine: @unchecked Sendable {
         }
 
         for group in groups {
-            // §6.5：先试最小化状态下直接桥接（实现期可简化，语义不变）；抛错 = 整组未迁移，逐窗回退
-            let moved = (try? spaces.tryMoveMinimized(windowIDs: group.moves.map(\.lw.cgWindowID),
-                                                     spaceID: group.spaceID)) ?? []
+            // §6.5：先试最小化状态下直接桥接（实现期可简化，语义不变）；抛错 = 整组未迁移，逐窗回退。
+            // 桥接本轮不可用（探针 / 运行时 no-op）→ 整组原地保持最小化计 skip（display-presets 票 17）
+            var moved: Set<UInt32> = []
+            if spaces.isBridgeAvailable() {
+                do {
+                    moved = try spaces.tryMoveMinimized(windowIDs: group.moves.map(\.lw.cgWindowID),
+                                                        spaceID: group.spaceID)
+                } catch let e as SpaceAdapterError where e == .layerUnavailable(.bridge) {
+                    // 直移途中桥接层失效：下方逐窗检查即转 skip
+                } catch {}
+            }
             for move in group.moves {
                 if moved.contains(move.lw.cgWindowID) {
                     log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: move.lw.cgWindowID,
                         app: move.snap.bundleID, action: .minimize, target: move.target, before: move.before,
                         after: "minimized=true space=\(move.targetSpace.spaceID)", result: .ok))
                     ok += 1
+                } else if !spaces.isBridgeAvailable() {
+                    // 回退「取消最小化 → 桥接 → 重新最小化」仅在桥接可用而直移失败时才有意义：
+                    // 桥接已失效时回退必抛 layerUnavailable，白白可见展开/缩小一次（实测每窗 ~0.7s 闪烁）
+                    log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: move.lw.cgWindowID,
+                        app: move.snap.bundleID, action: .minimize, target: move.target, before: move.before,
+                        after: "minimized=true space=\(move.lw.spaceID)", result: .skip,
+                        reason: "bridge-unavailable"))
+                    skipped += 1
                 } else {
                     restoreMinimizedViaUnminimize(move, ok: &ok, skipped: &skipped, failed: &failed)
                 }
