@@ -112,6 +112,12 @@ private func titleNote(_ result: VerifyEntryResult, _ snapshotWindow: SnapshotWi
     result.viaGeometryFallback ? "（兜底「\(snapshotWindow.title)」→「\(live.title)」）" : ""
 }
 
+/// 期望 Space 经用户桌面序号映射后与快照 index 不同时注明来源（如「(快照#2)」），便于对照 Space 重排
+private func spaceMappingNote(_ result: VerifyEntryResult, _ snapshotWindow: SnapshotWindow) -> String {
+    guard let expected = result.expectedSpaceIndex, expected != snapshotWindow.spaceIndex else { return "" }
+    return "(快照#\(snapshotWindow.spaceIndex))"
+}
+
 private func pad(_ s: String, _ n: Int) -> String {
     s.count >= n ? s : s + String(repeating: " ", count: n - s.count)
 }
@@ -239,7 +245,8 @@ func main() {
     // 判定：Core.VerifyComparer（保守匹配与 app 恢复管线共用 Core.ConservativeMatcher，spec §7.1 / 08 #1）
     let results = VerifyComparer.compare(snapshot: snapshot, liveWindows: liveWindows,
                                          displayUUIDByWindowID: displayUUIDByWindowID,
-                                         spaceEntryByWindowID: spaceEntryByWindowID)
+                                         spaceEntryByWindowID: spaceEntryByWindowID,
+                                         liveSpaces: spaceEntries)
     let liveByWindowID = Dictionary(liveWindows.map { ($0.cgWindowID, $0) }, uniquingKeysWith: { a, _ in a })
 
     // 报告
@@ -272,7 +279,7 @@ func main() {
             var extra = ""
             if let screenName { extra += "  屏=\(screenName)\(result.displayMatched == nil ? "(无法核验)" : " ✓")" }
             if result.spaceMatched != nil {
-                extra += "  Space=#\(snapshotWindow.spaceIndex) ✓"
+                extra += "  Space=#\(result.expectedSpaceIndex ?? snapshotWindow.spaceIndex)\(spaceMappingNote(result, snapshotWindow)) ✓"
             } else {
                 extra += "  Space=无法核验（本进程无 SLS 授权）"
             }
@@ -287,7 +294,9 @@ func main() {
                 print("      屏幕归属: 期望=\(screenName)(\(snapshotWindow.displayUUID)) 实际=\(displayUUIDByWindowID[live.cgWindowID] ?? "?")")
             }
             if result.spaceMatched == false {
-                print("      Space 归属: 期望=#\(snapshotWindow.spaceIndex) 实际=#\(spaceEntryByWindowID[live.cgWindowID]?.index ?? -1)")
+                let expectedText = result.expectedSpaceIndex.map { "#\($0)\(spaceMappingNote(result, snapshotWindow))" }
+                    ?? "无（目标屏无用户桌面）"
+                print("      Space 归属: 期望=\(expectedText) 实际=#\(spaceEntryByWindowID[live.cgWindowID]?.index ?? -1)")
             }
         }
     }

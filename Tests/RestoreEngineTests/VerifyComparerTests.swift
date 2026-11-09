@@ -23,9 +23,13 @@ final class VerifyComparerTests: XCTestCase {
 
     func compare(live: [LiveWindow],
                  displays: [UInt32: String] = [101: "A-uuid"],
-                 spaces: [UInt32: SpaceEntry] = [101: World.entry("A-uuid", index: 1, id: 5)]) -> [VerifyEntryResult] {
+                 spaces: [UInt32: SpaceEntry] = [101: World.entry("A-uuid", index: 1, id: 5)],
+                 liveSpaces: [SpaceEntry] = [World.entry("A-uuid", index: 1, id: 5),
+                                             World.entry("A-uuid", index: 2, id: 6),
+                                             World.entry("B-uuid", index: 1, id: 7)]) -> [VerifyEntryResult] {
         VerifyComparer.compare(snapshot: snapshot, liveWindows: live,
-                               displayUUIDByWindowID: displays, spaceEntryByWindowID: spaces)
+                               displayUUIDByWindowID: displays, spaceEntryByWindowID: spaces,
+                               liveSpaces: liveSpaces)
     }
 
     func testAllDimensionsEqualPasses() throws {
@@ -67,10 +71,11 @@ final class VerifyComparerTests: XCTestCase {
                                x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: false)]
         guard case .fail(let reasons) = compare(
             live: live, displays: [101: "B-uuid"],
-            spaces: [101: World.entry("B-uuid", index: 1, id: 6)])[0].verdict else {
+            spaces: [101: World.entry("B-uuid", index: 1, id: 7)])[0].verdict else {
             return XCTFail("应判 FAIL")
         }
-        XCTAssertEqual(reasons, ["display"])
+        // 期望 Space 是 A 屏的桌面（按 Space 身份比，票 15）：落在 B 屏 #1 同时不符屏与 Space
+        XCTAssertEqual(reasons, ["display", "space"])
     }
 
     func testMissingSpaceDataDoesNotBlockPass() throws {
@@ -102,5 +107,45 @@ final class VerifyComparerTests: XCTestCase {
         let exact = compare(live: [LiveWindow(cgWindowID: 101, bundleID: "com.t.a", title: "Doc",
                                               x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: false)])
         XCTAssertEqual(exact[0].viaGeometryFallback, false)
+    }
+
+    // MARK: display-presets 票 15 — Space 比对与恢复落位同口径（同屏用户桌面序号映射，Core 共用一份）
+
+    /// 单屏 A：快照 [u,u,FS,FS] 窗在 #2；实况 [u,FS,FS,u]（用户把全屏 Space 挪到前面）
+    func reorderedCompare(liveSpaceIndexOfWindow index: Int) -> VerifyEntryResult {
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000)],
+            spaces: [World.userSpace("A-uuid", index: 1), World.userSpace("A-uuid", index: 2),
+                     SnapshotSpace(displayUUID: "A-uuid", index: 3, kind: .fullscreen, fullscreenAppBundleID: "com.t.fs1"),
+                     SnapshotSpace(displayUUID: "A-uuid", index: 4, kind: .fullscreen, fullscreenAppBundleID: "com.t.fs2")],
+            windows: [World.snapshotWindow(bundleID: "com.t.chat", title: "Chat", sibling: 0,
+                                           display: "A-uuid", space: 2, x: 0.1, y: 0.1, w: 0.4, h: 0.4)])
+        let liveSpaces = [World.entry("A-uuid", index: 1, id: 11),
+                          World.entry("A-uuid", index: 2, id: 12, kind: SpaceKind.fullscreen),
+                          World.entry("A-uuid", index: 3, id: 13, kind: SpaceKind.fullscreen),
+                          World.entry("A-uuid", index: 4, id: 14)]
+        let live = [LiveWindow(cgWindowID: 101, bundleID: "com.t.chat", title: "Chat",
+                               x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: false)]
+        return VerifyComparer.compare(snapshot: snapshot, liveWindows: live,
+                                      displayUUIDByWindowID: [101: "A-uuid"],
+                                      spaceEntryByWindowID: [101: liveSpaces[index - 1]],
+                                      liveSpaces: liveSpaces)[0]
+    }
+
+    func testReorderedSpacesWindowOnMappedUserDesktopPasses() throws {
+        // 快照第 2 个用户桌面 → 实况第 2 个用户桌面 #4：恢复落在这里，verify 须判通过
+        let result = reorderedCompare(liveSpaceIndexOfWindow: 4)
+        XCTAssertEqual(result.verdict, .pass)
+        XCTAssertEqual(result.spaceMatched, true)
+        XCTAssertEqual(result.expectedSpaceIndex, 4)
+    }
+
+    func testReorderedSpacesWindowOnSameAbsoluteIndexFails() throws {
+        // 同绝对 index #2 在实况是全屏 Space：不是恢复目标 → space 失败
+        let result = reorderedCompare(liveSpaceIndexOfWindow: 2)
+        XCTAssertEqual(result.verdict, .fail(reasons: ["space"]))
+        XCTAssertEqual(result.spaceMatched, false)
+        XCTAssertEqual(result.expectedSpaceIndex, 4)
     }
 }
