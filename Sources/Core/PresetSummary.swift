@@ -37,6 +37,31 @@ public enum PresetSummary {
     }
 }
 
+/// 整个预设的计数（ui-refactor 票 04 拓扑页预设块摘要「N 块屏幕 · N 个应用 · N 个窗口」）
+public struct PresetTotals: Equatable, Sendable {
+    public let displayCount: Int
+    public let appCount: Int
+    public let windowCount: Int
+
+    public init(displayCount: Int, appCount: Int, windowCount: Int) {
+        self.displayCount = displayCount; self.appCount = appCount; self.windowCount = windowCount
+    }
+
+    /// 「3 块屏幕 · 9 个应用 · 15 个窗口」
+    public var text: String { "\(displayCount) 块屏幕 · \(appCount) 个应用 · \(windowCount) 个窗口" }
+}
+
+extension PresetSummary {
+    /// 整个预设的计数：屏 = 快照里的屏；应用按 bundleID 跨屏去重（含全屏应用）；窗口含最小化，全屏应用各计 1 个窗口
+    /// （与 displays(of:) 逐屏口径一致，只是应用跨屏去重）
+    public static func totals(of snapshot: Snapshot) -> PresetTotals {
+        let fullscreenApps = snapshot.spaces.filter { $0.kind == .fullscreen }.compactMap(\.fullscreenAppBundleID)
+        return PresetTotals(displayCount: snapshot.topology.count,
+                            appCount: Set(snapshot.windows.map(\.bundleID)).union(fullscreenApps).count,
+                            windowCount: snapshot.windows.count + fullscreenApps.count)
+    }
+}
+
 /// 单屏 Space 不足（spec §5.3：预设多出的用户桌面上的窗口并入同屏最后一个用户桌面，不补建）。
 /// 只数用户桌面，与恢复落位（Core.UserDesktopMapping 按用户桌面序号映射）同口径
 public struct SpaceShortage: Equatable, Sendable {
@@ -96,8 +121,8 @@ public enum TopologyNaming {
         return zip(ordered, disambiguated(names)).map { ($0.uuid, $1) }
     }
 
-    /// 同名屏按出现顺序加「#1」「#2」…；不重名的保持原样
-    static func disambiguated(_ names: [String]) -> [String] {
+    /// 同名屏按出现顺序加「#1」「#2」…；不重名的保持原样（拓扑页排列图与详情卡片同一口径）
+    public static func disambiguated(_ names: [String]) -> [String] {
         var seen: [String: Int] = [:]
         return names.map { name in
             guard names.filter({ $0 == name }).count > 1 else { return name }

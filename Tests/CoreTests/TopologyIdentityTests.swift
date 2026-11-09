@@ -200,6 +200,36 @@ final class TopologyIdentityTests: XCTestCase {
         XCTAssertEqual(key(home()), key(renamed))
     }
 
+    // MARK: 是否内置屏（ui-refactor 票 04：排列图刘海；展示数据，不参与身份）
+
+    /// 观测时带上是否内置屏，随展示数据落盘；不参与拓扑键
+    func testBuiltinFlagCarriedIntoDisplayDataButNotIdentity() {
+        var flagged = home()
+        flagged[0] = TopologyScreen(uuid: laptop, name: "内置", frame: CGRect(x: -1512, y: 400, width: 1512, height: 982),
+                                    pixelWidth: 3024, pixelHeight: 1964, rotation: 0, isMirrored: false, isBuiltin: true)
+        flagged[1] = TopologyScreen(uuid: main, name: "D", frame: CGRect(x: 0, y: 0, width: 2560, height: 1440),
+                                    pixelWidth: 5120, pixelHeight: 2880, rotation: 0, isMirrored: false, isBuiltin: false)
+        let observed = ObservedTopology(screens: flagged)
+
+        XCTAssertEqual(observed.displays.map(\.isBuiltin), [true, false, nil])
+        XCTAssertEqual(observed.identity, ObservedTopology(screens: home()).identity)
+        XCTAssertEqual(observed.identity.key, key(home()))
+    }
+
+    /// 旧数据（topology.json 无 isBuiltin 键）解码为 nil；有值时往返不丢；nil 不写键
+    func testBuiltinFlagDecodesMissingKeyAsNilAndRoundTrips() throws {
+        let legacy = Data(#"{"uuid":"U","name":"内置","frame":{"x":0,"y":0,"w":1512,"h":982},"pixelWidth":3024,"pixelHeight":1964,"rotation":0}"#.utf8)
+        let decoded = try JSONDecoder().decode(TopologyDisplayInfo.self, from: legacy)
+        XCTAssertNil(decoded.isBuiltin)
+        XCTAssertEqual(decoded.name, "内置")
+
+        var builtin = decoded
+        builtin.isBuiltin = true
+        let roundTripped = try JSONDecoder().decode(TopologyDisplayInfo.self, from: JSONEncoder().encode(builtin))
+        XCTAssertEqual(roundTripped.isBuiltin, true)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self).contains("isBuiltin"))
+    }
+
     // MARK: 拓扑键格式
 
     /// 拓扑键可作文件/目录名：仅小写十六进制、定长 32，与屏数和 UUID 长度无关

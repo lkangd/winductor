@@ -7,7 +7,7 @@ import Foundation
 // 无稳定 UUID 的屏不参与拓扑（与快照/恢复的屏归属口径一致）。
 
 extension Displays {
-    /// 当前活动屏 → 拓扑输入（UUID、名称、frame、像素分辨率、旋转、是否在镜像集合）
+    /// 当前活动屏 → 拓扑输入（UUID、名称、frame、像素分辨率、旋转、是否在镜像集合、是否内置屏）
     public static func topologyScreens(_ infos: [Info] = active()) -> [TopologyScreen] {
         infos.compactMap { info in
             guard let uuid = info.uuid, !uuid.isEmpty else { return nil }
@@ -19,7 +19,8 @@ extension Displays {
                 pixelWidth: mode?.pixelWidth ?? Int(CGDisplayPixelsWide(info.id)),
                 pixelHeight: mode?.pixelHeight ?? Int(CGDisplayPixelsHigh(info.id)),
                 rotation: rotation(for: info.id),
-                isMirrored: CGDisplayIsInMirrorSet(info.id) != 0)
+                isMirrored: CGDisplayIsInMirrorSet(info.id) != 0,
+                isBuiltin: CGDisplayIsBuiltin(info.id) != 0)
         }
     }
 

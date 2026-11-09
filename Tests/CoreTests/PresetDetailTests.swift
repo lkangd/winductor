@@ -104,22 +104,41 @@ final class PresetDetailTests: XCTestCase {
         ])
     }
 
-    /// 全屏 Space 标「全屏 · 应用名」、不占桌面序号；应用名解析不到回退 bundleID
-    func testFullscreenSpaceTitledWithAppNameAndSkipsDesktopNumbering() {
+    /// 全屏 Space 小标题「全屏」、不占桌面序号，其应用作为一行（计 1 个窗口，ui-refactor 票 04 应用行带图标）；
+    /// 应用名解析不到回退 bundleID；缺 bundleID 的全屏 Space 只有小标题
+    func testFullscreenSpaceListsItsAppAsRowAndSkipsDesktopNumbering() {
         let snap = snapshot(
             spaces: [space(left, 1), space(left, 2, fullscreen: "com.apple.Safari"), space(left, 3),
-                     space(right, 1, fullscreen: "com.example.Unknown")],
+                     space(right, 1, fullscreen: "com.example.Unknown"),
+                     SnapshotSpace(displayUUID: right, index: 2, kind: .fullscreen, fullscreenAppBundleID: nil)],
             windows: [window("com.apple.Notes", on: left, space: 3)])
 
         XCTAssertEqual(outline(detail(snap)), [
             "内置",
             "  桌面 1",
-            "  全屏 · Safari",
+            "  全屏",
+            "    Safari（1 个窗口）",
             "  桌面 2",
             "    备忘录（1 个窗口）",
             "DELL",
-            "  全屏 · com.example.Unknown",
+            "  全屏",
+            "    com.example.Unknown（1 个窗口）",
+            "  全屏",
         ])
+        XCTAssertEqual(detail(snap).displays.first?.spaces.map(\.isFullscreen), [false, true, false])
+    }
+
+    /// 卡片头的屏图标：展示数据标了内置屏的用笔记本图标；旧数据（nil）按外接屏
+    func testDisplayCarriesBuiltinFlagFromDisplayData() {
+        var flagged = displays
+        flagged[0].isBuiltin = true
+        let snap = snapshot(spaces: [space(left, 1), space(right, 1)], windows: [])
+
+        let made = PresetDetail.make(snapshot: snap, displays: flagged, displayFilter: nil, isCurrentTopology: false,
+                                     currentSpaces: nil, appName: names)
+
+        XCTAssertEqual(made.displays.map(\.isBuiltin), [true, false])
+        XCTAssertEqual(detail(snap).displays.map(\.isBuiltin), [false, false])
     }
 
     // MARK: 排列图点屏筛选

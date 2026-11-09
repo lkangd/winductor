@@ -4,6 +4,7 @@ import Foundation
 // 纯函数，管理窗口（display-presets 票 08）展开预设行时渲染；屏顺序与命名与恢复提示同源（TopologyNaming.orderedDisplays）。
 // 口径：
 //   - Space 按 index 升序；用户桌面按该屏用户桌面的序数称「桌面 N」（与调度中心一致，全屏 Space 不占号）
+//   - 全屏 Space 小标题「全屏」，其应用（快照由 Space 携带、不进 windows）作为一行、计 1 个窗口（ui-refactor 票 04）
 //   - Space 下按 bundleID 聚合窗口：窗口数含最小化窗口，另注「其中 N 个最小化」
 //   - 快照未记录的 spaceIndex（理论上不出现）仍按其 index 列出，窗口不丢
 
@@ -26,7 +27,7 @@ public struct PresetDetailApp: Equatable, Sendable {
 public struct PresetDetailSpace: Equatable, Sendable {
     public let index: Int
     public let isFullscreen: Bool
-    /// 「桌面 1」/「全屏 · Safari」
+    /// 「桌面 1」/「全屏」
     public let title: String
     public let apps: [PresetDetailApp]
 }
@@ -35,6 +36,8 @@ public struct PresetDetailSpace: Equatable, Sendable {
 public struct PresetDetailDisplay: Equatable, Sendable {
     public let uuid: String
     public let name: String
+    /// 内置屏（展示数据 isBuiltin；旧数据缺省按外接屏）——详情卡片头的屏图标
+    public let isBuiltin: Bool
     public let spaces: [PresetDetailSpace]
 }
 
@@ -58,6 +61,7 @@ public struct PresetDetail: Equatable, Sendable {
             .filter { shown($0.uuid) }
             .map { uuid, name in
                 PresetDetailDisplay(uuid: uuid, name: name,
+                                    isBuiltin: displays.first { $0.uuid == uuid }?.isBuiltin ?? false,
                                     spaces: spaces(on: uuid, of: snapshot, appName: appName))
             }
         let shortages = isCurrentTopology
@@ -78,8 +82,7 @@ public struct PresetDetail: Equatable, Sendable {
             let title: String
             let isFullscreen = recorded?.kind == .fullscreen
             if isFullscreen {
-                // 全屏应用由 Space 携带、不进 windows（§7.3）；缺 bundleID 时只标「全屏」
-                title = recorded?.fullscreenAppBundleID.map { "全屏 · \(appName($0) ?? $0)" } ?? "全屏"
+                title = "全屏"
             } else {
                 desktopOrdinal += 1
                 title = "桌面 \(desktopOrdinal)"
@@ -88,11 +91,16 @@ public struct PresetDetail: Equatable, Sendable {
             // 应用按快照中首次出现的顺序
             var order: [String] = []
             for window in inSpace where !order.contains(window.bundleID) { order.append(window.bundleID) }
-            let apps = order.map { bundleID in
+            let windowApps = order.map { bundleID in
                 let own = inSpace.filter { $0.bundleID == bundleID }
                 return PresetDetailApp(bundleID: bundleID, name: appName(bundleID) ?? bundleID,
                                        windowCount: own.count, minimizedCount: own.filter(\.minimized).count)
             }
+            // 全屏应用由 Space 携带、不进 windows（§7.3）：作为该 Space 首行；缺 bundleID 时只有小标题
+            let fullscreenApp = isFullscreen ? recorded?.fullscreenAppBundleID.map { bundleID in
+                PresetDetailApp(bundleID: bundleID, name: appName(bundleID) ?? bundleID, windowCount: 1, minimizedCount: 0)
+            } : nil
+            let apps = (fullscreenApp.map { [$0] } ?? []) + windowApps
             return PresetDetailSpace(index: index, isFullscreen: isFullscreen, title: title, apps: apps)
         }
     }

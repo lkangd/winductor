@@ -35,6 +35,37 @@ final class PresetSummaryTests: XCTestCase {
                  spaces: spaces, windows: windows)
     }
 
+    // MARK: 预设块摘要总数（ui-refactor 票 04：「N 块屏幕 · N 个应用 · N 个窗口」）
+
+    /// 屏数 = 快照里的屏；应用按 bundleID 跨屏去重（含全屏应用）；窗口含最小化，全屏应用计 1 个窗口
+    func testTotalsCountScreensDistinctAppsAndWindows() {
+        let snap = snapshot(
+            spaces: [space(left, 1), space(left, 2, fullscreen: "com.apple.Keynote"), space(right, 1),
+                     space(right, 2, fullscreen: "com.apple.Safari")],
+            windows: [
+                window("com.apple.Terminal", on: left),
+                window("com.apple.Terminal", on: left, minimized: true),
+                window("com.apple.Safari", on: right),
+                window("com.apple.Terminal", on: right),
+            ])
+
+        let totals = PresetSummary.totals(of: snap)
+
+        XCTAssertEqual(totals, PresetTotals(displayCount: 2, appCount: 3, windowCount: 6))
+        XCTAssertEqual(totals.text, "2 块屏幕 · 3 个应用 · 6 个窗口")
+    }
+
+    /// 空快照：全零（全屏 Space 缺 bundleID 不计应用与窗口）
+    func testTotalsOfEmptySnapshot() {
+        let snap = Snapshot(capturedAt: Date(timeIntervalSince1970: 0), topology: [],
+                            spaces: [space(left, 1, fullscreen: nil)], windows: [])
+        XCTAssertEqual(PresetSummary.totals(of: snap), PresetTotals(displayCount: 0, appCount: 0, windowCount: 0))
+        let unnamedFullscreen = Snapshot(capturedAt: Date(timeIntervalSince1970: 0), topology: [],
+                                         spaces: [SnapshotSpace(displayUUID: left, index: 1, kind: .fullscreen,
+                                                                fullscreenAppBundleID: nil)], windows: [])
+        XCTAssertEqual(PresetSummary.totals(of: unnamedFullscreen).text, "0 块屏幕 · 0 个应用 · 0 个窗口")
+    }
+
     // MARK: 摘要（各屏应用/窗口计数）
 
     /// 每屏一行：应用数按 bundleID 去重、窗口数含最小化；全屏 Space 的应用计 1 应用 1 窗口；空屏「无窗口」

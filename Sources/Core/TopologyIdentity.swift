@@ -15,12 +15,14 @@ public struct TopologyScreen: Equatable, Sendable {
     public let rotation: Int
     /// 是否处于镜像集合
     public let isMirrored: Bool
+    /// 是否内置屏（CGDisplayIsBuiltin；nil = 未读取）。只进展示数据（排列图刘海），不参与身份
+    public let isBuiltin: Bool?
 
     public init(uuid: String, name: String, frame: CGRect, pixelWidth: Int, pixelHeight: Int,
-                rotation: Int, isMirrored: Bool) {
+                rotation: Int, isMirrored: Bool, isBuiltin: Bool? = nil) {
         self.uuid = uuid; self.name = name; self.frame = frame
         self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
-        self.rotation = rotation; self.isMirrored = isMirrored
+        self.rotation = rotation; self.isMirrored = isMirrored; self.isBuiltin = isBuiltin
     }
 }
 
@@ -102,11 +104,15 @@ public struct TopologyDisplayInfo: Codable, Equatable, Sendable {
     public var pixelWidth: Int
     public var pixelHeight: Int
     public var rotation: Int
+    /// 是否内置屏（ui-refactor 票 04：排列图画刘海）。保存预设时随实况填入；旧数据无此键 → nil（按非内置画，不画刘海）。
+    /// 与其余展示数据一样不参与拓扑身份（身份只由 TopologyIdentity 从 UUID/邻接/旋转算出）
+    public var isBuiltin: Bool?
 
     public init(uuid: String, name: String, frame: SnapshotDisplayFrame,
-                pixelWidth: Int, pixelHeight: Int, rotation: Int) {
+                pixelWidth: Int, pixelHeight: Int, rotation: Int, isBuiltin: Bool? = nil) {
         self.uuid = uuid; self.name = name; self.frame = frame
         self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight; self.rotation = rotation
+        self.isBuiltin = isBuiltin
     }
 }
 
@@ -128,7 +134,8 @@ public struct ObservedTopology: Sendable {
                     frame: SnapshotDisplayFrame(x: $0.frame.minX, y: $0.frame.minY,
                                                 w: $0.frame.width, h: $0.frame.height),
                     pixelWidth: $0.pixelWidth, pixelHeight: $0.pixelHeight,
-                    rotation: TopologyIdentity.normalizedRotation($0.rotation))
+                    rotation: TopologyIdentity.normalizedRotation($0.rotation),
+                    isBuiltin: $0.isBuiltin)
             }
         isMirrored = screens.contains(where: \.isMirrored)
     }
