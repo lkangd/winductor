@@ -105,3 +105,15 @@ final class SpaceAdapterSettleTests: XCTestCase {
         XCTAssertEqual(result, .unknown(wid: 1))
     }
 }
+
+/// 运行时 no-op 失效标记作用域 = 一轮恢复（display-presets 票 12：一次 no-op 曾毒化整个进程的 L2）
+final class SpaceAdapterRuntimeNoOpTests: XCTestCase {
+    func testNoOpMarkHoldsUntilClearedForNextRound() {
+        let adapter = SpaceAdapter()
+        adapter.markRuntimeNoOp(detail: "test")
+        XCTAssertEqual(adapter.probeLayer(.bridge).reason, "no-op", "本轮内 bridge 层保持失效")
+
+        adapter.clearRuntimeNoOp()
+        XCTAssertNotEqual(adapter.probeLayer(.bridge).reason, "no-op", "新一轮不再带上一轮的 no-op 标记")
+    }
+}

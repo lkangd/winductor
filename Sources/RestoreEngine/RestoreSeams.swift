@@ -25,6 +25,10 @@ public protocol SpaceBridge: SpaceProviding, Sendable {
     @discardableResult
     func tryMoveMinimized(windowID: UInt32, spaceID: Int64) throws -> Bool
 
+    /// 新一轮恢复/撤销开始（display-presets 票 12）：清除上一轮留下的运行时 no-op 失效标记。
+    /// 桥接 no-op 的失效作用域 = 本轮（本轮剩余项照旧快速跳过），下一轮重新可用；探针 / FORCE_DEGRADED 不受影响
+    func beginRestoreRound()
+
     /// 各屏活跃 Space id 集合（后台窗精准判定：窗不在任一活跃 Space = AX 不可见）。
     /// 协议 requirement（extension 方法对 existential 静态分派到默认实现，witness 不生效——实测教训）
     func activeSpaceIDs() throws -> Set<Int64>
@@ -48,6 +52,7 @@ public struct SpaceAdapterBridge: SpaceBridge {
     }
     public func isLayerAvailable(_ layer: SpaceLayer) -> Bool { adapter.isLayerAvailable(layer) }
     public func activeSpaceIDs() throws -> Set<Int64> { Set(try adapter.currentSpaceIDs().values) }
+    public func beginRestoreRound() { adapter.clearRuntimeNoOp() }
 
     @discardableResult
     public func moveWindowsToSpace(windowIDs wids: [UInt32], spaceID: Int64) throws -> Bool {

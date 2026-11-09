@@ -231,6 +231,8 @@ extension SimulatedSeams {
         return true
     }
     func activeSpaceIDs() throws -> Set<Int64> { [] }
+    /// 干跑无运行时 no-op 标记可清
+    func beginRestoreRound() {}
 }
 
 extension SimulatedSeams: WindowEnumerating {

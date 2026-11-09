@@ -131,7 +131,7 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
 
     private let log: LogWriting?
     private let lock = NSLock()
-    /// 运行时识别为 no-op 而失效的层（lock 保护；进程内不可逆，需重启 app 重探）
+    /// 运行时识别为 no-op 而失效的层（lock 保护；作用域 = 一轮恢复，下一轮开始由 clearRuntimeNoOp 清除）
     nonisolated(unsafe) private var runtimeNoOpLayers: Set<SpaceLayer> = []
 
     /// LAYOUTFIXER_FORCE_DEGRADED=bridge|fullscreen|minimized（spec §10.2 探测钩子，层粒度）
@@ -175,7 +175,7 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         lock.unlock()
         if noOp {
             return LayerProbe(layer: layer, available: false, reason: "no-op",
-                              detail: "bridged move observed silent no-op earlier in this session")
+                              detail: "bridged move observed silent no-op in the latest restore round")
         }
         guard Self.skyLight != nil else {
             return LayerProbe(layer: layer, available: false, reason: "probe-miss", detail: "SkyLight symbols unavailable")
@@ -479,8 +479,17 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         return nil
     }
 
+    /// 清除运行时 no-op 失效标记（display-presets 票 12：新一轮恢复开始时调用）。
+    /// 单窗 no-op 常是该窗本身不可迁（如卡在全屏 Space），不代表桥接整体失效，不应连累之后每一轮；
+    /// 探针未过 / FORCE_DEGRADED 不在此列，照旧不可用
+    public func clearRuntimeNoOp() {
+        lock.lock()
+        runtimeNoOpLayers.removeAll()
+        lock.unlock()
+    }
+
     /// 运行时 no-op 识别：标记该层失效 + [degrade] 日志（spec §10.2，静默 no-op 是失效特征）
-    private func markRuntimeNoOp(reason: String = "no-op", detail: String) {
+    func markRuntimeNoOp(reason: String = "no-op", detail: String) {
         lock.lock()
         runtimeNoOpLayers.insert(.bridge)
         lock.unlock()

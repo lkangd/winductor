@@ -19,8 +19,12 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var layerAvailability: [SpaceLayer: Bool] = [:]
     /// 置非 nil = moveWindowsToSpace 抛该错误（异常路径注入）
     var moveError: Error?
-    /// 置 true = moveWindowsToSpace 返回 false 且不改 byWindow（模拟 perform 后归属未变更 no-op）
+    /// 置 true = moveWindowsToSpace 返回 false 且不改 byWindow（模拟 perform 后归属未变更 no-op）；
+    /// 同 SpaceAdapter 口径：no-op 后 bridge 层失效，直到下一轮 beginRestoreRound
     var moveReturnsFalse = false
+    /// 运行时 no-op 失效标记（beginRestoreRound 清除）
+    private(set) var runtimeNoOp = false
+    private(set) var roundsBegun = 0
     /// 置 true = tryMoveMinimized 返回 false（模拟最小化窗直移不可行，走 §6.5 回退路径）
     var minimizedDirectMoveFails = false
     /// 非 nil = activeSpaceIDs 返回该集合（活跃 Space 判定测试）
@@ -58,10 +62,11 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         orderedOut.map { $0.intersection(windowIDs) }
     }
     func activeSpaceIDs() throws -> Set<Int64> { activeSpaces ?? [] }
+    func beginRestoreRound() { roundsBegun += 1; runtimeNoOp = false }
 
     /// 降级阶梯层可用性（spec §6.1/§10.2；bridge 沿用 bridgeAvailable 注入口）
     func isLayerAvailable(_ layer: SpaceLayer) -> Bool {
-        if layer == .bridge { return bridgeAvailable }
+        if layer == .bridge { return bridgeAvailable && !runtimeNoOp }
         return layerAvailability[layer] ?? true
     }
 
@@ -72,7 +77,7 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         if let n = degradeBridgeAfterMoves, moveCalls >= n { bridgeAvailable = false }
         moves.append((wids, spaceID))
         if let moveError { throw moveError }
-        if moveReturnsFalse { return false }
+        if moveReturnsFalse { runtimeNoOp = true; return false }
         for w in wids { byWindow[w] = spaceID }
         return true
     }
