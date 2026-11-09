@@ -260,11 +260,13 @@ final class UndoPipelineTests: XCTestCase {
         for sample in postRestoreSamples {
             let bounds = boundsByWID[sample.windowID] ?? sample.bounds
             displayByWID[sample.windowID] = displayUUID(of: bounds)
-            spaceByWID[sample.windowID] = World.entry("A-uuid", index: 1, id: world.bridge.byWindow[sample.windowID] ?? 5)
+            let spaceID = world.bridge.byWindow[sample.windowID] ?? 5
+            spaceByWID[sample.windowID] = world.bridge.entries.first { $0.spaceID == spaceID }
         }
         let results = VerifyComparer.compare(snapshot: preserved, liveWindows: liveWindows,
                                              displayUUIDByWindowID: displayByWID,
-                                             spaceEntryByWindowID: spaceByWID)
+                                             spaceEntryByWindowID: spaceByWID,
+                                             liveSpaces: world.bridge.entries)
         XCTAssertEqual(results.count, 2)
         for result in results {
             XCTAssertEqual(result.verdict, .pass, "撤销后 verify 应全 PASS：\(result)")
