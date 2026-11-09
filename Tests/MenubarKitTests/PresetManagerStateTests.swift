@@ -110,10 +110,11 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(rows.map(\.isLastRestored), [true, false])
         XCTAssertEqual(rows.map(\.canRestore), [true, true])
         XCTAssertEqual(rows.map(\.canOverwrite), [true, true])
-        XCTAssertEqual(rows.map(\.showsOverwrite), [true, true])
+        XCTAssertEqual(rows.first?.menuItems, menu(overwriteEnabled: true))
     }
 
-    /// 非当前拓扑：可查看、改名、删除、设自动，但恢复/覆盖禁用（acceptance）；「覆盖」按钮不显示（display-presets 票 13）
+    /// 非当前拓扑：可查看、改名、删除、设自动，但恢复/覆盖禁用（acceptance）；
+    /// `⋯` 菜单里「用当前布局覆盖…」置灰，改名/删除照常（ui-refactor 票 04：覆盖从行内移入 `⋯`，撤回 display-presets 票 13 行内按钮）
     func testRowsOfOtherTopologyDisableRestoreAndOverwrite() throws {
         try save("家", on: homeDesk)
 
@@ -123,10 +124,10 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertTrue(selected.canEditAlias)
         XCTAssertEqual(selected.rows.map(\.canRestore), [false])
         XCTAssertEqual(selected.rows.map(\.canOverwrite), [false])
-        XCTAssertEqual(selected.rows.map(\.showsOverwrite), [false])
+        XCTAssertEqual(selected.rows.first?.menuItems, menu(overwriteEnabled: false))
     }
 
-    /// 当前拓扑但恢复进行中 / 未就绪：恢复与覆盖同样禁用；「覆盖」按钮仍显示、置灰（display-presets 票 13）
+    /// 当前拓扑但恢复进行中 / 未就绪：恢复与覆盖同样禁用（`⋯` 菜单覆盖项置灰）
     func testRowsOfCurrentTopologyDisabledWhileUnavailable() throws {
         try save("工作", on: officeDesk)
 
@@ -134,8 +135,68 @@ final class PresetManagerStateTests: XCTestCase {
             let rows = try XCTUnwrap(make(current: officeDesk, availability: availability).selected?.rows)
             XCTAssertEqual(rows.map(\.canRestore), [false], "\(availability)")
             XCTAssertEqual(rows.map(\.canOverwrite), [false], "\(availability)")
-            XCTAssertEqual(rows.map(\.showsOverwrite), [true], "\(availability)")
+            XCTAssertEqual(rows.first?.menuItems, menu(overwriteEnabled: false), "\(availability)")
         }
+    }
+
+    // MARK: 拓扑页（ui-refactor 票 04，spec §5.4）
+
+    /// 标题区说明：当前「当前连接的屏幕排列 · N 块屏幕」/ 非当前「未连接 · N 块屏幕 · …」
+    func testSubtitleDistinguishesCurrentFromOtherTopology() throws {
+        try save("家", on: homeDesk)
+
+        XCTAssertEqual(make(current: officeDesk).selected?.subtitle, "当前连接的屏幕排列 · 2 块屏幕")
+        XCTAssertEqual(make(current: officeDesk, selectedKey: homeDesk.identity.key).selected?.subtitle,
+                       "未连接 · 3 块屏幕 · 可以查看、改名、删除，不能恢复或覆盖")
+    }
+
+    /// 「保存当前布局…」：仅当前拓扑显示（尚无预设也显示）；恢复进行中 / 未就绪置灰
+    func testSavePresetButtonOnlyOnCurrentTopology() throws {
+        try save("家", on: homeDesk)
+
+        let current = try XCTUnwrap(make(current: officeDesk).selected)
+        XCTAssertEqual([current.showsSavePreset, current.canSavePreset], [true, true])
+        let busy = try XCTUnwrap(make(current: officeDesk, availability: .restoring).selected)
+        XCTAssertEqual([busy.showsSavePreset, busy.canSavePreset], [true, false])
+        let other = try XCTUnwrap(make(current: officeDesk, selectedKey: homeDesk.identity.key).selected)
+        XCTAssertEqual([other.showsSavePreset, other.canSavePreset], [false, false])
+    }
+
+    /// 预设块摘要「{保存时间}保存 · N 块屏幕 · N 个应用 · N 个窗口」（计数见 PresetSummary.totals）
+    func testRowSummaryCombinesSavedAtAndTotals() throws {
+        let snap = Snapshot(
+            capturedAt: clock,
+            topology: [TopologyDisplay(uuid: "BUILTIN", localizedName: "内置",
+                                       frame: SnapshotDisplayFrame(x: 0, y: 0, w: 1512, h: 982), orientation: 0),
+                       TopologyDisplay(uuid: "LG-1", localizedName: "LG HDR 4K",
+                                       frame: SnapshotDisplayFrame(x: 1512, y: 0, w: 2560, h: 1440), orientation: 0)],
+            spaces: [SnapshotSpace(displayUUID: "BUILTIN", index: 1, kind: .user, fullscreenAppBundleID: nil),
+                     SnapshotSpace(displayUUID: "LG-1", index: 2, kind: .fullscreen, fullscreenAppBundleID: "com.apple.Keynote")],
+            windows: [window("com.apple.Terminal", on: "BUILTIN"), window("com.apple.Terminal", on: "BUILTIN"),
+                      window("com.apple.Safari", on: "BUILTIN")])
+        try store.addPreset(name: "工作", snapshot: snap, topology: officeDesk)
+
+        XCTAssertEqual(make(current: officeDesk).selected?.rows.map(\.summaryText),
+                       ["2026-11-08 14:30 保存 · 2 块屏幕 · 3 个应用 · 4 个窗口"])
+    }
+
+    /// Space 不足提示挂在预设块上（不必展开详情）：仅当前拓扑、按实时 Space 对比；读不到实时 Space 不提示
+    func testRowSpaceShortagesOnlyOnCurrentTopology() throws {
+        let snap = Snapshot(
+            capturedAt: clock,
+            topology: [TopologyDisplay(uuid: "LG-1", localizedName: "LG HDR 4K",
+                                       frame: SnapshotDisplayFrame(x: 1512, y: 0, w: 2560, h: 1440), orientation: 0)],
+            spaces: [SnapshotSpace(displayUUID: "LG-1", index: 1, kind: .user, fullscreenAppBundleID: nil),
+                     SnapshotSpace(displayUUID: "LG-1", index: 2, kind: .user, fullscreenAppBundleID: nil)],
+            windows: [])
+        try store.addPreset(name: "工作", snapshot: snap, topology: officeDesk)
+        let live = [SpaceEntry(spaceID: 1, displayUUID: "LG-1", index: 1, kind: SpaceKind.user)]
+
+        XCTAssertEqual(make(current: officeDesk, currentSpaces: live).selected?.rows.map(\.spaceShortageTexts),
+                       [["屏幕「LG HDR 4K」当前 Space 比预设少 1 个，多出的窗口将合并"]])
+        XCTAssertEqual(make(current: officeDesk).selected?.rows.map(\.spaceShortageTexts), [[]])
+        XCTAssertEqual(make(current: laptopOnly, selectedKey: officeDesk.identity.key, currentSpaces: live)
+            .selected?.rows.map(\.spaceShortageTexts), [[]])
     }
 
     /// 排列图数据：当前拓扑用实况屏幕（偏移随拖动更新），其他拓扑用存储的展示数据
@@ -168,10 +229,25 @@ final class PresetManagerStateTests: XCTestCase {
     private func make(current: ObservedTopology,
                       availability: LayoutCaptureAvailability = .available,
                       selectedKey: String? = nil,
-                      selectedDisplayUUID: String? = nil) -> PresetManagerState {
+                      selectedDisplayUUID: String? = nil,
+                      currentSpaces: [SpaceEntry]? = nil) -> PresetManagerState {
         PresetManagerState.make(topologies: store.topologies(), current: current, availability: availability,
                                 selectedKey: selectedKey, selectedDisplayUUID: selectedDisplayUUID,
+                                currentSpaces: currentSpaces,
                                 timeZone: TimeZone(secondsFromGMT: 0)!)
+    }
+
+    /// `⋯` 菜单：用当前布局覆盖…（仅当前拓扑且可用）/ 改名… / ─ / 删除…
+    private func menu(overwriteEnabled: Bool) -> [PresetRowMenuItem] {
+        [.action(.overwrite, title: "用当前布局覆盖…", isEnabled: overwriteEnabled),
+         .action(.rename, title: "改名…", isEnabled: true),
+         .separator,
+         .action(.delete, title: "删除…", isEnabled: true)]
+    }
+
+    private func window(_ bundleID: String, on uuid: String) -> SnapshotWindow {
+        SnapshotWindow(bundleID: bundleID, title: "t", siblingIndex: 0, displayUUID: uuid, spaceIndex: 1,
+                       x: 0, y: 0, w: 0.5, h: 0.5, minimized: false)
     }
 
     private func topology(_ screens: [(String, String, Double, Double, Double, Double)],

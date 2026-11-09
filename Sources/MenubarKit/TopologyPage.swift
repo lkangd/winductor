@@ -1,111 +1,147 @@
+import AppKit
 import Core
 import SwiftUI
 
-// TopologyPage.swift — 主窗口的拓扑页（某个屏幕排列：排列图 + 预设列表）。薄视图：只读 PresetManagerModel.state、只调 model 方法；
-// 排序/高亮/可用性见 PresetManagerState，排列图几何见 DisplayArrangementLayout。
-// ui-refactor 票 03：主窗口骨架落地时原样沿用 display-presets 票 07/08/13 的内容（标题行 | 排列图（点屏 = 详情筛选）| 预设列表）
-// 作占位，只去掉左栏（侧栏归 MainWindowView）；spec §5.4 新拓扑页归票 04，整体替换本文件的 TopologyPage 即可
-// （入口签名 TopologyPage(model:)，由 MainWindowView 在选中 .topology 时放进内容区）。
+// TopologyPage.swift — 主窗口的拓扑页（ui-refactor 票 04，spec §5.4；数值取原型 Prototypes/UIRefactor MainWindow.swift /
+// Style.swift 的 TopologyPage、ArrangementDiagram、ScreenTile、PresetBlock、MoreButton）。
+// 薄视图：只读 PresetManagerModel.state / expandedDetail、只调 model 方法；说明文案、可用性、摘要、`⋯` 菜单项见
+// PresetManagerState，排列图几何见 DisplayArrangementLayout，详情卡片见 PresetDetailView。自上而下：
+//   标题区：拓扑名（别名优先，22pt bold）+ 笔形改名按钮（别名对话框）；说明（当前 / 未连接）
+//   排列图：高 150 的极淡容器；屏幕块 = 控件底色面板 + 1pt 次要描边 + 顶部 6pt 菜单栏条（内置屏居中刘海），不用渐变；
+//     块高 < 70 只显示屏名（最多两行）；非当前拓扑整体 60% 不透明；点屏 = 详情只看该屏（强调色描边），再点取消
+//   预设：标题 +「保存当前布局…」（仅当前拓扑）；预设块（块间 Divider）；末尾「自动恢复」说明
 
 struct TopologyPage: View {
     @ObservedObject var model: PresetManagerModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let selected = model.state.selected {
-                TopologyHeader(selected: selected, onEditAlias: model.editAlias)
-                DisplayArrangementView(displays: selected.displays,
-                                       selectedUUID: model.state.selectedDisplayUUID,
-                                       onSelect: model.selectDisplay)
-                    .frame(minHeight: 180, idealHeight: 220)
+        if let selected = model.state.selected {
+            PageScroll {
+                TopologyTitle(selected: selected, onEditAlias: model.editAlias)
+                ArrangementDiagram(displays: selected.displays, isDimmed: !selected.isCurrent,
+                                   selectedUUID: model.state.selectedDisplayUUID, onSelect: model.selectDisplay)
+                    .padding(.top, 16)
+                SectionDivider()
+                SectionHeader(title: "预设") {
+                    if selected.showsSavePreset {
+                        Button("保存当前布局…", action: model.savePreset)
+                            .contentButtonStyle()
+                            .disabled(!selected.canSavePreset)
+                    }
+                }
+                if selected.rows.isEmpty {
+                    Caption(text: selected.isCurrent ? "还没有预设。点「保存当前布局…」把现在的窗口布局存为预设。" : "无预设")
+                        .padding(.vertical, 14)
+                }
+                ForEach(Array(selected.rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider() }
+                    PresetBlock(model: model, row: row)
+                }
                 Divider()
-                PresetList(model: model, selected: selected)
-            } else {
-                Text("还没有保存过任何预设")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Caption(text: "勾选「自动恢复」的预设会在屏幕排列切换到这里时直接恢复，不再询问；每个屏幕排列至多一个。")
+                    .padding(.top, 12)
             }
+        } else {
+            Caption(text: "还没有保存过任何预设")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.top, MainWindowMetrics.contentTop - 12)
     }
 }
 
-/// 右上标题行：拓扑名 + 改名称
-private struct TopologyHeader: View {
+// MARK: - 标题区
+
+private struct TopologyTitle: View {
     let selected: SelectedTopologyState
     let onEditAlias: () -> Void
 
     var body: some View {
-        HStack {
-            Text(selected.title).font(.headline)
-            if !selected.isCurrent {
-                Text("非当前屏幕排列，仅可查看与编辑").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 6) {
+                SectionTitle(text: selected.title)
+                Button(action: onEditAlias) {
+                    Image(systemName: "pencil").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .disabled(!selected.canEditAlias)
+                .help(selected.canEditAlias ? "改名称" : "保存过预设后才能改名称")
             }
-            Spacer()
-            Button("改名称…", action: onEditAlias).disabled(!selected.canEditAlias)
+            Caption(text: selected.subtitle)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
     }
 }
 
-/// 排列图：仿系统设置「显示器」，各屏按相对位置与比例绘制，标屏名与分辨率；点屏选中（再点取消）
-private struct DisplayArrangementView: View {
+// MARK: - 排列图
+
+private struct ArrangementDiagram: View {
     let displays: [TopologyDisplayInfo]
+    let isDimmed: Bool
     let selectedUUID: String?
     let onSelect: (String?) -> Void
+
+    /// 相邻屏之间留的缝（每块各内缩一半）
+    private let gap: CGFloat = 6
 
     var body: some View {
         GeometryReader { proxy in
             let arranged = DisplayArrangementLayout.layout(displays, in: proxy.size, padding: 16)
             ZStack(alignment: .topLeading) {
                 ForEach(arranged) { display in
+                    let rect = display.rect.insetBy(dx: gap / 2, dy: gap / 2)
                     let isSelected = display.uuid == selectedUUID
-                    // 相邻屏留 2pt 缝，贴合关系仍可辨
-                    let rect = display.rect.insetBy(dx: 1, dy: 1)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(isSelected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18))
-                        .overlay(RoundedRectangle(cornerRadius: 4)
-                            .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.5),
-                                    lineWidth: isSelected ? 2 : 1))
-                        .overlay(
-                            VStack(spacing: 2) {
-                                Text(display.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
-                                Text(display.resolutionText).font(.caption2).foregroundStyle(.secondary)
-                            }
-                            .padding(4))
+                    ScreenTile(display: display, isCompact: rect.height < 70, isSelected: isSelected,
+                               isDimmed: isDimmed)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
+                        .contentShape(Rectangle())
                         .onTapGesture { onSelect(display.uuid) }
                         .help(isSelected ? "再次点击显示全部屏幕" : "只看这块屏幕的详情")
                 }
             }
         }
-        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.4))
+        .frame(height: 150)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
     }
 }
 
-/// 右下：预设列表
-private struct PresetList: View {
-    @ObservedObject var model: PresetManagerModel
-    let selected: SelectedTopologyState
+/// 屏幕块：控件底色面板 + 1pt 次要描边（选中 = 2pt 强调色）+ 顶部 6pt 菜单栏条；内置屏顶部居中刘海；不用渐变
+private struct ScreenTile: View {
+    let display: ArrangedDisplay
+    let isCompact: Bool
+    let isSelected: Bool
+    let isDimmed: Bool
+
+    private let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
 
     var body: some View {
-        if selected.rows.isEmpty {
-            Text(selected.isCurrent ? "当前屏幕排列还没有预设，可从菜单「保存当前布局为预设…」保存" : "无预设")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            List {
-                ForEach(selected.rows) { row in
-                    PresetRowView(model: model, row: row)
+        ZStack(alignment: .top) {
+            shape.fill(Color(nsColor: .controlBackgroundColor))
+            Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 6)
+            if display.isBuiltin {
+                UnevenRoundedRectangle(bottomLeadingRadius: 2.5, bottomTrailingRadius: 2.5)
+                    .fill(Color.primary.opacity(0.55)).frame(width: 18, height: 4)
+            }
+            VStack(spacing: 2) {
+                Text(display.name).font(.system(size: isCompact ? 10 : 11, weight: .medium))
+                    .lineLimit(isCompact ? 2 : 1).multilineTextAlignment(.center)
+                if !isCompact {
+                    Text(display.resolutionText).font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
                 }
             }
+            .padding(.horizontal, 6).padding(.top, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.2),
+                                    lineWidth: isSelected ? 2 : 1))
+        .shadow(color: .black.opacity(0.07), radius: 3, y: 1)
+        .opacity(isDimmed ? 0.6 : 1)
     }
 }
 
-private struct PresetRowView: View {
+// MARK: - 预设块
+
+private struct PresetBlock: View {
     @ObservedObject var model: PresetManagerModel
     let row: PresetRowState
 
@@ -113,49 +149,102 @@ private struct PresetRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Button { model.toggleExpanded(presetID: row.id) } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right").frame(width: 12)
-                }
-                .buttonStyle(.plain)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(row.name).fontWeight(.medium)
-                        if row.isLastRestored {
-                            Text("最近恢复").font(.caption2).foregroundStyle(.secondary)
-                        }
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        FieldLabel(text: row.name)
+                        if row.isLastRestored { CapsuleTag(text: "最近恢复") }
                     }
-                    Text(row.savedAtText).font(.caption).foregroundStyle(.secondary)
+                    Caption(text: row.summaryText)
                 }
-                Spacer()
-                Toggle("自动", isOn: Binding(get: { row.isAuto },
-                                            set: { model.setAuto($0, presetID: row.id) }))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .fixedSize()
-                    .help("屏幕排列变化后命中自动预设即直接恢复；每个屏幕排列至多一个")
-                Button("恢复") { model.restore(presetID: row.id) }
-                    .disabled(!row.canRestore)
-                if row.showsOverwrite {
-                    Button("覆盖…") { model.overwrite(presetID: row.id) }
-                        .disabled(!row.canOverwrite)
-                        .help("用当前布局覆盖此预设")
+                Spacer(minLength: 16)
+                HStack(spacing: 6) {
+                    Text("自动恢复").font(.system(size: 12))
+                    Toggle("自动恢复", isOn: Binding(get: { row.isAuto },
+                                                 set: { model.setAuto($0, presetID: row.id) }))
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
                 }
-                Menu {
-                    Button("改名…") { model.rename(presetID: row.id) }
-                    Divider()
-                    Button("删除…", role: .destructive) { model.delete(presetID: row.id) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                .help("屏幕排列切换到这里时直接恢复；每个屏幕排列至多一个")
+                HStack(spacing: 8) {
+                    Button("恢复") { model.restore(presetID: row.id) }
+                        .contentButtonStyle()
+                        .disabled(!row.canRestore)
+                    MoreMenuButton(items: row.menuItems) { model.perform($0, presetID: row.id) }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
             }
+            ForEach(row.spaceShortageTexts, id: \.self) { text in
+                Label(text, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11)).foregroundStyle(.orange)
+            }
+            Button { model.toggleExpanded(presetID: row.id) } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(isExpanded ? "收起详情" : "显示详情")
+                }
+                .font(.system(size: 12)).foregroundStyle(Color.accentColor)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             if isExpanded, let detail = model.expandedDetail {
-                PresetDetailView(detail: detail)
-                    .padding(.leading, 22)
+                PresetDetailView(detail: detail).padding(.top, 4)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 14)
     }
+}
+
+/// 胶囊标签（「最近恢复」）：10pt semibold 次要色，12% 同色底
+private struct CapsuleTag: View {
+    let text: String
+
+    var body: some View {
+        Text(text).font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// `⋯` 按钮：与相邻「恢复」同为 .bordered、等高；点击在指针处弹原生 NSMenu（项与可用性取自 PresetRowState.menuItems）
+private struct MoreMenuButton: View {
+    let items: [PresetRowMenuItem]
+    let onSelect: (PresetRowAction) -> Void
+
+    var body: some View {
+        Button(action: popUp) {
+            Image(systemName: "ellipsis").frame(width: 16, height: 16)
+        }
+        .contentButtonStyle()
+        .help("更多")
+    }
+
+    private func popUp() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for item in items {
+            switch item {
+            case .separator:
+                menu.addItem(.separator())
+            case let .action(action, title, isEnabled):
+                let carrier = MenuActionCarrier { onSelect(action) }
+                let menuItem = NSMenuItem(title: title, action: #selector(MenuActionCarrier.fire), keyEquivalent: "")
+                menuItem.target = carrier
+                menuItem.representedObject = carrier  // NSMenuItem.target 是弱引用：挂在 representedObject 上保活
+                menuItem.isEnabled = isEnabled
+                menu.addItem(menuItem)
+            }
+        }
+        guard let event = NSApp.currentEvent, let view = event.window?.contentView else { return }
+        menu.popUp(positioning: nil, at: view.convert(event.locationInWindow, from: nil), in: view)
+    }
+}
+
+private final class MenuActionCarrier: NSObject {
+    private let handler: () -> Void
+
+    init(_ handler: @escaping () -> Void) { self.handler = handler }
+
+    @objc func fire() { handler() }
 }

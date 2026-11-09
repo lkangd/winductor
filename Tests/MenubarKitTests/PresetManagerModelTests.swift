@@ -266,19 +266,67 @@ final class PresetManagerModelTests: XCTestCase {
         XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置", "LG HDR 4K"])
         XCTAssertEqual(model.expandedDetail?.displays.last?.spaces.last?.apps.map(\.text),
                        ["终端（1 个窗口，其中 1 个最小化）"])
-        XCTAssertEqual(model.expandedDetail?.spaceShortages.map(\.text),
+        XCTAssertEqual(model.state.selected?.rows.first?.spaceShortageTexts,
                        ["屏幕「LG HDR 4K」当前 Space 比预设少 1 个，多出的窗口将合并"])
 
         model.selectDisplay("BUILTIN")
         XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置"])
-        XCTAssertEqual(model.expandedDetail?.spaceShortages, [])
 
         current = laptop
         model.selectDisplay("BUILTIN")
         model.selectTopology(office.identity.key)
         model.toggleExpanded(presetID: work.id)
         XCTAssertEqual(model.expandedDetail?.displays.count, 2)
-        XCTAssertEqual(model.expandedDetail?.spaceShortages, [], "非当前拓扑不提示")
+        XCTAssertEqual(model.state.selected?.rows.first?.spaceShortageTexts, [], "非当前拓扑不提示")
+    }
+
+    // MARK: 拓扑页 `⋯` 菜单与「保存当前布局…」（ui-refactor 票 04）
+
+    /// `⋯` 菜单项分派到同一套行操作：改名 / 删除（确认）/ 覆盖（确认流程）；覆盖在非当前拓扑不可用 → 无动作
+    func testMenuItemsRouteToRowOperations() throws {
+        let work = try save("工作", on: office)
+        let away = try save("出差", on: laptop)
+        let model = makeModel()
+
+        dialogs.renameAnswers = ["上班"]
+        model.perform(.rename, presetID: work.id)
+        XCTAssertEqual(rowNames(model), ["上班"])
+
+        dialogs.overwriteAnswers = [true]
+        model.perform(.overwrite, presetID: work.id)
+        XCTAssertEqual(store.topology(key: office.identity.key)?.presets.first?.snapshot.spaces.first?.fullscreenAppBundleID,
+                       "new")
+
+        dialogs.deleteAnswers = [false]
+        model.perform(.delete, presetID: work.id)
+        XCTAssertEqual(dialogs.deletePrompts, ["上班"])
+        XCTAssertEqual(rowNames(model), ["上班"], "取消确认不删")
+
+        model.selectTopology(laptop.identity.key)
+        dialogs.overwriteAnswers = [true]
+        model.perform(.overwrite, presetID: away.id)
+        XCTAssertEqual(store.topology(key: laptop.identity.key)?.presets.first?.snapshot.spaces.first?.fullscreenAppBundleID,
+                       "old", "非当前拓扑覆盖不可用")
+    }
+
+    /// 「保存当前布局…」走注入的保存入口（生产 = 菜单同一流程）；仅当前拓扑且可用
+    func testSavePresetOnlyOnCurrentTopologyWhenAvailable() throws {
+        try save("出差", on: laptop)
+        var saves = 0
+        let model = makeModel(save: { saves += 1 })
+
+        model.savePreset()
+        XCTAssertEqual(saves, 1)
+
+        availability = .restoring
+        model.reload()
+        model.savePreset()
+        XCTAssertEqual(saves, 1, "不可用时无动作")
+
+        availability = .available
+        model.selectTopology(laptop.identity.key)
+        model.savePreset()
+        XCTAssertEqual(saves, 1, "非当前拓扑无动作")
     }
 
     /// 存储写失败（预设已被别处删除）：报错并刷新
@@ -311,7 +359,7 @@ final class PresetManagerModelTests: XCTestCase {
                  windows: [])
     }
 
-    private func makeModel(captureMarker: String = "new") -> PresetManagerModel {
+    private func makeModel(captureMarker: String = "new", save: @escaping () -> Void = {}) -> PresetManagerModel {
         let overwrite = OverwritePresetFlow(
             store: store,
             capture: { [unowned self] in LayoutCapture(snapshot: snapshot(marker: captureMarker), topology: current) },
@@ -323,6 +371,7 @@ final class PresetManagerModelTests: XCTestCase {
                                   topologyProvider: { [unowned self] in current },
                                   overwrite: overwrite,
                                   restore: { [unowned self] id, key in restored.append((id, key)) },
+                                  save: save,
                                   dialogs: dialogs,
                                   currentSpaces: { [unowned self] in liveSpaces },
                                   appName: { ["com.apple.Terminal": "终端"][$0] },

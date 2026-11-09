@@ -8,7 +8,9 @@ import Foundation
 //   改名 / 改别名 → 输入框（撞名/空名提示后重弹）→ PresetStore.renamePreset / setAlias；
 //   删除 → 确认框 → deletePreset；自动开关 → setAuto；
 //   恢复 → 注入的 restore（生产 = MenuRestoreCoordinator.restorePreset，与菜单同一管线）；
-//   用当前布局覆盖 → OverwritePresetFlow（与菜单「恢复预设 ▸」同一流程）。
+//   用当前布局覆盖 → OverwritePresetFlow（与菜单「恢复预设 ▸」同一流程）；
+//   拓扑页 `⋯` 菜单（ui-refactor 票 04）→ perform(_:presetID:) 分派到覆盖 / 改名 / 删除；
+//   保存当前布局… → 注入的 save（生产 = MenuRestoreCoordinator.saveCurrentLayout，与菜单同一流程）。
 // 存储无变更通知：每次操作后、窗口激活时、拓扑变化时 reload 重读（拓扑实时刷新）。
 // 选择：未手动选拓扑时跟随当前拓扑；手动选过则保留（该拓扑消失时回落）。
 
@@ -35,6 +37,7 @@ public final class PresetManagerModel: ObservableObject {
     private let topologyProvider: () -> ObservedTopology
     private let overwriteFlow: OverwritePresetFlow
     private let restoreAction: (_ presetID: String, _ topologyKey: String) -> Void
+    private let saveAction: () -> Void
     private let dialogs: PresetManagerDialogs
     private let currentSpaces: () -> [SpaceEntry]?
     private let appName: (String) -> String?
@@ -49,12 +52,15 @@ public final class PresetManagerModel: ObservableObject {
     ///   - topologyProvider: 当前观测拓扑（生产 = ObservedTopology.current）
     ///   - overwrite: 覆盖流程；其 availability() 同时作恢复/覆盖按钮的可用性门（与保存同口径）
     ///   - restore: 手动恢复（生产 = MenuRestoreCoordinator.restorePreset(id:topologyKey:)）
-    ///   - currentSpaces: 实时受管 Space 清单（详情的 Space 不足提示用；nil = 读不到，不提示）。仅展开当前拓扑的预设时读
+    ///   - save: 「保存当前布局…」（生产 = MenuRestoreCoordinator.saveCurrentLayout；保存完成经外部事件 reloadIfVisible 刷新）
+    ///   - currentSpaces: 实时受管 Space 清单（预设块的 Space 不足提示用；nil = 读不到，不提示）。
+    ///     仅选中当前拓扑且有预设时每次重读读一次
     ///   - appName: bundleID → 应用名（生产 = ApplicationNames.localizedName；nil = 回退 bundleID）
     public init(store: PresetStore,
                 topologyProvider: @escaping () -> ObservedTopology = ObservedTopology.current,
                 overwrite: OverwritePresetFlow,
                 restore: @escaping (_ presetID: String, _ topologyKey: String) -> Void,
+                save: @escaping () -> Void = {},
                 dialogs: PresetManagerDialogs,
                 currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
                 appName: @escaping (String) -> String? = { _ in nil },
@@ -63,6 +69,7 @@ public final class PresetManagerModel: ObservableObject {
         self.topologyProvider = topologyProvider
         self.overwriteFlow = overwrite
         self.restoreAction = restore
+        self.saveAction = save
         self.dialogs = dialogs
         self.currentSpaces = currentSpaces
         self.appName = appName
@@ -75,17 +82,26 @@ public final class PresetManagerModel: ObservableObject {
     /// 重读存储与当前拓扑
     public func reload() {
         let topologies = store.topologies()
-        let fresh = PresetManagerState.make(topologies: topologies,
-                                            current: topologyProvider(),
-                                            availability: overwriteFlow.availability(),
-                                            selectedKey: manualSelectedKey,
-                                            selectedDisplayUUID: selectedDisplayUUID,
-                                            expandedPresetID: expandedPresetID,
-                                            timeZone: timeZone)
+        let current = topologyProvider()
+        let availability = overwriteFlow.availability()
+        let make = { (spaces: [SpaceEntry]?) in
+            PresetManagerState.make(topologies: topologies, current: current, availability: availability,
+                                    selectedKey: self.manualSelectedKey,
+                                    selectedDisplayUUID: self.selectedDisplayUUID,
+                                    expandedPresetID: self.expandedPresetID,
+                                    currentSpaces: spaces, timeZone: self.timeZone)
+        }
+        var fresh = make(nil)
+        // 实时 Space 只在选中当前拓扑且有预设时读（SLS 读；非当前拓扑的 Space 不足无意义）
+        var spaces: [SpaceEntry]?
+        if let selected = fresh.selected, selected.isCurrent, !selected.rows.isEmpty {
+            spaces = currentSpaces()
+            if spaces != nil { fresh = make(spaces) }
+        }
         selectedDisplayUUID = fresh.selectedDisplayUUID
         expandedPresetID = fresh.expandedPresetID
         selectedTopologyRecord = topologies.first { $0.key == fresh.selectedKey }
-        expandedDetail = detail(for: fresh)
+        expandedDetail = detail(for: fresh, currentSpaces: spaces)
         state = fresh
     }
 
@@ -118,6 +134,21 @@ public final class PresetManagerModel: ObservableObject {
     }
 
     // MARK: 预设行操作
+
+    /// 「保存当前布局…」（仅当前拓扑且可用）
+    public func savePreset() {
+        guard state.selected?.canSavePreset == true else { return }
+        saveAction()
+    }
+
+    /// 预设块 `⋯` 菜单项（ui-refactor 票 04）：分派到覆盖 / 改名 / 删除，可用性仍由各操作自行把关
+    public func perform(_ action: PresetRowAction, presetID: String) {
+        switch action {
+        case .overwrite: overwrite(presetID: presetID)
+        case .rename: rename(presetID: presetID)
+        case .delete: delete(presetID: presetID)
+        }
+    }
 
     public func restore(presetID: String) {
         guard let (key, row) = selectedRow(presetID), row.canRestore else { return }
@@ -173,14 +204,14 @@ public final class PresetManagerModel: ObservableObject {
 
     // MARK: 内部
 
-    /// 展开行的详情推导（纯计算在 PresetDetail；实时 Space 只在当前拓扑展开时读一次）
-    private func detail(for state: PresetManagerState) -> PresetDetail? {
+    /// 展开行的详情推导（纯计算在 PresetDetail；实时 Space 沿用本轮 reload 读到的一份）
+    private func detail(for state: PresetManagerState, currentSpaces spaces: [SpaceEntry]?) -> PresetDetail? {
         guard let selected = state.selected, let id = state.expandedPresetID,
               let preset = selectedTopologyRecord?.presets.first(where: { $0.id == id }) else { return nil }
         return PresetDetail.make(snapshot: preset.snapshot, displays: selected.displays,
                                  displayFilter: state.selectedDisplayUUID,
                                  isCurrentTopology: selected.isCurrent,
-                                 currentSpaces: selected.isCurrent ? currentSpaces() : nil,
+                                 currentSpaces: selected.isCurrent ? spaces : nil,
                                  appName: appName)
     }
 

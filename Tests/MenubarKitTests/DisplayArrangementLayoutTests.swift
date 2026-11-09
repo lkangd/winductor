@@ -67,14 +67,30 @@ final class DisplayArrangementLayoutTests: XCTestCase {
         ])
     }
 
-    /// 标注：屏名 + 分辨率（像素，「宽×高」）
+    /// 标注：屏名 + 分辨率（像素，「宽 × 高」）；是否内置屏（刘海）随展示数据，旧数据缺省按非内置
     func testLabelsCarryNameAndPixelResolution() {
         let arranged = DisplayArrangementLayout.layout(
             [display("a", 0, 0, 1920, 1080, name: "DELL U2723QE", pixels: (3840, 2160))],
             in: CGSize(width: 100, height: 100))
 
         XCTAssertEqual(arranged.first?.name, "DELL U2723QE")
-        XCTAssertEqual(arranged.first?.resolutionText, "3840×2160")
+        XCTAssertEqual(arranged.first?.resolutionText, "3840 × 2160")
+        XCTAssertEqual(arranged.first?.isBuiltin, false)
+
+        var builtin = display("b", 0, 0, 1512, 982)
+        builtin.isBuiltin = true
+        XCTAssertEqual(DisplayArrangementLayout.layout([builtin], in: CGSize(width: 100, height: 100)).first?.isBuiltin,
+                       true)
+    }
+
+    /// 同名屏按排列顺序加「#n」，与预设详情卡片的屏名一致（点屏后对得上卡片，ui-refactor 票 04）
+    func testSameNamedScreensDisambiguatedLikeDetailCards() {
+        let arranged = DisplayArrangementLayout.layout(
+            [display("a", 0, 0, 2560, 1440, name: "DELL"), display("b", 2560, 0, 2560, 1440, name: "DELL"),
+             display("c", 5120, 0, 1512, 982, name: "内置")],
+            in: CGSize(width: 300, height: 100))
+
+        XCTAssertEqual(arranged.map(\.name), ["DELL #1", "DELL #2", "内置"])
     }
 
     /// 无屏 / 画布小于内边距：空结果，不除零

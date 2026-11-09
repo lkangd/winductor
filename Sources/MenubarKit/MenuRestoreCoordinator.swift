@@ -270,6 +270,11 @@ public final class MenuRestoreCoordinator {
         }
     }
 
+    /// 「保存当前布局为预设…」：菜单项与主窗口拓扑页「保存当前布局…」（ui-refactor 票 04）同一流程
+    public func saveCurrentLayout() {
+        savePresetTapped()
+    }
+
     /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」、管理窗口「恢复」、恢复提示「恢复」同入口）：
     /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 预设已删 / 恢复进行中则不恢复，
     /// 经通知告知用户并返回原因（nil = 已受理）

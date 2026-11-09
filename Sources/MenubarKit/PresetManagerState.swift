@@ -7,7 +7,9 @@ import Foundation
 //   左栏 entries —— 当前拓扑置顶高亮（尚无预设也按实况屏幕列出），其他拓扑灰显、按最近保存时间倒序；
 //     标题别名优先，否则屏名组合（同名合并「×N」）；镜像中无当前拓扑（§3.3）。
 //   selected —— 选中拓扑的排列图数据（当前拓扑用实况屏幕，其他用存储的展示数据 §3.2）与预设行；
-//     行内恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；「覆盖」按钮仅当前拓扑显示；改名、删除、设自动任何拓扑都可。
+//     恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；改名、删除、设自动任何拓扑都可。
+//     拓扑页（ui-refactor 票 04，spec §5.4）：标题区说明、「保存当前布局…」（仅当前拓扑）、预设块摘要与 Space 不足提示、
+//     `⋯` 菜单（用当前布局覆盖… / 改名… / ─ / 删除…；「覆盖」从行内移入此菜单，撤回 display-presets 票 13 的行内按钮）。
 //   selectedDisplayUUID / expandedPresetID —— 预设详情（display-presets 票 08）的筛选与展开接缝。
 
 /// 左栏的一个拓扑
@@ -26,7 +28,18 @@ public struct TopologyListEntry: Equatable, Identifiable {
     public let presetCount: Int
 }
 
-/// 预设列表的一行
+/// 预设块 `⋯` 菜单的动作（ui-refactor 票 04）
+public enum PresetRowAction: Equatable {
+    case overwrite, rename, delete
+}
+
+/// 预设块 `⋯` 菜单的一项（原生菜单按此顺序构建）
+public enum PresetRowMenuItem: Equatable {
+    case action(PresetRowAction, title: String, isEnabled: Bool)
+    case separator
+}
+
+/// 预设列表的一行（拓扑页的一个预设块）
 public struct PresetRowState: Equatable, Identifiable {
     public let id: String
     public let name: String
@@ -39,15 +52,31 @@ public struct PresetRowState: Equatable, Identifiable {
     public let canRestore: Bool
     /// 「用当前布局覆盖」可用：仅当前拓扑且可用
     public let canOverwrite: Bool
-    /// 行内显式「覆盖」按钮是否显示：仅当前拓扑（非当前拓扑不显示而非置灰；不可用时置灰见 canOverwrite，display-presets 票 13）
-    public let showsOverwrite: Bool
+    /// 摘要「{保存时间} 保存 · N 块屏幕 · N 个应用 · N 个窗口」（计数见 PresetSummary.totals）
+    public let summaryText: String
+    /// Space 不足提示（spec §5.3 文案，与恢复提示同源；仅当前拓扑且读得到实时 Space）
+    public let spaceShortageTexts: [String]
+
+    /// `⋯` 菜单：用当前布局覆盖…（仅当前拓扑且可用，否则置灰）/ 改名… / ─ / 删除…
+    public var menuItems: [PresetRowMenuItem] {
+        [.action(.overwrite, title: "用当前布局覆盖…", isEnabled: canOverwrite),
+         .action(.rename, title: "改名…", isEnabled: true),
+         .separator,
+         .action(.delete, title: "删除…", isEnabled: true)]
+    }
 }
 
 /// 右侧：选中拓扑
 public struct SelectedTopologyState: Equatable {
     public let key: String
     public let title: String
+    /// 标题区说明：「当前连接的屏幕排列 · N 块屏幕」/「未连接 · N 块屏幕 · 可以查看、改名、删除，不能恢复或覆盖」
+    public let subtitle: String
     public let isCurrent: Bool
+    /// 「保存当前布局…」显示：仅当前拓扑（尚无预设也显示）
+    public let showsSavePreset: Bool
+    /// 「保存当前布局…」可用：当前拓扑且可用（未就绪 / 恢复进行中置灰）
+    public let canSavePreset: Bool
     /// 别名可改（拓扑已有存储记录；当前拓扑尚未保存过任何预设时不可改）
     public let canEditAlias: Bool
     /// 排列图数据
@@ -73,6 +102,7 @@ public struct PresetManagerState: Equatable {
                             selectedKey: String?,
                             selectedDisplayUUID: String? = nil,
                             expandedPresetID: String? = nil,
+                            currentSpaces: [SpaceEntry]? = nil,
                             timeZone: TimeZone = .current) -> PresetManagerState {
         let currentKey = current.isMirrored || current.displays.isEmpty ? nil : current.identity.key
         let records = Dictionary(topologies.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
@@ -104,19 +134,31 @@ public struct PresetManagerState: Equatable {
             let record = records[key]
             let isCurrent = key == currentKey
             let canApply = isCurrent && availability == .available
+            let displays = isCurrent ? current.displays : record?.displays ?? []
             return SelectedTopologyState(
                 key: key,
                 title: entries.first { $0.key == key }?.title ?? "",
+                subtitle: isCurrent ? "当前连接的屏幕排列 · \(displays.count) 块屏幕"
+                    : "未连接 · \(displays.count) 块屏幕 · 可以查看、改名、删除，不能恢复或覆盖",
                 isCurrent: isCurrent,
+                showsSavePreset: isCurrent,
+                canSavePreset: canApply,
                 canEditAlias: record != nil,
-                displays: isCurrent ? current.displays : record?.displays ?? [],
+                displays: displays,
                 rows: (record?.presets ?? []).map { preset in
-                    PresetRowState(id: preset.id, name: preset.name,
-                                   savedAtText: dateFormatter.string(from: preset.savedAt),
-                                   isAuto: preset.isAuto,
-                                   isLastRestored: preset.id == record?.lastRestoredPresetID,
-                                   canRestore: canApply, canOverwrite: canApply,
-                                   showsOverwrite: isCurrent)
+                    let savedAt = dateFormatter.string(from: preset.savedAt)
+                    // Space 不足只对当前拓扑有意义（实时 Space 属于当前连接的屏）
+                    let shortages = isCurrent
+                        ? PresetSummary.spaceShortages(of: preset.snapshot, displays: displays,
+                                                       currentSpaces: currentSpaces).map(\.text)
+                        : []
+                    return PresetRowState(id: preset.id, name: preset.name,
+                                          savedAtText: savedAt,
+                                          isAuto: preset.isAuto,
+                                          isLastRestored: preset.id == record?.lastRestoredPresetID,
+                                          canRestore: canApply, canOverwrite: canApply,
+                                          summaryText: "\(savedAt) 保存 · \(PresetSummary.totals(of: preset.snapshot).text)",
+                                          spaceShortageTexts: shortages)
                 })
         }
         let displayUUID = selectedDisplayUUID.flatMap { uuid in

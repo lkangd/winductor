@@ -65,8 +65,10 @@ public enum RuntimeAssembly {
             store: presetStore,
             overwrite: overwritePreset,
             restore: { id, key in coordinatorBox.coordinator?.restorePreset(id: id, topologyKey: key) },
+            // 拓扑页「保存当前布局…」（ui-refactor 票 04）：与菜单同一保存流程，保存后经 refreshMenu 刷新主窗口
+            save: { coordinatorBox.coordinator?.saveCurrentLayout() },
             dialogs: AlertPresetManagerDialogs(),
-            // 预设详情的 Space 不足对比（display-presets 票 08）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
+            // 预设块的 Space 不足对比（display-presets 票 08 / ui-refactor 票 04）：与恢复提示同一读法，管线独占时让出（读不到 = 不提示）
             currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
             appName: ApplicationNames.localizedName(bundleID:))
         let mainWindow = MainWindowController(model: MainWindowModel(
