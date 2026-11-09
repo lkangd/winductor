@@ -103,6 +103,7 @@ public final class PermissionGuideWindow {
                           styleMask: [.titled, .closable],
                           backing: .buffered, defer: false)
         window.title = "先授权，才能开始"
+        window.isReleasedWhenClosed = false  // 主窗口「授权引导…」可在关闭后再次打开（ui-refactor 票 03）
         window.contentView = stack
         window.center()
     }

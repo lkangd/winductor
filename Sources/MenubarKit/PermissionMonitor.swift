@@ -72,6 +72,13 @@ public final class PermissionMonitor {
     /// 状态变化回调（checkNow 调用线程同步调用；定时路径由 start 投递主线程）。
     /// 首次检测总通知一次（建立基线），此后仅状态变化时通知。
     public var onStatusChange: ((Status) -> Void)?
+    /// 追加的状态变化观察者（主窗口通用页状态点等，ui-refactor 票 03）：与 onStatusChange 同时机、同线程，在其后调用
+    private var statusObservers: [(Status) -> Void] = []
+
+    /// 追加状态变化观察者（不替换 onStatusChange 的门控接线；只增不删，随监视器生命周期）
+    public func addStatusObserver(_ observer: @escaping (Status) -> Void) {
+        statusObservers.append(observer)
+    }
 
     // 默认实现直接内联在 init 缺省参数（public 缺省参数须在调用方可见）。
     // 辅助功能：AXIsProcessTrustedWithOptions 不主动弹窗（spec §4.6 检测现状）；
@@ -146,6 +153,7 @@ public final class PermissionMonitor {
         if new != old || !hasNotifiedBaseline {
             hasNotifiedBaseline = true
             onStatusChange?(new)
+            statusObservers.forEach { $0(new) }
         }
         return new
     }

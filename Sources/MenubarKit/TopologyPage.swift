@@ -1,62 +1,32 @@
 import Core
 import SwiftUI
 
-// PresetManagerView.swift — 预设管理窗口视图（display-presets 票 07，spec §6.4）。薄视图：只读
-// PresetManagerModel.state、只调 model 方法；排序/高亮/可用性见 PresetManagerState，排列图几何见 DisplayArrangementLayout。
-// 布局：左栏拓扑列表 | 右上排列图（点屏 = 详情筛选，display-presets 票 08）| 右下预设列表（每行：展开、名称/时间、自动开关、恢复、覆盖（仅当前拓扑）、更多）。
+// TopologyPage.swift — 主窗口的拓扑页（某个屏幕排列：排列图 + 预设列表）。薄视图：只读 PresetManagerModel.state、只调 model 方法；
+// 排序/高亮/可用性见 PresetManagerState，排列图几何见 DisplayArrangementLayout。
+// ui-refactor 票 03：主窗口骨架落地时原样沿用 display-presets 票 07/08/13 的内容（标题行 | 排列图（点屏 = 详情筛选）| 预设列表）
+// 作占位，只去掉左栏（侧栏归 MainWindowView）；spec §5.4 新拓扑页归票 04，整体替换本文件的 TopologyPage 即可
+// （入口签名 TopologyPage(model:)，由 MainWindowView 在选中 .topology 时放进内容区）。
 
-struct PresetManagerView: View {
+struct TopologyPage: View {
     @ObservedObject var model: PresetManagerModel
 
     var body: some View {
-        HSplitView {
-            TopologySidebar(model: model)
-                .frame(minWidth: 200, idealWidth: 230, maxWidth: 320)
-            VStack(spacing: 0) {
-                if let selected = model.state.selected {
-                    TopologyHeader(selected: selected, onEditAlias: model.editAlias)
-                    DisplayArrangementView(displays: selected.displays,
-                                           selectedUUID: model.state.selectedDisplayUUID,
-                                           onSelect: model.selectDisplay)
-                        .frame(minHeight: 180, idealHeight: 220)
-                    Divider()
-                    PresetList(model: model, selected: selected)
-                } else {
-                    Text("还没有保存过任何预设")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .frame(minWidth: 480)
-        }
-        .frame(minWidth: 720, minHeight: 480)
-    }
-}
-
-/// 左栏：当前拓扑置顶高亮，其他灰显
-private struct TopologySidebar: View {
-    @ObservedObject var model: PresetManagerModel
-
-    var body: some View {
-        List(selection: Binding(get: { model.state.selectedKey },
-                                set: { key in if let key { model.selectTopology(key) } })) {
-            ForEach(model.state.entries) { entry in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(entry.title).fontWeight(entry.isCurrent ? .semibold : .regular)
-                        if entry.isCurrent {
-                            Text("当前").font(.caption2).padding(.horizontal, 4)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.2)))
-                        }
-                    }
-                    Text(entry.subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                .foregroundStyle(entry.isCurrent ? .primary : .secondary)
-                .padding(.vertical, 2)
-                .tag(entry.key)
+        VStack(spacing: 0) {
+            if let selected = model.state.selected {
+                TopologyHeader(selected: selected, onEditAlias: model.editAlias)
+                DisplayArrangementView(displays: selected.displays,
+                                       selectedUUID: model.state.selectedDisplayUUID,
+                                       onSelect: model.selectDisplay)
+                    .frame(minHeight: 180, idealHeight: 220)
+                Divider()
+                PresetList(model: model, selected: selected)
+            } else {
+                Text("还没有保存过任何预设")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .listStyle(.sidebar)
+        .padding(.top, MainWindowMetrics.contentTop - 12)
     }
 }
 

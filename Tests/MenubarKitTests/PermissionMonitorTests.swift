@@ -66,6 +66,22 @@ final class PermissionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.status, ready)
     }
 
+    /// 追加观察者（主窗口通用页，ui-refactor 票 03）：与 onStatusChange 同时机收到同一现状，不替换门控接线
+    func testAddedStatusObserverFiresAlongsideCallback() {
+        var observed: [PermissionMonitor.Status] = []
+        let monitor = makeMonitor()
+        monitor.addStatusObserver { observed.append($0) }
+
+        _ = monitor.checkNow()
+        accessibilityGranted = true
+        screenCaptureGranted = true
+        _ = monitor.checkNow()
+        _ = monitor.checkNow()
+
+        XCTAssertEqual(observed, statusChanges)
+        XCTAssertEqual(observed.map(\.isReady), [false, true])
+    }
+
     /// 状态无变化不重复回调（每 2s 轮询的幂等性）
     func testUnchangedStatusDoesNotFireCallbackAgain() {
         accessibilityGranted = true

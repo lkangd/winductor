@@ -50,6 +50,9 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(byKey[officeDesk.identity.key]?.title, "公司")
         XCTAssertEqual(byKey[homeDesk.identity.key]?.title, "内置 + DELL U2723QE ×2")
         XCTAssertEqual(byKey[homeDesk.identity.key]?.subtitle, "3 屏 · 1 个预设")
+        // 主窗口侧栏图标（单屏/多屏）与关于页统计用的计数（ui-refactor 票 03）
+        XCTAssertEqual(byKey[homeDesk.identity.key]?.displayCount, 3)
+        XCTAssertEqual(byKey[homeDesk.identity.key]?.presetCount, 1)
     }
 
     /// 当前拓扑还没有任何预设：照样置顶（按实况屏幕），标「无预设」，别名不可改（尚无拓扑记录）
@@ -63,6 +66,8 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertTrue(first.isCurrent)
         XCTAssertEqual(first.title, "内置 + LG HDR 4K")
         XCTAssertEqual(first.subtitle, "2 屏 · 无预设")
+        XCTAssertEqual(first.displayCount, 2)
+        XCTAssertEqual(first.presetCount, 0)
         XCTAssertEqual(state.selected?.key, officeDesk.identity.key)
         XCTAssertEqual(state.selected?.canEditAlias, false)
         XCTAssertEqual(state.selected?.rows, [])

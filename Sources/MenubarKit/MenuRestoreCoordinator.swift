@@ -10,7 +10,7 @@ import SnapshotEngine
 //   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
 //   「恢复中」交替图（ui-refactor §4.2，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
-//   管理预设… → 注入的打开入口（窗口归 display-presets 票 07；未注入置灰）；
+//   管理预设… → 注入的打开入口（统一主窗口并选中当前拓扑，ui-refactor 票 03；未注入置灰）；
 //   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
@@ -254,14 +254,14 @@ public final class MenuRestoreCoordinator {
 
     /// 按 spec §6.1 构建全量菜单（状态/可用性取构建时刻现状）
     public func makeReadyMenu() -> NSMenu {
-        let menu = WiredMenuBuilder.build(currentContent())
+        let menu = WiredMenuBuilder.build(menuContent())
         menu.delegate = menuWillOpenCarrier  // 打开时原位重算（拓扑/预设/撤销/勾选态跟随现状）
         return menu
     }
 
     /// 菜单打开时原位刷新（重建条目到同一 NSMenu 实例，避免打开中途换菜单实例）
     public func refreshItemsInPlace(_ menu: NSMenu) {
-        let fresh = WiredMenuBuilder.build(currentContent())
+        let fresh = WiredMenuBuilder.build(menuContent())
         menu.removeAllItems()
         // NSMenuItem 不能同属两个菜单：先从临时菜单摘下再插入
         while let item = fresh.items.first {
@@ -291,8 +291,9 @@ public final class MenuRestoreCoordinator {
         }
     }
 
-    /// 构建时刻的菜单内容（状态行四态、恢复预设子菜单、保存可用性、canUndo、登录勾选态、能力状态行）
-    private func currentContent() -> WiredMenuContent {
+    /// 构建时刻的菜单内容（状态行四态、恢复预设子菜单、保存可用性、canUndo、登录勾选态、能力状态行）。
+    /// 主窗口通用页（ui-refactor 票 03）取同一份：勾选态 / 撤销可用性 / 动作闭包与菜单同源
+    public func menuContent() -> WiredMenuContent {
         let observed = topologyProvider()
         let key = observed.identity.key
         // 镜像中整体禁用（spec §3.3）：不列预设
