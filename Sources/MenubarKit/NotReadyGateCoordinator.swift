@@ -89,7 +89,7 @@ public final class NotReadyGateCoordinator {
             window.show()
             guideWindow = window
         } else {
-            guideWindow?.update(status: status)  // 已有引导窗跟随推进（检测中…… ⇄ 重启提示）
+            guideWindow?.update(status: status)  // 已有授权窗跟随推进（逐项状态；等待 ⇄ 齐备重启提示，ui-refactor §6）
         }
     }
 
