@@ -4,7 +4,7 @@ import Foundation
 // MinimizedDirectMove.swift — SpaceAdapter 小增量（票 15，新增文件理由见票 15 报告）：
 // 最小化窗口的「直接桥接」尝试（spec §6.5：实测最小化状态可直接桥接则省去取消/重最小化首尾）。
 // 与 moveWindowsToSpace 的关键差别：失败不做运行时 no-op 标记（不写 runtimeNoOpLayers）——
-// 最小化窗直移失败只说明「该窗不能直移」，不应毒化 L2 桥接层（进程内不可逆），
+// 最小化窗直移失败只说明「该窗不能直移」，不应毒化 L2 桥接层（标记持续到本轮结束），
 // 否则 §6.5 回退路径（取消最小化 → 桥接 → 重最小化）会被 layerUnavailable 卡死。
 extension SpaceAdapter {
     /// 桥接 settle 等待（spike 实测 1.2s 足够 WindowServer 结算，与 moveWindowsToSpace 同值）

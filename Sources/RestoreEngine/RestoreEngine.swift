@@ -340,6 +340,9 @@ public final class RestoreEngine: @unchecked Sendable {
                 + "detail=windows=\(snapshot.windows.count)")
         }
 
+        // 桥接 no-op 失效标记作用域 = 本轮（display-presets 票 12）：上一轮的 no-op 不再连累本轮 L2
+        spaces.beginRestoreRound()
+
         // Space 清单读取失败曾用 try? 静默吞掉 → entries 空 → 整轮 L2 skip（11-03 实测）：
         // 现显式记录并重试一次（同轮单次重试，非循环）；生产失败源 = poller 并发 SLS 冲突
         var entries = (try? spaces.managedSpaces()) ?? []
@@ -360,19 +363,16 @@ public final class RestoreEngine: @unchecked Sendable {
                                                title: $0.title, x: $0.x, y: $0.y, w: $0.w, h: $0.h,
                                                minimized: $0.minimized) })
 
-        // 撤销第一段（票 16 §8.6/§5.2）：实况窗卡在后台全屏 Space（kind=4，spec §5.1）时
-        // 后台退出全屏不可达、桥接/几何写对它无效（桥接 no-op 还会毒化 L2 运行时标记），先摘出计 pending
-        var stuckFullscreenWIDs = Set<UInt32>()
-        if mode == .undo {
-            let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
-            for lw in live where entryBySpaceID[lw.spaceID]?.kind == SpaceKind.fullscreen {
-                stuckFullscreenWIDs.insert(lw.cgWindowID)
-            }
-        }
+        // 实况窗卡在全屏 Space（kind=4，spec §5.1）：后台退出全屏不可达、桥接/几何写对它无效
+        // （桥接 no-op 还会标记 L2 失效连累本轮其余项），快照普通窗条目一律先摘出不动：
+        // 恢复模式计 skip（display-presets 票 12，验收4 实测）；撤销模式计两段式 pending（票 16 §8.6/§5.2）
+        let entryBySpaceID = Dictionary(entries.map { ($0.spaceID, $0) }, uniquingKeysWith: { a, _ in a })
+        let liveFullscreenWIDs = Set(live.filter { entryBySpaceID[$0.spaceID]?.kind == SpaceKind.fullscreen }
+            .map(\.cgWindowID))
 
         let plan = planEntries(snapshot: snapshot, live: live, outcome: outcome,
                                entries: entries, displays: displays,
-                               mode: mode, stuckFullscreenWIDs: stuckFullscreenWIDs)
+                               mode: mode, liveFullscreenWIDs: liveFullscreenWIDs)
 
         // Pass L2（§6.8 先桥接移窗：屏 + Space 一步到位）→ Pass L1（AX 几何摆位）
         // → Pass L3（全屏最后）→ Pass L4（最小化恢复）—— §6.8 顺序铁律
@@ -559,7 +559,7 @@ public final class RestoreEngine: @unchecked Sendable {
     private func planEntries(snapshot: Snapshot, live: [LiveRestoreWindow],
                              outcome: MatchOutcome, entries: [SpaceEntry],
                              displays: [Displays.Info], mode: RunMode,
-                             stuckFullscreenWIDs: Set<UInt32>) -> [PlanItem] {
+                             liveFullscreenWIDs: Set<UInt32>) -> [PlanItem] {
         let matchBySnapshot = Dictionary(uniqueKeysWithValues: outcome.matches.map { ($0.snapshotIndex, $0) })
         let liveBundleIDs = Set(live.map(\.bundleID))
         let capturedOrientation = Dictionary(uniqueKeysWithValues:
@@ -586,7 +586,12 @@ public final class RestoreEngine: @unchecked Sendable {
                 continue
             }
             let lw = live[match.liveIndex]
-            if mode == .undo && stuckFullscreenWIDs.contains(lw.cgWindowID) {
+            if mode == .restore && liveFullscreenWIDs.contains(lw.cgWindowID) {
+                // 恢复模式：实况窗在全屏 Space 而快照是普通窗——不桥接、不写几何（display-presets 票 12）
+                plan.append(skipItem(s, snap, "live-fullscreen", wid: lw.cgWindowID, liveSpaceID: lw.spaceID))
+                continue
+            }
+            if mode == .undo && liveFullscreenWIDs.contains(lw.cgWindowID) {
                 // 撤销第一段（票 16 §8.6）：实况窗卡在后台全屏 Space——本段跳过（计 skip，且计入
                 // fullscreenPendingCount），待用户按 Esc 后第二段补完（§5.2 后台退出全屏不可达）
                 log?.write(StructuredLog.restoreLine(
@@ -602,7 +607,8 @@ public final class RestoreEngine: @unchecked Sendable {
                 // L4（票 15，spec §6.5）：实况最小化 → 送回快照 Space 并保持最小化，几何不触碰。
                 // 快照 minimized 但实况已展开 → 走常规恢复（终态是否最小化尊重实况，不强行重新最小化）
                 let resolved = Self.resolveTargetSpace(
-                    displayUUID: snap.displayUUID, snapshotIndex: snap.spaceIndex, entries: entries)
+                    displayUUID: snap.displayUUID, snapshotIndex: snap.spaceIndex,
+                    snapshotSpaces: snapshot.spaces, entries: entries)
                 plan.append(PlanItem(snapshotIndex: s, snapshotWindow: snap, action: .restoreMinimized(
                     live: lw, targetSpace: resolved?.entry, mergedFrom: resolved?.mergedFrom)))
                 continue
@@ -613,7 +619,8 @@ public final class RestoreEngine: @unchecked Sendable {
                 continue
             }
             let resolved = Self.resolveTargetSpace(
-                displayUUID: snap.displayUUID, snapshotIndex: snap.spaceIndex, entries: entries)
+                displayUUID: snap.displayUUID, snapshotIndex: snap.spaceIndex,
+                snapshotSpaces: snapshot.spaces, entries: entries)
             plan.append(PlanItem(snapshotIndex: s, snapshotWindow: snap, action: .act(
                 live: lw, targetSpace: resolved?.entry, mergedFrom: resolved?.mergedFrom,
                 targetDisplay: targetDisplay, capturedOrientation: capturedOrientation[snap.displayUUID] ?? 0)))
@@ -860,10 +867,11 @@ public final class RestoreEngine: @unchecked Sendable {
     private func fullscreenPreMove(wid: UInt32, appID: String, displayUUID: String, target: String,
                                    before: inout String, entries: [SpaceEntry], bridgeOK: Bool,
                                    skipped: inout Int, failed: inout Int) -> Bool {
+        // 落点只取用户桌面：别的应用的全屏 Space 不接纳普通窗（display-presets 票 12）
         guard bridgeOK,
-              let landing = entries.filter({ $0.displayUUID == displayUUID })
+              let landing = entries.filter({ $0.displayUUID == displayUUID && $0.kind == SpaceKind.user })
                   .min(by: { $0.index < $1.index }) else {
-            // 桥接不可用/目标屏无既有 Space：无法就位（§6.1 L3 失效表现 = 不动；L2 已另有降级日志）
+            // 桥接不可用/目标屏无用户桌面：无法就位（§6.1 L3 失效表现 = 不动；L2 已另有降级日志）
             log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.fullscreen, wid: wid, app: appID,
                 action: .fullscreen, target: target, before: before, after: "-", result: .skip,
                 reason: "fullscreen-premove-unavailable"))
@@ -984,7 +992,7 @@ public final class RestoreEngine: @unchecked Sendable {
         }
     }
 
-    /// A12：快照 Space 多出 → 按 index 就近并入既有 Space（spec §6.7 不补建；L2/L4 共用）
+    /// A12：快照用户桌面多出 → 并入同屏最后一个实况用户桌面（spec §6.7 不补建；L2/L4 共用，票 12 按用户桌面序号）
     private func logSpaceMerge(wid: UInt32, app: String, display: String, from snapshotIndex: Int, to index: Int) {
         log?.write("[restore] space-merge wid=\(wid) app=\(app) display=\(display) "
             + "snapshotIndex=\(snapshotIndex) mergedTo=\(index)")
@@ -1014,18 +1022,28 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - 辅助
 
-    /// Space 数量不符双向处置（spec §6.7）：
-    ///   快照 index 命中既有 Space → 原样落位；快照多出 → 按 index 就近并入（不补建）；
-    ///   目标屏无任何 Space → nil。现状多出（A13）无需特判：快照 index 照常命中落位。
-    static func resolveTargetSpace(displayUUID: String, snapshotIndex: Int,
+    /// 普通窗目标 Space（L2 与 L4 共用；display-presets 票 12，spec §5.3/§6.7）。只在同屏用户桌面中选，
+    /// 全屏 Space 永不作为普通窗目标（全屏 Space 与桌面可被用户重排，绝对 index 会错位，验收4 实测）：
+    ///   快照窗所在 Space 是用户桌面 → 取它在快照同屏用户桌面中的序号 k → 实况同屏第 k 个用户桌面；
+    ///   实况用户桌面不足 → 就近并入最后一个（mergedFrom = 快照 index，不补建）；
+    ///   快照无该 Space 记录（或记为全屏，旧预设数据）→ 按 index 在实况用户桌面中定位，不命中就近并入；
+    ///   目标屏无用户桌面 → nil。现状多出（A13）无需特判：第 k 个照常命中。
+    static func resolveTargetSpace(displayUUID: String, snapshotIndex: Int, snapshotSpaces: [SnapshotSpace],
                                    entries: [SpaceEntry]) -> (entry: SpaceEntry, mergedFrom: Int?)? {
-        let onDisplay = entries.filter { $0.displayUUID == displayUUID }.sorted { $0.index < $1.index }
-        if let exact = onDisplay.first(where: { $0.index == snapshotIndex }) {
+        let liveDesktops = entries
+            .filter { $0.displayUUID == displayUUID && $0.kind == SpaceKind.user }
+            .sorted { $0.index < $1.index }
+        guard let last = liveDesktops.last else { return nil }
+        let snapshotDesktops = snapshotSpaces
+            .filter { $0.displayUUID == displayUUID && $0.kind == .user }
+            .map(\.index).sorted()
+        if let ordinal = snapshotDesktops.firstIndex(of: snapshotIndex) {
+            return ordinal < liveDesktops.count ? (liveDesktops[ordinal], nil) : (last, snapshotIndex)
+        }
+        if let exact = liveDesktops.first(where: { $0.index == snapshotIndex }) {
             return (exact, nil)
         }
-        guard let nearest = onDisplay.min(by: {
-            abs($0.index - snapshotIndex) < abs($1.index - snapshotIndex)
-        }) else { return nil }
+        let nearest = liveDesktops.min { abs($0.index - snapshotIndex) < abs($1.index - snapshotIndex) } ?? last
         return (nearest, snapshotIndex)
     }
 

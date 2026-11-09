@@ -37,7 +37,8 @@ public enum PresetSummary {
     }
 }
 
-/// 单屏 Space 不足（spec §5.3：预设多出的 Space 上的窗口按 index 就近并入，不补建）
+/// 单屏 Space 不足（spec §5.3：预设多出的用户桌面上的窗口并入同屏最后一个用户桌面，不补建）。
+/// 只数用户桌面，与恢复落位（RestoreEngine.resolveTargetSpace 按用户桌面序号映射）同口径
 public struct SpaceShortage: Equatable, Sendable {
     public let displayUUID: String
     public let displayName: String
