@@ -27,6 +27,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     private(set) var roundsBegun = 0
     /// 置 true = tryMoveMinimized 返回 false（模拟最小化窗直移不可行，走 §6.5 回退路径）
     var minimizedDirectMoveFails = false
+    /// 仅这些窗直移不可行（票 16：批量直移部分未迁移 → 逐窗回退）
+    var minimizedDirectMoveFailIDs: Set<UInt32> = []
     /// 非 nil = activeSpaceIDs 返回该集合（活跃 Space 判定测试）
     var activeSpaces: Set<Int64>?
     /// ordered out 的窗（SLSWindowIsOrderedIn == false）；nil = 排列数据不可用（缺省，LiveWindowSet 降级）
@@ -43,6 +45,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     private(set) var moveCalls = 0
     private(set) var moves: [(wids: [UInt32], spaceID: Int64)] = []
     private(set) var directMinimizedMoves: [(windowID: UInt32, spaceID: Int64)] = []
+    /// 每次批量直移调用（票 16：同目标 Space 一次 perform）
+    private(set) var directMinimizedBatches: [(wids: [UInt32], spaceID: Int64)] = []
 
     init(entries: [SpaceEntry], byWindow: [UInt32: Int64], bridgeAvailable: Bool = true) {
         self.entries = entries
@@ -82,14 +86,18 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         return true
     }
 
-    /// L4 最小化窗直移尝试（票 15）：成功改写 byWindow；已在目标 Space 快速返回 true
+    /// L4 最小化窗批量直移尝试（票 15/16）：成功改写 byWindow；已在目标 Space 直接计入
     @discardableResult
-    func tryMoveMinimized(windowID wid: UInt32, spaceID: Int64) throws -> Bool {
-        directMinimizedMoves.append((wid, spaceID))
-        if minimizedDirectMoveFails { return false }
-        if byWindow[wid] == spaceID { return true }
-        byWindow[wid] = spaceID
-        return true
+    func tryMoveMinimized(windowIDs wids: [UInt32], spaceID: Int64) throws -> Set<UInt32> {
+        directMinimizedBatches.append((wids, spaceID))
+        var moved = Set<UInt32>()
+        for wid in wids {
+            directMinimizedMoves.append((wid, spaceID))
+            if minimizedDirectMoveFails || minimizedDirectMoveFailIDs.contains(wid) { continue }
+            byWindow[wid] = spaceID
+            moved.insert(wid)
+        }
+        return moved
     }
 }
 

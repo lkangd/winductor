@@ -125,11 +125,11 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
     // MARK: - 状态
 
     /// 移窗后等待 WindowServer 结算再校验归属的时长（spike 实测 1.2s 足够）
-    private let settleSeconds: TimeInterval
+    let settleSeconds: TimeInterval
     /// 可注入的 spaceIDs 读取器（nil = 直连 SkyLight；单测注入假读/阻塞读）
     var spaceReader: ((UInt32) throws -> [Int64])?
 
-    private let log: LogWriting?
+    let log: LogWriting?
     private let lock = NSLock()
     /// 运行时识别为 no-op 而失效的层（lock 保护；作用域 = 一轮恢复，下一轮开始由 clearRuntimeNoOp 清除）
     nonisolated(unsafe) private var runtimeNoOpLayers: Set<SpaceLayer> = []
@@ -383,18 +383,40 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         _ wids: [UInt32], before: [[Int64]], settle: TimeInterval, poll: TimeInterval,
         readTimeout: TimeInterval, reader: @escaping (UInt32) throws -> [Int64]
     ) -> SettleResult {
+        let r = awaitAttributionChanges(wids, before: before, settle: settle, poll: poll,
+                                        readTimeout: readTimeout, stopOnUnknown: true, reader: reader)
+        if let wid = r.unknown.first { return .unknown(wid: wid) }
+        return r.changed.isEmpty ? .unchanged : .moved
+    }
+
+    /// 逐窗结算结局（票 16：L4 批量直移需知道组内哪些窗没迁，逐窗回退）
+    struct PerWindowSettle: Equatable {
+        /// 归属已变更的窗
+        var changed: Set<UInt32> = []
+        /// 归属读取超时（未知）的窗：超时一次即不再重读（每次读最长 readTimeout）
+        var unknown: [UInt32] = []
+    }
+
+    /// 逐窗轮询归属：全部窗已结算（变更 / 未知）即返回，否则等满 settle；
+    /// stopOnUnknown = 首个读取超时即返回（awaitAttributionChange 原口径）
+    static func awaitAttributionChanges(
+        _ wids: [UInt32], before: [[Int64]], settle: TimeInterval, poll: TimeInterval,
+        readTimeout: TimeInterval, stopOnUnknown: Bool = false,
+        reader: @escaping (UInt32) throws -> [Int64]
+    ) -> PerWindowSettle {
         let deadline = Date().addingTimeInterval(settle)
-        var changed = Array(repeating: false, count: wids.count)
+        var out = PerWindowSettle()
         while true {
             Thread.sleep(forTimeInterval: min(poll, max(0, deadline.timeIntervalSinceNow)))
-            for (i, wid) in wids.enumerated() where !changed[i] {
+            for (i, wid) in wids.enumerated() where !out.changed.contains(wid) && !out.unknown.contains(wid) {
                 guard let ids = spaceIDsBounded(wid, timeout: readTimeout, reader: reader) else {
-                    return .unknown(wid: wid)
+                    out.unknown.append(wid)
+                    if stopOnUnknown { return out }
+                    continue
                 }
-                if ids != before[i] { changed[i] = true }
+                if ids != before[i] { out.changed.insert(wid) }
             }
-            if changed.allSatisfy({ $0 }) { return .moved }
-            if Date() >= deadline { return changed.contains(true) ? .moved : .unchanged }
+            if out.changed.count + out.unknown.count == wids.count || Date() >= deadline { return out }
         }
     }
 

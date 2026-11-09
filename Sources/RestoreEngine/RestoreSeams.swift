@@ -20,10 +20,11 @@ public protocol SpaceBridge: SpaceProviding, Sendable {
     func moveWindowsToSpace(windowIDs: [UInt32], spaceID: Int64) throws -> Bool
 
     /// L4 最小化窗口「直接桥接」尝试（票 15，spec §6.5：实测可直移则省去取消/重最小化首尾）。
-    /// 与 moveWindowsToSpace 的差别：失败不做运行时 no-op 标记（不毒化 L2 层，回退路径仍可用）；
-    /// 返回 false = perform 后归属未变更
+    /// 与 moveWindowsToSpace 的差别：失败不做运行时 no-op 标记（不毒化 L2 层，回退路径仍可用）。
+    /// 票 16：同目标 Space 的一批窗一次桥接 + 一次轮询结算；返回归属已变更（或已在目标）的窗，
+    /// 不在其中 = perform 后归属未变更（调用方逐窗回退）
     @discardableResult
-    func tryMoveMinimized(windowID: UInt32, spaceID: Int64) throws -> Bool
+    func tryMoveMinimized(windowIDs: [UInt32], spaceID: Int64) throws -> Set<UInt32>
 
     /// 新一轮恢复/撤销开始（display-presets 票 12）：清除上一轮留下的运行时 no-op 失效标记。
     /// 桥接 no-op 的失效作用域 = 本轮（本轮剩余项照旧快速跳过），下一轮重新可用；探针 / FORCE_DEGRADED 不受影响
@@ -60,8 +61,8 @@ public struct SpaceAdapterBridge: SpaceBridge {
     }
 
     @discardableResult
-    public func tryMoveMinimized(windowID wid: UInt32, spaceID: Int64) throws -> Bool {
-        try adapter.tryMoveMinimized(windowID: wid, spaceID: spaceID)
+    public func tryMoveMinimized(windowIDs wids: [UInt32], spaceID: Int64) throws -> Set<UInt32> {
+        try adapter.tryMoveMinimized(windowIDs: wids, spaceID: spaceID)
     }
 }
 

@@ -470,10 +470,8 @@ public final class RestoreEngine: @unchecked Sendable {
         let minimizedLayerOK = spaces.isLayerAvailable(.minimized)
         var ok4 = 0, skip4 = 0, fail4 = 0
         if !stopBeforeLayer(actProcessed, actItems.count) {
-            for item in l4Items {
-                restoreMinimizedWindow(item, layerOK: minimizedLayerOK,
-                                       ok: &ok4, skipped: &skip4, failed: &fail4)
-            }
+            restoreMinimizedWindows(l4Items, layerOK: minimizedLayerOK,
+                                    ok: &ok4, skipped: &skip4, failed: &fail4)
         }
 
         // 死线未处理项计入跳过（未尝试 ≠ 失败；一次性结算防跨层重复计数）
@@ -900,46 +898,76 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - Pass L4：最小化窗口恢复（票 15，spec §6.5）
 
+    /// L4 单窗上下文（目标 Space 已解析，可桥接）
+    private struct MinimizedMove {
+        let lw: LiveRestoreWindow
+        let snap: SnapshotWindow
+        let targetSpace: SpaceEntry
+        let target: String
+        let before: String
+    }
+
     /// 实况最小化窗口：取消最小化（实测自动落回原 Space，05 #5）→ 按需桥接移至快照 Space → 重新最小化。
     /// 先试最小化状态直接桥接（实测可行则省去首尾，语义不变）；失败不做运行时 no-op 标记，回退路径仍可用。
+    /// 票 16：直接桥接按目标 Space 分组批量（一次 perform + 一次轮询结算），组内未迁移的窗再逐窗回退。
     /// L4 不可用（探针 / FORCE_DEGRADED=minimized）时原地保持最小化不动，不报失败（skip，§6.1/§6.5）。
-    private func restoreMinimizedWindow(_ item: PlanItem, layerOK: Bool,
-                                        ok: inout Int, skipped: inout Int, failed: inout Int) {
-        guard case .restoreMinimized(let lw, let targetSpace, let mergedFrom) = item.action else { return }
-        let snap = item.snapshotWindow
+    private func restoreMinimizedWindows(_ items: [PlanItem], layerOK: Bool,
+                                         ok: inout Int, skipped: inout Int, failed: inout Int) {
+        var groups: [(spaceID: Int64, moves: [MinimizedMove])] = []
+        for item in items {
+            guard case .restoreMinimized(let lw, let targetSpace, let mergedFrom) = item.action else { continue }
+            let snap = item.snapshotWindow
+            let wid = lw.cgWindowID
+            let target = "\(snap.displayUUID)/\(targetSpace?.index ?? snap.spaceIndex)"
+            let before = "minimized=true space=\(lw.spaceID)"
+
+            guard layerOK else {
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
+                    action: .minimize, target: target, before: before, after: "-", result: .skip))
+                skipped += 1
+                continue
+            }
+            guard let targetSpace else {
+                log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
+                    action: .minimize, target: target, before: before, after: "-", result: .skip,
+                    reason: "target-display-absent"))
+                skipped += 1
+                continue
+            }
+            if let from = mergedFrom {
+                logSpaceMerge(wid: wid, app: snap.bundleID, display: snap.displayUUID,
+                              from: from, to: targetSpace.index)
+            }
+            let move = MinimizedMove(lw: lw, snap: snap, targetSpace: targetSpace, target: target, before: before)
+            if let g = groups.firstIndex(where: { $0.spaceID == targetSpace.spaceID }) {
+                groups[g].moves.append(move)
+            } else {
+                groups.append((targetSpace.spaceID, [move]))
+            }
+        }
+
+        for group in groups {
+            // §6.5：先试最小化状态下直接桥接（实现期可简化，语义不变）；抛错 = 整组未迁移，逐窗回退
+            let moved = (try? spaces.tryMoveMinimized(windowIDs: group.moves.map(\.lw.cgWindowID),
+                                                     spaceID: group.spaceID)) ?? []
+            for move in group.moves {
+                if moved.contains(move.lw.cgWindowID) {
+                    log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: move.lw.cgWindowID,
+                        app: move.snap.bundleID, action: .minimize, target: move.target, before: move.before,
+                        after: "minimized=true space=\(move.targetSpace.spaceID)", result: .ok))
+                    ok += 1
+                } else {
+                    restoreMinimizedViaUnminimize(move, ok: &ok, skipped: &skipped, failed: &failed)
+                }
+            }
+        }
+    }
+
+    /// §6.5 回退：单窗取消最小化 → 桥接 → 重新最小化
+    private func restoreMinimizedViaUnminimize(_ move: MinimizedMove,
+                                               ok: inout Int, skipped: inout Int, failed: inout Int) {
+        let (lw, snap, targetSpace, target, before) = (move.lw, move.snap, move.targetSpace, move.target, move.before)
         let wid = lw.cgWindowID
-        let target = "\(snap.displayUUID)/\(targetSpace?.index ?? snap.spaceIndex)"
-        let before = "minimized=true space=\(lw.spaceID)"
-
-        guard layerOK else {
-            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
-                action: .minimize, target: target, before: before, after: "-", result: .skip))
-            skipped += 1
-            return
-        }
-        guard let targetSpace else {
-            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
-                action: .minimize, target: target, before: before, after: "-", result: .skip,
-                reason: "target-display-absent"))
-            skipped += 1
-            return
-        }
-        if let from = mergedFrom {
-            logSpaceMerge(wid: wid, app: snap.bundleID, display: snap.displayUUID,
-                          from: from, to: targetSpace.index)
-        }
-
-        // §6.5：先试最小化状态下直接桥接（实现期可简化，语义不变）
-        let direct: Bool?
-        do { direct = try spaces.tryMoveMinimized(windowID: wid, spaceID: targetSpace.spaceID) }
-        catch { direct = nil }
-        if direct == true {
-            log?.write(StructuredLog.restoreLine(layer: SpaceLayerNumber.minimized, wid: wid, app: snap.bundleID,
-                action: .minimize, target: target, before: before,
-                after: "minimized=true space=\(targetSpace.spaceID)", result: .ok))
-            ok += 1
-            return
-        }
 
         // 回退路径：取消最小化 → 桥接移至快照 Space → 重新最小化（终态 = 原地保持最小化，无论移窗成败）
         do {

@@ -1427,3 +1427,73 @@ extension RestorePipelineTests {
         XCTAssertEqual(report.okCount, 1)
     }
 }
+
+// MARK: L4 批量直移（display-presets 票 16：逐窗串行 1.2s × 12 窗 ≈ 13s → 同目标 Space 一次桥接）
+
+extension RestorePipelineTests {
+    /// 快照：101/102/103 最小化在 B#2(id7)，104 最小化在 B#1(id6)；实况四窗均最小化在 A#1(id5)
+    func makeMultiMinimizedWorld() -> (snapshot: Snapshot, bridge: FakeBridge, mini: FakeMinimize,
+                                       log: LogSpy, engine: RestoreEngine) {
+        let apps: [(UInt32, String, Int)] = [(101, "com.t.a", 2), (102, "com.t.b", 2), (103, "com.t.c", 2),
+                                             (104, "com.t.d", 1)]
+        let snapshot = Snapshot(
+            capturedAt: Date(),
+            topology: [
+                World.topologyEntry(uuid: "A-uuid", name: "A", orientation: 0, x: 0, y: 0, w: 1000, h: 1000),
+                World.topologyEntry(uuid: "B-uuid", name: "B", orientation: 0, x: 2000, y: 0, w: 1000, h: 1000),
+            ],
+            spaces: [
+                World.userSpace("A-uuid", index: 1),
+                World.userSpace("B-uuid", index: 1),
+                World.userSpace("B-uuid", index: 2),
+            ],
+            windows: apps.map {
+                World.snapshotWindow(bundleID: $0.1, title: "W", sibling: 0, display: "B-uuid", space: $0.2,
+                                     x: 0.1, y: 0.1, w: 0.4, h: 0.4, minimized: true)
+            })
+        let samples = apps.map {
+            World.sample(wid: $0.0, bundleID: $0.1, title: "W", displayOrigin: aOrigin, displaySize: screenSize,
+                         x: 0.2, y: 0.2, w: 0.4, h: 0.3, onscreen: false)
+        }
+        let bridge = FakeBridge(entries: [
+            World.entry("A-uuid", index: 1, id: 5),
+            World.entry("B-uuid", index: 1, id: 6),
+            World.entry("B-uuid", index: 2, id: 7),
+        ], byWindow: [101: 5, 102: 5, 103: 5, 104: 5])
+        let mini = FakeMinimize()
+        let log = LogSpy()
+        let engine = RestoreEngine(
+            store: PresetStore(directory: try! makeTempDir()),
+            spaces: bridge, enumerator: FakeEnumerator(samples),
+            ax: FakeAX(minimizedIDs: [101, 102, 103, 104]), geometry: FakeGeometry(),
+            fullscreen: FakeFullScreen(), minimize: mini, fullscreenSettleSeconds: 0,
+            displaysProvider: { World.displays() },
+            rotationProvider: World.rotationProvider([1: 0, 2: 0]), log: log)
+        return (snapshot, bridge, mini, log, engine)
+    }
+
+    func testMinimizedWindowsSharingTargetSpaceBridgeOnceThenFallBackPerWindow() throws {
+        let world = makeMultiMinimizedWorld()
+        world.bridge.minimizedDirectMoveFailIDs = [102]
+        let report = try world.engine.restore(snapshot: world.snapshot)
+
+        let batches = world.bridge.directMinimizedBatches
+        XCTAssertEqual(batches.count, 2, "按目标 Space 分组：B#2 一次、B#1 一次")
+        XCTAssertEqual(batches.first { $0.spaceID == 7 }.map { Set($0.wids) }, [101, 102, 103])
+        XCTAssertEqual(batches.first { $0.spaceID == 6 }.map(\.wids), [104])
+
+        // 组内未迁移的 102 逐窗走 §6.5 回退；其余不碰 AXMinimized
+        XCTAssertEqual(world.mini.calls.map(\.windowID), [102, 102])
+        XCTAssertEqual(world.mini.calls.map(\.value), [false, true])
+        XCTAssertEqual(world.bridge.moves.map(\.wids), [[102]])
+        XCTAssertEqual(world.bridge.moves.map(\.spaceID), [7])
+
+        // 逐窗 restoreLine 口径与计数不变
+        let l4 = world.log.all.filter { $0.contains("[restore] L4") && $0.contains("action=minimize") }
+        XCTAssertEqual(l4.count, 4, "实际：\(l4)")
+        for wid in [101, 102, 103, 104] {
+            XCTAssertTrue(l4.contains { $0.contains("wid=\(wid)") && $0.contains("result=ok") }, "wid=\(wid)：\(l4)")
+        }
+        XCTAssertEqual(report.okCount, 4); XCTAssertEqual(report.failCount, 0); XCTAssertEqual(report.skipCount, 0)
+    }
+}

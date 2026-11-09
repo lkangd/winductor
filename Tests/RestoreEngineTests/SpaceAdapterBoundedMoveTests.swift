@@ -117,3 +117,74 @@ final class SpaceAdapterRuntimeNoOpTests: XCTestCase {
         XCTAssertNotEqual(adapter.probeLayer(.bridge).reason, "no-op", "新一轮不再带上一轮的 no-op 标记")
     }
 }
+
+/// L4 最小化窗直接桥接（display-presets 票 16：固定 1.2s 等待 × 12 窗串行 = 实测 13s 纯等待）
+final class SpaceAdapterMinimizedDirectMoveTests: XCTestCase {
+    /// 模拟 WindowServer 归属表：runner 执行后指定窗改到目标 Space（线程安全，读写跨全局队列）
+    final class FakeWindowServer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var byWindow: [UInt32: [Int64]]
+        private let immovable: Set<UInt32>
+        private(set) var performs: [[UInt32]] = []
+        init(_ byWindow: [UInt32: [Int64]], immovable: Set<UInt32> = []) {
+            self.byWindow = byWindow
+            self.immovable = immovable
+        }
+        func read(_ wid: UInt32) throws -> [Int64] {
+            lock.lock(); defer { lock.unlock() }
+            return byWindow[wid] ?? []
+        }
+        func perform(_ wids: [UInt32], _ spaceID: UInt64) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            performs.append(wids)
+            for w in wids where !immovable.contains(w) { byWindow[w] = [Int64(spaceID)] }
+            return nil
+        }
+        var performCalls: [[UInt32]] { lock.lock(); defer { lock.unlock() }; return performs }
+    }
+
+    func testReturnsAsSoonAsAttributionChangesWithoutWaitingFullSettle() throws {
+        let ws = FakeWindowServer([1: [5]])
+        let start = Date()
+        let moved = try SpaceAdapter.directMoveMinimized(
+            [1], spaceID: 9, settle: 1.2, poll: 0.02, readTimeout: 1,
+            reader: ws.read, runner: ws.perform)
+        XCTAssertEqual(moved, [1])
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.6, "归属变更后应立即返回，不等满 settle")
+    }
+
+    func testBatchPerformsOnceAndReportsOnlyMovedWindows() throws {
+        // 3 窗同目标：一次 perform；wid 3 不可直移 → 不在结果中（调用方逐窗回退）；wid 4 已在目标不进 perform
+        let ws = FakeWindowServer([1: [5], 2: [5], 3: [5], 4: [9]], immovable: [3])
+        let moved = try SpaceAdapter.directMoveMinimized(
+            [1, 2, 3, 4], spaceID: 9, settle: 0.3, poll: 0.02, readTimeout: 1,
+            reader: ws.read, runner: ws.perform)
+        XCTAssertEqual(ws.performCalls, [[1, 2, 3]], "同目标 Space 只桥接一次，已在目标的窗不进 perform")
+        XCTAssertEqual(moved, [1, 2, 4])
+    }
+
+    func testUnchangedAfterFullSettleReturnsEmpty() throws {
+        let ws = FakeWindowServer([1: [5]], immovable: [1])
+        let start = Date()
+        let moved = try SpaceAdapter.directMoveMinimized(
+            [1], spaceID: 9, settle: 0.3, poll: 0.02, readTimeout: 1,
+            reader: ws.read, runner: ws.perform)
+        XCTAssertEqual(moved, [])
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.3, "未迁移判定须等满 settle（原口径）")
+    }
+
+    func testAllAlreadyAtTargetSkipsPerform() throws {
+        let ws = FakeWindowServer([1: [9]])
+        let moved = try SpaceAdapter.directMoveMinimized(
+            [1], spaceID: 9, settle: 1.2, poll: 0.02, readTimeout: 1,
+            reader: ws.read, runner: ws.perform)
+        XCTAssertEqual(moved, [1])
+        XCTAssertTrue(ws.performCalls.isEmpty)
+    }
+
+    func testRunnerIssueThrows() {
+        XCTAssertThrowsError(try SpaceAdapter.directMoveMinimized(
+            [1], spaceID: 9, settle: 0.3, poll: 0.02, readTimeout: 1,
+            reader: { _ in [5] }, runner: { _, _ in "op failed" }))
+    }
+}

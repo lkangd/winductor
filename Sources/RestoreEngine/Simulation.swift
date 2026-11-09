@@ -226,9 +226,9 @@ extension SimulatedSeams {
     }
 
     @discardableResult
-    public func tryMoveMinimized(windowID wid: UInt32, spaceID: Int64) throws -> Bool {
-        append(\.minimizedDirectMoves, [SimulatedBridgeMove(windowIDs: [wid], spaceID: spaceID)])
-        return true
+    public func tryMoveMinimized(windowIDs wids: [UInt32], spaceID: Int64) throws -> Set<UInt32> {
+        append(\.minimizedDirectMoves, [SimulatedBridgeMove(windowIDs: wids, spaceID: spaceID)])
+        return Set(wids)
     }
     func activeSpaceIDs() throws -> Set<Int64> { [] }
     /// 干跑无运行时 no-op 标记可清
