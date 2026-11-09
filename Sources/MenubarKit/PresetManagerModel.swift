@@ -3,7 +3,7 @@ import Core
 import Foundation
 
 // PresetManagerModel.swift — 预设管理窗口的操作与状态源（display-presets 票 07，spec §6.4）。
-// 视图（PresetManagerView）只读 state、只调本类方法；规则全在存储（§4.1/§4.2：同拓扑唯一名、自动互斥、
+// 视图（主窗口拓扑页 TopologyPage）只读 state、只调本类方法；规则全在存储（§4.1/§4.2：同拓扑唯一名、自动互斥、
 // 删自动不转移）与 PresetManagerState（排序/高亮/逐行可用性），本类只做「对话框 → 存储 → 重读」编排：
 //   改名 / 改别名 → 输入框（撞名/空名提示后重弹）→ PresetStore.renamePreset / setAlias；
 //   删除 → 确认框 → deletePreset；自动开关 → setAuto；
@@ -92,6 +92,14 @@ public final class PresetManagerModel: ObservableObject {
     /// 左栏选中拓扑（清除屏筛选与展开）
     public func selectTopology(_ key: String) {
         manualSelectedKey = key
+        selectedDisplayUUID = nil
+        expandedPresetID = nil
+        reload()
+    }
+
+    /// 回到跟随当前拓扑（主窗口经菜单「管理预设…」打开时；清除屏筛选与展开，ui-refactor 票 03）
+    public func selectCurrentTopology() {
+        manualSelectedKey = nil
         selectedDisplayUUID = nil
         expandedPresetID = nil
         reload()

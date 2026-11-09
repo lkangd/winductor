@@ -2,21 +2,38 @@ import AppKit
 import Core
 import SwiftUI
 
-// PresetManagerWindow.swift — 预设管理窗口的宿主（display-presets 票 07，spec §6.4）。
+// MainWindowController.swift — 统一主窗口的宿主（ui-refactor 票 03，spec §5.1；取代 display-presets 票 07 的预设管理窗口宿主）。
 // 单实例：首次 show() 建窗，之后再打开只前置（关闭 = 隐藏，不释放）。
-// 实时刷新：打开/激活时、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，
-// 经 reloadIfVisible，装配方挂在菜单刷新同一处）重读存储与当前拓扑。
+// Swish 式外观：.fullSizeContentView + 透明标题栏 + 隐藏标题，红绿灯落在侧栏顶部；可缩放，最小 720×520。
+// 实时刷新（沿用预设管理窗口时机）：打开/激活时、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，
+// 经 reloadIfVisible，装配方挂在菜单刷新同一处）重读存储、当前拓扑与菜单现状。
 // 对话框生产实现 AlertPresetManagerDialogs（NSAlert；菜单栏 agent 应用须先激活自身）。
 
-public final class PresetManagerWindowController: NSObject, NSWindowDelegate {
-    public let model: PresetManagerModel
-    private var window: NSWindow?
+public final class MainWindowController: NSObject, NSWindowDelegate {
+    /// 最小内容尺寸（spec §5.1「最小约 720×520」）
+    static let minimumSize = NSSize(width: 720, height: 520)
+    /// 首次打开的默认尺寸（原型同款）
+    static let defaultSize = NSSize(width: 860, height: 640)
+
+    public let model: MainWindowModel
+    private(set) var window: NSWindow?
     private var screenObserver: NSObjectProtocol?
     /// 拓扑稳定后补刷一次的延迟（拔插时 didChangeScreenParameters 先于排列定型）
-    private let settleDelay: TimeInterval = 2
+    private let settleDelay: TimeInterval
+    /// 前置呈现（生产：激活本应用 + makeKeyAndOrderFront；测试注入离屏呈现）
+    private let present: (NSWindow) -> Void
 
-    public init(model: PresetManagerModel) {
+    public convenience init(model: MainWindowModel) {
+        self.init(model: model, settleDelay: 2) { window in
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    init(model: MainWindowModel, settleDelay: TimeInterval, present: @escaping (NSWindow) -> Void) {
         self.model = model
+        self.settleDelay = settleDelay
+        self.present = present
         super.init()
     }
 
@@ -24,13 +41,18 @@ public final class PresetManagerWindowController: NSObject, NSWindowDelegate {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
-    /// 打开或前置窗口（主线程）
+    /// 打开或前置窗口，停在上次的页（主线程）
     public func show() {
         model.reload()
         let window = self.window ?? makeWindow()
         self.window = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
+    }
+
+    /// 打开或前置窗口并选中当前拓扑（菜单「管理预设…」；当前拓扑无预设也落在其页）
+    public func showCurrentTopology() {
+        model.selectCurrentTopology()
+        show()
     }
 
     /// 窗口可见时重读（外部事件后调用；主线程）
@@ -40,13 +62,20 @@ public final class PresetManagerWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: Self.defaultSize),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
-        window.title = "管理预设"
+        window.title = "Winductor"  // 不显示；窗口菜单 / 调度中心 / 辅助功能用
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: PresetManagerView(model: model))
-        window.setFrameAutosaveName("WinductorPresetManager")
+        window.contentMinSize = Self.minimumSize
+        window.contentView = NSHostingView(rootView: MainWindowView(model: model))
+        window.setFrameAutosaveName("WinductorMainWindow")
+        if window.frame.width < Self.minimumSize.width || window.frame.height < Self.minimumSize.height {
+            window.setContentSize(Self.defaultSize)
+        }
         window.center()
         window.delegate = self
         screenObserver = NotificationCenter.default.addObserver(

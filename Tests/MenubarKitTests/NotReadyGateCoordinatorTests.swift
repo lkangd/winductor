@@ -78,6 +78,24 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
         XCTAssertEqual(guideSpy.showCount, 0, "启动时就绪不得弹引导窗（重启后不再弹）")
     }
 
+    /// 主窗口「授权引导…」（ui-refactor 票 03）：就绪后也能按需打开，带上现状；再次打开复用同一窗口
+    func testShowPermissionGuideOnDemand() {
+        accessibilityGranted.value = true
+        screenCaptureGranted.value = true
+        titles.value = ["邮件"]
+        coordinator.start()
+        var made = 0
+        let factoryCoordinator = NotReadyGateCoordinator(monitor: coordinator.monitor, statusItem: statusSpy,
+                                                         makeGuideWindow: { [guideSpy] in made += 1; return guideSpy! })
+
+        factoryCoordinator.showPermissionGuide()
+        factoryCoordinator.showPermissionGuide()
+
+        XCTAssertEqual(made, 1, "单实例")
+        XCTAssertEqual(guideSpy.showCount, 2)
+        XCTAssertEqual(guideSpy.updates.last?.isReady, true)
+    }
+
     /// 齐备推进：引导窗未关闭，收到就绪状态（窗内换「✓ …【立即重启】」文案）
     func testGuideWindowFollowsReadiness() {
         coordinator.start()

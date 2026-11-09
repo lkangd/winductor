@@ -75,6 +75,14 @@ public final class NotReadyGateCoordinator {
         refreshMenu(monitor.status)
     }
 
+    /// 按需打开授权引导窗（主窗口通用页「授权引导…」，ui-refactor 票 03）：已有窗口则前置，否则新建；随后照常跟随状态推进
+    public func showPermissionGuide() {
+        let window = guideWindow ?? makeGuideWindow()
+        window.update(status: monitor.status)
+        window.show()
+        guideWindow = window
+    }
+
     // MARK: 状态应用（主线程；观察者定时路径已投递主线程）
 
     private func apply(_ status: PermissionMonitor.Status) {
