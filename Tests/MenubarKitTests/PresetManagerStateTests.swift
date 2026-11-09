@@ -105,9 +105,10 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(rows.map(\.isLastRestored), [true, false])
         XCTAssertEqual(rows.map(\.canRestore), [true, true])
         XCTAssertEqual(rows.map(\.canOverwrite), [true, true])
+        XCTAssertEqual(rows.map(\.showsOverwrite), [true, true])
     }
 
-    /// 非当前拓扑：可查看、改名、删除、设自动，但恢复/覆盖禁用（acceptance）
+    /// 非当前拓扑：可查看、改名、删除、设自动，但恢复/覆盖禁用（acceptance）；「覆盖」按钮不显示（display-presets 票 13）
     func testRowsOfOtherTopologyDisableRestoreAndOverwrite() throws {
         try save("家", on: homeDesk)
 
@@ -117,9 +118,10 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertTrue(selected.canEditAlias)
         XCTAssertEqual(selected.rows.map(\.canRestore), [false])
         XCTAssertEqual(selected.rows.map(\.canOverwrite), [false])
+        XCTAssertEqual(selected.rows.map(\.showsOverwrite), [false])
     }
 
-    /// 当前拓扑但恢复进行中 / 未就绪：恢复与覆盖同样禁用
+    /// 当前拓扑但恢复进行中 / 未就绪：恢复与覆盖同样禁用；「覆盖」按钮仍显示、置灰（display-presets 票 13）
     func testRowsOfCurrentTopologyDisabledWhileUnavailable() throws {
         try save("工作", on: officeDesk)
 
@@ -127,6 +129,7 @@ final class PresetManagerStateTests: XCTestCase {
             let rows = try XCTUnwrap(make(current: officeDesk, availability: availability).selected?.rows)
             XCTAssertEqual(rows.map(\.canRestore), [false], "\(availability)")
             XCTAssertEqual(rows.map(\.canOverwrite), [false], "\(availability)")
+            XCTAssertEqual(rows.map(\.showsOverwrite), [true], "\(availability)")
         }
     }
 

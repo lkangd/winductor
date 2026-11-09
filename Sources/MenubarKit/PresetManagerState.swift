@@ -7,7 +7,7 @@ import Foundation
 //   左栏 entries —— 当前拓扑置顶高亮（尚无预设也按实况屏幕列出），其他拓扑灰显、按最近保存时间倒序；
 //     标题别名优先，否则屏名组合（同名合并「×N」）；镜像中无当前拓扑（§3.3）。
 //   selected —— 选中拓扑的排列图数据（当前拓扑用实况屏幕，其他用存储的展示数据 §3.2）与预设行；
-//     行内恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；改名、删除、设自动任何拓扑都可。
+//     行内恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；「覆盖」按钮仅当前拓扑显示；改名、删除、设自动任何拓扑都可。
 //   selectedDisplayUUID / expandedPresetID —— 预设详情（display-presets 票 08）的筛选与展开接缝。
 
 /// 左栏的一个拓扑
@@ -35,6 +35,8 @@ public struct PresetRowState: Equatable, Identifiable {
     public let canRestore: Bool
     /// 「用当前布局覆盖」可用：仅当前拓扑且可用
     public let canOverwrite: Bool
+    /// 行内显式「覆盖」按钮是否显示：仅当前拓扑（非当前拓扑不显示而非置灰；不可用时置灰见 canOverwrite，display-presets 票 13）
+    public let showsOverwrite: Bool
 }
 
 /// 右侧：选中拓扑
@@ -107,7 +109,8 @@ public struct PresetManagerState: Equatable {
                                    savedAtText: dateFormatter.string(from: preset.savedAt),
                                    isAuto: preset.isAuto,
                                    isLastRestored: preset.id == record?.lastRestoredPresetID,
-                                   canRestore: canApply, canOverwrite: canApply)
+                                   canRestore: canApply, canOverwrite: canApply,
+                                   showsOverwrite: isCurrent)
                 })
         }
         let displayUUID = selectedDisplayUUID.flatMap { uuid in
