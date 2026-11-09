@@ -20,6 +20,10 @@ public struct TopologyListEntry: Equatable, Identifiable {
     public let subtitle: String
     /// 当前拓扑（置顶高亮）；false = 灰显
     public let isCurrent: Bool
+    /// 屏数（主窗口侧栏图标：单屏 / 多屏，ui-refactor 票 03）
+    public let displayCount: Int
+    /// 预设数（关于页统计，ui-refactor 票 03）
+    public let presetCount: Int
 }
 
 /// 预设列表的一行
@@ -88,7 +92,9 @@ public struct PresetManagerState: Equatable {
             return TopologyListEntry(key: key,
                                      title: title(of: record, displays: displays),
                                      subtitle: subtitle(displayCount: displays.count, presetCount: record?.presets.count ?? 0),
-                                     isCurrent: key == currentKey)
+                                     isCurrent: key == currentKey,
+                                     displayCount: displays.count,
+                                     presetCount: record?.presets.count ?? 0)
         }
 
         let resolvedKey = selectedKey.flatMap { key in entries.contains { $0.key == key } ? key : nil }
