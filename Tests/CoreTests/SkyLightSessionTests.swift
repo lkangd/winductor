@@ -130,7 +130,8 @@ final class SkyLightSessionTests: XCTestCase {
         let spaces = session.serializingReads(of: base)
         XCTAssertEqual(try spaces.managedSpaces(), [])
         XCTAssertEqual(try spaces.spaceIDsByWindowID(), [:])
-        XCTAssertEqual(base.heldDuringReads.items, ["held", "held"])
+        XCTAssertEqual(spaces.orderedOutWindowIDs(among: [1]), [])
+        XCTAssertEqual(base.heldDuringReads.items, ["held", "held", "held"])
     }
 
     /// 每次独占请求代次 +1（在途 AX 写返回后据此判过期）；shared 不改代次
@@ -162,6 +163,7 @@ private final class ReadLockProbe: SpaceProviding, @unchecked Sendable {
 
     func managedSpaces() throws -> [SpaceEntry] { probe(); return [] }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { probe(); return [:] }
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? { probe(); return [] }
 }
 
 private final class LockedLog: LogWriting, @unchecked Sendable {

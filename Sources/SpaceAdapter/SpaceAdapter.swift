@@ -72,6 +72,8 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
         let copySpacesForWindows: (@convention(c) (Int32, Int, CFArray) -> CFArray?)?
         let copyManagedDisplayForWindow: (@convention(c) (Int32, UInt32) -> CFString?)?
         let spaceGetType: (@convention(c) (Int32, UInt64) -> Int32)?
+        /// SLSWindowIsOrderedIn(cid, wid, &orderedIn) → CGError（诊断 acceptance4 R1 实测）
+        let windowIsOrderedIn: (@convention(c) (Int32, UInt32, UnsafeMutablePointer<Bool>) -> Int32)?
     }
 
     private static func loadSym<T>(_ lib: String, _ name: String, as type: T.Type) -> T? {
@@ -88,7 +90,9 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
             copyManagedDisplaySpaces: loadSym(lib, "SLSCopyManagedDisplaySpaces", as: (@convention(c) (Int32) -> CFArray?).self),
             copySpacesForWindows: loadSym(lib, "SLSCopySpacesForWindows", as: (@convention(c) (Int32, Int, CFArray) -> CFArray?).self),
             copyManagedDisplayForWindow: loadSym(lib, "SLSCopyManagedDisplayForWindow", as: (@convention(c) (Int32, UInt32) -> CFString?).self),
-            spaceGetType: loadSym(lib, "SLSSpaceGetType", as: (@convention(c) (Int32, UInt64) -> Int32).self)
+            spaceGetType: loadSym(lib, "SLSSpaceGetType", as: (@convention(c) (Int32, UInt64) -> Int32).self),
+            windowIsOrderedIn: loadSym(lib, "SLSWindowIsOrderedIn",
+                                       as: (@convention(c) (Int32, UInt32, UnsafeMutablePointer<Bool>) -> Int32).self)
         )
     }()
 
@@ -221,6 +225,21 @@ public final class SpaceAdapter: SpaceProviding, @unchecked Sendable {
             for wid in Self.windowListWindowIDs() {
                 let ids = try spaceIDs(windowID: wid)
                 if ids.count == 1 { out[wid] = ids[0] }
+            }
+            return out
+        }
+    }
+
+    /// 给定窗口中 ordered out 者（SLSWindowIsOrderedIn；隐藏辅助窗与最小化窗都是，在其他 Space 的真窗
+    /// ordered in，诊断 acceptance4 R1 实测）。符号缺失 / 读取超时 = nil（Core.LiveWindowSet 据此降级）；
+    /// 单窗读失败按 ordered in 处理（不排除）
+    public func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? {
+        guard let sl = Self.skyLight, let isOrderedIn = sl.windowIsOrderedIn else { return nil }
+        return try? SpaceAdapter.bounded(timeout: Self.bridgeReadTimeoutSeconds) {
+            var out = Set<UInt32>()
+            for wid in windowIDs {
+                var orderedIn = true
+                if isOrderedIn(sl.connectionID, wid, &orderedIn) == 0, !orderedIn { out.insert(wid) }
             }
             return out
         }

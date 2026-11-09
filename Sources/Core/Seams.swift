@@ -34,6 +34,15 @@ public protocol SpaceProviding: Sendable {
 
     /// CGWindowID（kCGWindowNumber）→ spaceID；最小化窗口报原 Space（spec §5.1 实测）
     func spaceIDsByWindowID() throws -> [UInt32: Int64]
+
+    /// 给定窗口中 ordered out 者（SLSWindowIsOrderedIn == false：隐藏辅助窗与最小化窗，
+    /// 诊断 acceptance4 R1）；nil = 排列数据不可用。display-presets 票 11 增量（带缺省实现，既有实现方不受影响）
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>?
+}
+
+public extension SpaceProviding {
+    /// 缺省：排列数据不可用（Core.LiveWindowSet 据此降级，不按排列排除）
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? { nil }
 }
 
 /// SpaceEntry.kind 语义值与人读名（spec §5.1 实测：0=用户桌面、4=全屏）。

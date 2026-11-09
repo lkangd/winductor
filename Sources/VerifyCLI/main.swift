@@ -13,7 +13,8 @@ import SpaceAdapter
 // 基准选择由 Core.VerifyBaseline 给出；无基准报「无比对基准」并以用法错误码退出。
 // 从已授权终端运行（继承宿主 TCC；CLI 本身无需签名授权）。
 // 实时枚举：CGWindowListCopyWindowInfo(.optionAll) 全量窗口（含其他 Space/最小化）
-//   + _AXUIElementGetWindow 配对（照 05 spike 写法）。
+//   + _AXUIElementGetWindow 配对（照 05 spike 写法）；参与匹配的窗口集合走 Core.LiveWindowSet
+//   （与 app 快照组装/恢复实况同一份判定：无 Space/粘性窗、ordered-out 隐藏窗不入）。
 // 全量比对：判定由 Core.VerifyComparer 给出（预期 SKIP 集推导复用 app 恢复管线同一份
 //   Core.ConservativeMatcher，08 #1）；本文件只负责枚举与报告渲染。
 //   逐条 PASS / FAIL / SKIP + 屏幕归属比对；Space 归属（L2）经 SpaceAdapter 查 SLS，
@@ -205,31 +206,32 @@ func main() {
     // Space 数据：经 SpaceAdapter 查 SLS，供屏归属（Space 所属屏优先）与 Space 归属（L2）比对。
     // 本进程无授权 / SkyLight 符号缺失时查询抛错 → 空表 = 屏归属按 frame 兜底、Space 项「无法核验」，不崩（票面要求）。
     let adapter = SpaceAdapter()
-    var spaceIDByWindow: [UInt32: Int64] = [:]
+    var spaceIDByWindow: [UInt32: Int64]?
     var spaceEntries: [SpaceEntry] = []
-    var slsAvailable = false
     if let byWindow = try? adapter.spaceIDsByWindowID(),
        let entries = try? adapter.managedSpaces() {
         spaceIDByWindow = byWindow
         spaceEntries = entries
-        slsAvailable = true
     }
+    let slsAvailable = spaceIDByWindow != nil
 
-    // 实时枚举：CG 全量（与 app 同一份 Core 采样）→ 屏归属 + 比例几何（Core.LiveWindowLocator）+ AX 配对
+    // 实时枚举：CG 全量（与 app 同一份 Core 采样）→ 窗口集合口径（Core.LiveWindowSet：幽灵窗排除、
+    // minimized 判定，与快照组装/恢复实况同一份）+ 屏归属 + 比例几何 + AX 配对（标题兜底与 minimized 读数）
     let cgWindows = CGWindowListEnumerator().sample()
-    let located = LiveWindowLocator.locate(samples: cgWindows, displays: displays,
-                                           spaceIDByWindow: spaceIDByWindow, spaceEntries: spaceEntries)
     let axByWid = axWindowsByCGWindowID()
+    let members = LiveWindowSet.collect(
+        samples: cgWindows, displays: displays, spaceIDByWindow: spaceIDByWindow, spaceEntries: spaceEntries,
+        orderedOut: { adapter.orderedOutWindowIDs(among: $0) },
+        minimized: { Set($0.map(\.windowID).filter { axByWid[$0]?.minimized == true }) })
     var liveWindows: [LiveWindow] = []
     var displayUUIDByWindowID: [UInt32: String] = [:]
     var spaceEntryByWindowID: [UInt32: SpaceEntry] = [:]
-    for lw in located {
-        let wid = lw.sample.windowID
-        let ax = axByWid[wid]
-        let title = lw.sample.title ?? ax?.title ?? ""
+    for member in members {
+        let lw = member.window, wid = lw.sample.windowID
+        let title = lw.sample.title ?? axByWid[wid]?.title ?? ""
         liveWindows.append(LiveWindow(cgWindowID: wid, bundleID: lw.sample.bundleID, title: title,
                                       x: lw.x, y: lw.y, w: lw.w, h: lw.h,
-                                      minimized: ax?.minimized ?? false))
+                                      minimized: member.minimized))
         displayUUIDByWindowID[wid] = lw.display.uuid
         spaceEntryByWindowID[wid] = lw.space
     }

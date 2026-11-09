@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Darwin
 import Foundation
@@ -33,9 +34,17 @@ extension Displays {
         })
     }
 
-    /// 屏幕名：dlsym 取 CGDisplayGetName（Swift 不直接导出），失败回退 "Display <id>"
+    /// 屏幕名：NSScreen.localizedName（按 deviceDescription["NSScreenNumber"] 配 CGDirectDisplayID）；
+    /// 取不到再 dlsym CGDisplayGetName，仍失败回退 "Display <id>"（诊断 acceptance4 R6：
+    /// CGDisplayGetName 实测 dlsym 失败，名称全是 "Display N"，违背 spec §3.2「默认显示屏幕名组合」）
     public static func localizedName(for id: CGDirectDisplayID) -> String {
-        displayNameFn(id) as String? ?? "Display \(id)"
+        screenName(for: id) ?? displayNameFn(id) as String? ?? "Display \(id)"
+    }
+
+    private static func screenName(for id: CGDirectDisplayID) -> String? {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        let screen = NSScreen.screens.first { ($0.deviceDescription[key] as? NSNumber)?.uint32Value == id }
+        return screen.map(\.localizedName).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static let displayNameFn: @convention(c) (UInt32) -> CFString? = {

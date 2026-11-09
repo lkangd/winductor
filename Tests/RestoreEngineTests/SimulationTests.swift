@@ -19,7 +19,7 @@ final class SimulationTests: XCTestCase {
         """
         let fixture = try JSONDecoder().decode(SimulatedTopologyFixture.self, from: Data(json.utf8))
         XCTAssertEqual(fixture.displays.first?.rotation, 0, "rotation 缺省 0")
-        XCTAssertEqual(fixture.windows.first?.onscreen, true, "onscreen 缺省 true")
+        XCTAssertEqual(fixture.windows.first?.onscreen, false, "onscreen 缺省 false（同 kCGWindowIsOnscreen 缺键 = 不在屏）")
         XCTAssertEqual(fixture.windows.first?.minimized, false, "minimized 缺省 false")
         XCTAssertTrue(fixture.layers.bridge, "layers 缺省全可用")
         XCTAssertTrue(fixture.layers.fullscreen)
@@ -60,11 +60,11 @@ final class SimulationTests: XCTestCase {
         ]
         let windows = [
             SimulatedTopologyFixture.Window(windowID: 1, pid: 101, bundleID: "com.app.A", title: "Doc",
-                                            x: 30, y: 40, w: 800, h: 600, spaceID: 99),
+                                            x: 30, y: 40, w: 800, h: 600, onscreen: true, spaceID: 99),
             SimulatedTopologyFixture.Window(windowID: 2, pid: 102, bundleID: "com.app.B", title: "Mail",
-                                            x: 1600, y: 60, w: 900, h: 700, spaceID: 99),
+                                            x: 1600, y: 60, w: 900, h: 700, onscreen: true, spaceID: 99),
             SimulatedTopologyFixture.Window(windowID: 3, pid: 103, bundleID: "com.app.C", title: "Code",
-                                            x: 100, y: 1100, w: 1200, h: 800, spaceID: 99),
+                                            x: 100, y: 1100, w: 1200, h: 800, onscreen: true, spaceID: 99),
         ]
         let fixture = SimulatedTopologyFixture(displays: displays, spaces: spaces, windows: windows)
 
@@ -131,9 +131,9 @@ final class SimulationTests: XCTestCase {
             spaces: [SimulatedTopologyFixture.Space(displayUUID: "U1", spaceID: 11, index: 1, kind: 0)],
             windows: [
                 SimulatedTopologyFixture.Window(windowID: 1, pid: 101, bundleID: "com.app.A", title: "Doc",
-                                                x: 30, y: 40, w: 800, h: 600, spaceID: 99),
+                                                x: 30, y: 40, w: 800, h: 600, onscreen: true, spaceID: 99),
                 SimulatedTopologyFixture.Window(windowID: 2, pid: 102, bundleID: "com.app.B", title: "Mail",
-                                                x: 1600, y: 60, w: 900, h: 700, spaceID: 98),
+                                                x: 1600, y: 60, w: 900, h: 700, onscreen: true, spaceID: 98),
             ])
         let snapshot = Snapshot(
             capturedAt: Date(),

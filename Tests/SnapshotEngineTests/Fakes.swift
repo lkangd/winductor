@@ -31,23 +31,20 @@ final class FakeEnumerator: WindowEnumerating, @unchecked Sendable {
     }
 }
 
-/// AX 读取桩：计数调用（AX 按需探测的断言用）；minimized/fullScreen 按窗口 ID 预置
+/// AX 读取桩：计数调用（AX 按需探测的断言用；批量探测走协议缺省 = 逐窗 probe，按窗计数）；minimized 按窗口 ID 预置
 final class FakeAXProber: WindowAXProbing, @unchecked Sendable {
     private let lock = NSLock()
     private let minimizedIDs: Set<UInt32>
-    private let fullscreenIDs: Set<UInt32>
     private(set) var callCount = 0
 
-    init(minimizedIDs: Set<UInt32> = [], fullscreenIDs: Set<UInt32> = []) {
+    init(minimizedIDs: Set<UInt32> = []) {
         self.minimizedIDs = minimizedIDs
-        self.fullscreenIDs = fullscreenIDs
     }
 
     func probe(pid: Int32, windowID: UInt32) -> WindowAXState {
         lock.lock(); defer { lock.unlock() }
         callCount += 1
-        return WindowAXState(minimized: minimizedIDs.contains(windowID),
-                             fullScreen: fullscreenIDs.contains(windowID))
+        return WindowAXState(minimized: minimizedIDs.contains(windowID), fullScreen: false)
     }
 }
 
@@ -55,14 +52,20 @@ final class FakeAXProber: WindowAXProbing, @unchecked Sendable {
 final class FakeSpaces: SpaceProviding, @unchecked Sendable {
     let entries: [SpaceEntry]
     let byWindow: [UInt32: Int64]
+    /// ordered out 的窗（SLSWindowIsOrderedIn == false）；nil = 排列数据不可用
+    let orderedOut: Set<UInt32>?
 
-    init(entries: [SpaceEntry], byWindow: [UInt32: Int64]) {
+    init(entries: [SpaceEntry], byWindow: [UInt32: Int64], orderedOut: Set<UInt32>? = nil) {
         self.entries = entries
         self.byWindow = byWindow
+        self.orderedOut = orderedOut
     }
 
     func managedSpaces() throws -> [SpaceEntry] { entries }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? {
+        orderedOut.map { $0.intersection(windowIDs) }
+    }
 }
 
 /// 延迟几何端口 fake：预置覆盖

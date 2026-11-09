@@ -29,6 +29,8 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
     var minimizedDirectMoveFails = false
     /// 非 nil = activeSpaceIDs 返回该集合（活跃 Space 判定测试）
     var activeSpaces: Set<Int64>?
+    /// ordered out 的窗（SLSWindowIsOrderedIn == false）；nil = 排列数据不可用（缺省，LiveWindowSet 降级）
+    var orderedOut: Set<UInt32>?
     /// >0 = apply 前睡眠秒数（AX 写限时测试：睡 > 1.5s 触发 ax-apply-timeout）
     var applyDelay: TimeInterval?
     /// >0 = managedSpaces 前 N 次调用抛错（模拟 poller 并发 SLS 冲突：undo 快照与
@@ -56,6 +58,9 @@ final class FakeBridge: SpaceBridge, @unchecked Sendable {
         return entries
     }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { byWindow }
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? {
+        orderedOut.map { $0.intersection(windowIDs) }
+    }
     func activeSpaceIDs() throws -> Set<Int64> { activeSpaces ?? [] }
     func beginRestoreRound() { roundsBegun += 1; runtimeNoOp = false }
 

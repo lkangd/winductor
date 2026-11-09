@@ -1000,22 +1000,25 @@ public final class RestoreEngine: @unchecked Sendable {
 
     // MARK: - 实况收集
 
-    /// CG 采样 → 恢复集合：单 Space 归属（粘性/辅助窗排除）、屏归属与比例几何走 Core.LiveWindowLocator、
-    /// 离屏候选读 AX minimized
+    /// CG 采样 → 恢复集合：Core.LiveWindowSet（单 Space 归属、ordered-out 隐藏窗排除、minimized 判定；
+    /// 屏归属与比例几何走其内的 Core.LiveWindowLocator）
     private func collectLiveWindows(samples: [CGWindowSample], displays: [Displays.Info],
                                     entries: [SpaceEntry]) -> [LiveRestoreWindow] {
+        // 集合口径与快照组装/VerifyCLI 同一份（Core.LiveWindowSet）；Space 归属读失败 = 空表 → 全部不入
+        //（恢复要求单 Space 归属，不走快照的「数据不可用不排除」降级）
         let spaceByWindow = (try? spaces.spaceIDsByWindowID()) ?? [:]
-        let located = LiveWindowLocator.locate(samples: samples, displays: displays,
-                                               spaceIDByWindow: spaceByWindow, spaceEntries: entries)
-        return located.compactMap { lw in
-            let sample = lw.sample
+        let members = LiveWindowSet.collect(
+            samples: samples, displays: displays, spaceIDByWindow: spaceByWindow, spaceEntries: entries,
+            orderedOut: { spaces.orderedOutWindowIDs(among: $0) },
+            minimized: { ax.minimizedWindowIDs($0) })
+        return members.compactMap { member in
+            let lw = member.window, sample = lw.sample
             guard let spaceID = spaceByWindow[sample.windowID] else { return nil }
-            let minimized = !sample.isOnscreen && ax.probe(pid: sample.pid, windowID: sample.windowID).minimized
             return LiveRestoreWindow(
                 cgWindowID: sample.windowID, bundleID: sample.bundleID, title: sample.title ?? "",
                 displayUUID: lw.display.uuid ?? "", spaceID: spaceID,
                 x: lw.x, y: lw.y, w: lw.w, h: lw.h,
-                minimized: minimized,
+                minimized: member.minimized,
                 isOnscreen: sample.isOnscreen)
         }
     }

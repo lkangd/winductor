@@ -56,7 +56,7 @@ public struct SimulatedTopologyFixture: Codable, Equatable, Sendable {
         public var title: String?
         /// 全局绝对点 bounds（同 kCGWindowBounds）
         public var x: Double, y: Double, w: Double, h: Double
-        /// kCGWindowIsOnscreen；缺省 true
+        /// kCGWindowIsOnscreen；缺省 false（同 CG：该键只在窗真在屏上时出现，缺键 = 不在屏）
         public var onscreen: Bool
         /// AX 最小化态（离屏窗探测用）；缺省 false
         public var minimized: Bool
@@ -67,7 +67,7 @@ public struct SimulatedTopologyFixture: Codable, Equatable, Sendable {
 
         public init(windowID: UInt32, pid: Int32, bundleID: String, title: String? = nil,
                     x: Double, y: Double, w: Double, h: Double,
-                    onscreen: Bool = true, minimized: Bool = false, fullScreen: Bool = false,
+                    onscreen: Bool = false, minimized: Bool = false, fullScreen: Bool = false,
                     spaceID: Int64) {
             self.windowID = windowID; self.pid = pid; self.bundleID = bundleID; self.title = title
             self.x = x; self.y = y; self.w = w; self.h = h
@@ -85,7 +85,7 @@ public struct SimulatedTopologyFixture: Codable, Equatable, Sendable {
             y = try c.decode(Double.self, forKey: .y)
             w = try c.decode(Double.self, forKey: .w)
             h = try c.decode(Double.self, forKey: .h)
-            onscreen = try c.decodeIfPresent(Bool.self, forKey: .onscreen) ?? true
+            onscreen = try c.decodeIfPresent(Bool.self, forKey: .onscreen) ?? false
             minimized = try c.decodeIfPresent(Bool.self, forKey: .minimized) ?? false
             fullScreen = try c.decodeIfPresent(Bool.self, forKey: .fullScreen) ?? false
             spaceID = try c.decode(Int64.self, forKey: .spaceID)
