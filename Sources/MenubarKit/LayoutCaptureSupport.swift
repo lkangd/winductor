@@ -95,7 +95,7 @@ final class CaptureRound {
 
 extension RuntimeAssembly {
     /// 保存与覆盖共用的一次性拍快照：SnapshotEngine（spaces 注入 Space 归属；与恢复管线同一 session 独占、
-    /// 同一延迟几何覆盖），本应用自身窗口（开着的管理窗口等）不入快照
+    /// 同一延迟几何覆盖），本应用自身窗口（开着的主窗口等）不入快照
     static func makeLayoutCapture(spaces: SpaceProviding?,
                                   session: SkyLightSession,
                                   deferredGeometry: DeferredGeometryPort?,

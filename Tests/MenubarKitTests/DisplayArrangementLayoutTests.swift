@@ -37,7 +37,6 @@ final class DisplayArrangementLayoutTests: XCTestCase {
             CGRect(x: 0, y: 96, width: 192, height: 108),
             CGRect(x: 192, y: 54, width: 108, height: 192),
         ])
-        XCTAssertEqual(arranged.map(\.isPortrait), [false, true])
     }
 
     /// 上下堆叠（上屏较窄且居中偏移）：纵向受限时横向居中

@@ -2,7 +2,7 @@ import Combine
 import Core
 import Foundation
 
-// PresetManagerModel.swift — 预设管理窗口的操作与状态源（display-presets 票 07，spec §6.4）。
+// PresetManagerModel.swift — 主窗口拓扑页的操作与状态源（display-presets 票 07 起；ui-refactor spec §5.4）。
 // 视图（主窗口拓扑页 TopologyPage）只读 state、只调本类方法；规则全在存储（§4.1/§4.2：同拓扑唯一名、自动互斥、
 // 删自动不转移）与 PresetManagerState（排序/高亮/逐行可用性），本类只做「对话框 → 存储 → 重读」编排：
 //   改名 / 改别名 → 输入框（撞名/空名提示后重弹）→ PresetStore.renamePreset / setAlias；
@@ -14,7 +14,7 @@ import Foundation
 // 存储无变更通知：每次操作后、窗口激活时、拓扑变化时 reload 重读（拓扑实时刷新）。
 // 选择：未手动选拓扑时跟随当前拓扑；手动选过则保留（该拓扑消失时回落）。
 
-/// 管理窗口的对话框接缝（生产：AlertPresetManagerDialogs；测试：脚本假件）
+/// 拓扑页的对话框接缝（生产：AlertPresetManagerDialogs；测试：脚本假件）
 public protocol PresetManagerDialogs: AnyObject {
     /// 改名输入框：预填 currentName；message = 上次输入的问题（首次 nil）。返回 nil = 取消
     func promptRename(currentName: String, message: String?) -> String?
@@ -30,7 +30,7 @@ public final class PresetManagerModel: ObservableObject {
     @Published public private(set) var state: PresetManagerState = .empty
     /// 选中拓扑的存储记录（含预设快照；当前拓扑尚无预设时为 nil）。display-presets 票 08 预设详情据此展开「屏幕 → Space → 应用」
     public private(set) var selectedTopologyRecord: PresetTopology?
-    /// 展开行的预设详情（display-presets 票 08：屏 → Space → 应用，随点屏筛选；Space 不足提示仅当前拓扑）。未展开为 nil
+    /// 展开预设块的详情（display-presets 票 08：屏 → Space → 应用，随点屏筛选）。未展开为 nil
     @Published public private(set) var expandedDetail: PresetDetail?
 
     private let store: PresetStore
@@ -93,19 +93,17 @@ public final class PresetManagerModel: ObservableObject {
         }
         var fresh = make(nil)
         // 实时 Space 只在选中当前拓扑且有预设时读（SLS 读；非当前拓扑的 Space 不足无意义）
-        var spaces: [SpaceEntry]?
-        if let selected = fresh.selected, selected.isCurrent, !selected.rows.isEmpty {
-            spaces = currentSpaces()
-            if spaces != nil { fresh = make(spaces) }
+        if let selected = fresh.selected, selected.isCurrent, !selected.rows.isEmpty, let spaces = currentSpaces() {
+            fresh = make(spaces)
         }
         selectedDisplayUUID = fresh.selectedDisplayUUID
         expandedPresetID = fresh.expandedPresetID
         selectedTopologyRecord = topologies.first { $0.key == fresh.selectedKey }
-        expandedDetail = detail(for: fresh, currentSpaces: spaces)
+        expandedDetail = detail(for: fresh)
         state = fresh
     }
 
-    /// 左栏选中拓扑（清除屏筛选与展开）
+    /// 侧栏选中拓扑（清除屏筛选与展开）
     public func selectTopology(_ key: String) {
         manualSelectedKey = key
         selectedDisplayUUID = nil
@@ -133,7 +131,7 @@ public final class PresetManagerModel: ObservableObject {
         reload()
     }
 
-    // MARK: 预设行操作
+    // MARK: 预设块操作
 
     /// 「保存当前布局…」（仅当前拓扑且可用）
     public func savePreset() {
@@ -204,15 +202,12 @@ public final class PresetManagerModel: ObservableObject {
 
     // MARK: 内部
 
-    /// 展开行的详情推导（纯计算在 PresetDetail；实时 Space 沿用本轮 reload 读到的一份）
-    private func detail(for state: PresetManagerState, currentSpaces spaces: [SpaceEntry]?) -> PresetDetail? {
+    /// 展开预设块的详情推导（纯计算在 PresetDetail）
+    private func detail(for state: PresetManagerState) -> PresetDetail? {
         guard let selected = state.selected, let id = state.expandedPresetID,
               let preset = selectedTopologyRecord?.presets.first(where: { $0.id == id }) else { return nil }
         return PresetDetail.make(snapshot: preset.snapshot, displays: selected.displays,
-                                 displayFilter: state.selectedDisplayUUID,
-                                 isCurrentTopology: selected.isCurrent,
-                                 currentSpaces: selected.isCurrent ? spaces : nil,
-                                 appName: appName)
+                                 displayFilter: state.selectedDisplayUUID, appName: appName)
     }
 
     private func selectedRow(_ presetID: String) -> (String, PresetRowState)? {

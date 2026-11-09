@@ -40,7 +40,7 @@ public struct WiredMenuContent {
     /// 参数 = 预设 id
     public let onRestorePreset: (String) -> Void
     public let onUndo: () -> Void
-    /// 打开预设管理窗口（nil = 未装配，项置灰）
+    /// 打开主窗口（nil = 未装配，项置灰）
     public let onManagePresets: (() -> Void)?
     public let onToggleLoginLaunch: () -> Void
     public let onOpenPresetsFolder: () -> Void
@@ -102,7 +102,7 @@ public enum WiredMenuBuilder {
         menu.addItem(item("撤销上次恢复", content.canUndo ? content.onUndo : nil))
         menu.addItem(.separator())
 
-        // 管理窗口入口（窗口本体归 display-presets 票 07）
+        // 主窗口入口（ui-refactor 票 03）
         menu.addItem(item("管理预设…", content.onManagePresets))
         menu.addItem(.separator())
 

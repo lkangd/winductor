@@ -602,7 +602,7 @@ public final class TriggerChain: @unchecked Sendable {
             degradedLayerNames: degradedNames, failureDetail: why))
     }
 
-    // MARK: - 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 管理窗口；与自动恢复同一管线）
+    // MARK: - 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 主窗口；与自动恢复同一管线）
 
     /// 恢复当前拓扑下的指定预设（spec §5.2：仅当前拓扑）。topologyKey 与当前拓扑不符、
     /// 镜像中、预设不存在、恢复进行中 → 不恢复返回 nil。成功后记录最近恢复；完成通知经 onNotice 投递。

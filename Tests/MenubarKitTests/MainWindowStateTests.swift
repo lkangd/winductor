@@ -7,11 +7,11 @@ import XCTest
 // + 就绪态 → 侧栏分组（当前排列 / 其他排列 / 应用，空组不显示）、选中页、关于页统计行；
 // GeneralPageState.make(...) —— 权限现状 + 菜单同源快照态 → 通用页状态点 / 说明 / 可用性。纯函数。
 final class MainWindowStateTests: XCTestCase {
-    private let office = TopologyListEntry(key: "office", title: "内置 + DELL U2723QE ×2", subtitle: "3 屏 · 2 个预设",
+    private let office = TopologyListEntry(key: "office", title: "内置 + DELL U2723QE ×2",
                                            isCurrent: true, displayCount: 3, presetCount: 2)
-    private let home = TopologyListEntry(key: "home", title: "家里", subtitle: "2 屏 · 3 个预设",
+    private let home = TopologyListEntry(key: "home", title: "家里",
                                          isCurrent: false, displayCount: 2, presetCount: 3)
-    private let laptop = TopologyListEntry(key: "laptop", title: "内置视网膜显示器", subtitle: "1 屏 · 1 个预设",
+    private let laptop = TopologyListEntry(key: "laptop", title: "内置视网膜显示器",
                                            isCurrent: false, displayCount: 1, presetCount: 1)
 
     // MARK: 侧栏分组

@@ -166,7 +166,7 @@ final class WiredMenuBuilderTests: XCTestCase {
         XCTAssertNil(notUndoable?.action)
     }
 
-    /// 「管理预设…」：接了入口时可用且路由；未接（管理窗口未装配）时置灰
+    /// 「管理预设…」：接了入口时可用且路由；未接（主窗口未装配）时置灰
     func testManagePresetsItemRoutesWhenWired() {
         let wired = item(makeMenu(content: makeContent(managePresetsAvailable: true)), titled: "管理预设…")
         XCTAssertEqual(wired?.isEnabled, true)

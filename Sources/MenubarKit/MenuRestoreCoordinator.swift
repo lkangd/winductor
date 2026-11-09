@@ -135,7 +135,7 @@ public final class MenuRestoreCoordinator {
     /// - readiness：触发链未就绪门
     /// - savePreset：「保存当前布局为预设…」流程（RuntimeAssembly.makeSavePresetFlow）
     /// - openPresetManager：「管理预设…」打开入口（display-presets 票 07 注入；nil = 置灰）
-    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（display-presets 票 07，与管理窗口同一实例；nil = 不显示）
+    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（display-presets 票 07，与主窗口同一实例；nil = 不显示）
     public init(presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
@@ -197,7 +197,7 @@ public final class MenuRestoreCoordinator {
         outcomeSink.set { [weak self] outcome in self?.handle(outcome: outcome) }
         popovers = RestorePopoverCoordinator(
             renderer: popover, presets: presetStore, currentSpaces: currentSpaces,
-            // 与菜单/管理窗口同一入口：被拒时同口径告知用户
+            // 与菜单/主窗口同一入口：被拒时同口径告知用户
             restorePreset: { [weak self] id, key in self?.restorePreset(id: id, topologyKey: key) },
             undo: { [weak self] in self?.undoLastTapped() },
             log: log)
@@ -275,7 +275,7 @@ public final class MenuRestoreCoordinator {
         savePresetTapped()
     }
 
-    /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」、管理窗口「恢复」、恢复提示「恢复」同入口）：
+    /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」、主窗口「恢复」、恢复提示「恢复」同入口）：
     /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 预设已删 / 恢复进行中则不恢复，
     /// 经通知告知用户并返回原因（nil = 已受理）
     @discardableResult

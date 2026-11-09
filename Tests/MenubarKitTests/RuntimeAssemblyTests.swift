@@ -40,7 +40,7 @@ final class RuntimeAssemblyTests: XCTestCase {
         }
     }
 
-    /// 保存与覆盖共用的拍快照：本应用自身窗口（如开着的管理窗口）不入快照，其余窗口与拓扑原样
+    /// 保存与覆盖共用的拍快照：本应用自身窗口（如开着的主窗口）不入快照，其余窗口与拓扑原样
     func testSharedLayoutCaptureExcludesOwnWindows() throws {
         func window(_ bundleID: String) -> SnapshotWindow {
             SnapshotWindow(bundleID: bundleID, title: bundleID, siblingIndex: 0, displayUUID: "A",

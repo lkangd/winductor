@@ -18,8 +18,6 @@ public struct ArrangedDisplay: Equatable, Identifiable {
     public let isBuiltin: Bool
     /// 缩放后的视图矩形
     public let rect: CGRect
-    /// 竖屏（高 > 宽）
-    public var isPortrait: Bool { rect.height > rect.width }
 }
 
 public enum DisplayArrangementLayout {

@@ -3,9 +3,9 @@ import Foundation
 import XCTest
 @testable import MenubarKit
 
-// display-presets 票 07：预设管理窗口的呈现状态（display-presets spec §6.4）。
-// 接缝：PresetManagerState.make(...) —— 存储内容 + 当前观测拓扑 + 可用性 → 左栏拓扑列表（排序/高亮/标题）、
-// 选中拓扑的排列图数据与预设行（逐行操作可用性）。纯函数；存储用真实 PresetStore 写出输入。
+// display-presets 票 07 起：主窗口拓扑列表与拓扑页的呈现状态（ui-refactor spec §5.2/§5.4）。
+// 接缝：PresetManagerState.make(...) —— 存储内容 + 当前观测拓扑 + 可用性 → 侧栏拓扑列表（排序/当前/标题）、
+// 选中拓扑的排列图数据与预设块（逐块操作可用性）。纯函数；存储用真实 PresetStore 写出输入。
 final class PresetManagerStateTests: XCTestCase {
     private var directory: URL!
     private var store: PresetStore!
@@ -22,7 +22,7 @@ final class PresetManagerStateTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    // MARK: 左栏
+    // MARK: 侧栏拓扑列表
 
     /// 当前拓扑置顶高亮；其他拓扑灰显，按最近保存时间倒序
     func testCurrentTopologyFirstThenOthersByMostRecentSave() throws {
@@ -38,7 +38,7 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(state.entries.map(\.isCurrent), [true, false, false])
     }
 
-    /// 标题：别名优先；否则屏名组合（同名合并为「×N」，按排列从左到右）；副标题为屏数与预设数
+    /// 标题：别名优先；否则屏名组合（同名合并为「×N」，按排列从左到右）；另带屏数与预设数
     func testEntryTitlesPreferAliasElseGroupedScreenNames() throws {
         try save("工作", on: officeDesk)
         try save("家", on: homeDesk)
@@ -49,13 +49,12 @@ final class PresetManagerStateTests: XCTestCase {
 
         XCTAssertEqual(byKey[officeDesk.identity.key]?.title, "公司")
         XCTAssertEqual(byKey[homeDesk.identity.key]?.title, "内置 + DELL U2723QE ×2")
-        XCTAssertEqual(byKey[homeDesk.identity.key]?.subtitle, "3 屏 · 1 个预设")
         // 主窗口侧栏图标（单屏/多屏）与关于页统计用的计数（ui-refactor 票 03）
         XCTAssertEqual(byKey[homeDesk.identity.key]?.displayCount, 3)
         XCTAssertEqual(byKey[homeDesk.identity.key]?.presetCount, 1)
     }
 
-    /// 当前拓扑还没有任何预设：照样置顶（按实况屏幕），标「无预设」，别名不可改（尚无拓扑记录）
+    /// 当前拓扑还没有任何预设：照样置顶（按实况屏幕），预设数 0，别名不可改（尚无拓扑记录）
     func testCurrentTopologyWithoutPresetsIsListedFromLiveScreens() throws {
         try save("家", on: homeDesk)
 
@@ -65,7 +64,6 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(first.key, officeDesk.identity.key)
         XCTAssertTrue(first.isCurrent)
         XCTAssertEqual(first.title, "内置 + LG HDR 4K")
-        XCTAssertEqual(first.subtitle, "2 屏 · 无预设")
         XCTAssertEqual(first.displayCount, 2)
         XCTAssertEqual(first.presetCount, 0)
         XCTAssertEqual(state.selected?.key, officeDesk.identity.key)
@@ -105,7 +103,7 @@ final class PresetManagerStateTests: XCTestCase {
         let rows = try XCTUnwrap(make(current: officeDesk).selected?.rows)
 
         XCTAssertEqual(rows.map(\.name), ["工作", "会议"])
-        XCTAssertEqual(rows.map(\.savedAtText), ["2026-11-08 14:30", "2026-11-08 14:31"])
+        XCTAssertEqual(rows.map { String($0.summaryText.prefix(19)) }, ["2026-11-08 14:30 保存", "2026-11-08 14:31 保存"])
         XCTAssertEqual(rows.map(\.isAuto), [true, false])
         XCTAssertEqual(rows.map(\.isLastRestored), [true, false])
         XCTAssertEqual(rows.map(\.canRestore), [true, true])
@@ -114,7 +112,7 @@ final class PresetManagerStateTests: XCTestCase {
     }
 
     /// 非当前拓扑：可查看、改名、删除、设自动，但恢复/覆盖禁用（acceptance）；
-    /// `⋯` 菜单里「用当前布局覆盖…」置灰，改名/删除照常（ui-refactor 票 04：覆盖从行内移入 `⋯`，撤回 display-presets 票 13 行内按钮）
+    /// `⋯` 菜单里「用当前布局覆盖…」置灰，改名/删除照常（ui-refactor 票 04）
     func testRowsOfOtherTopologyDisableRestoreAndOverwrite() throws {
         try save("家", on: homeDesk)
 

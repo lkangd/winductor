@@ -4,7 +4,7 @@ import SnapshotEngine
 import XCTest
 @testable import MenubarKit
 
-// OverwritePresetFlowTests — 「用当前布局覆盖」（display-presets 票 07，spec §4.2/§4.3；管理窗口与「恢复预设 ▸」共用）。
+// OverwritePresetFlowTests — 「用当前布局覆盖」（display-presets 票 07，spec §4.2/§4.3；主窗口与「恢复预设 ▸」共用）。
 // 接缝：OverwritePresetFlow 公共接口（run / runAsync）；拍快照经注入闭包（fake 快照 + 观测拓扑），
 // 确认框经 PresetOverwriteConfirming（fake 按脚本应答），存储用真实 PresetStore（临时目录）。
 final class OverwritePresetFlowTests: XCTestCase {

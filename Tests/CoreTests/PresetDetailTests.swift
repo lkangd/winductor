@@ -2,7 +2,7 @@ import XCTest
 @testable import Core
 
 // PresetDetailTests — 预设详情三层树推导（display-presets spec §6.4「预设详情」）。
-// 接缝：PresetDetail.make（输入快照 + 展示数据 + 屏筛选 + 是否当前拓扑 + 实时 Space 清单 + 应用名解析）。
+// 接缝：PresetDetail.make（输入快照 + 展示数据 + 屏筛选 + 应用名解析）。
 final class PresetDetailTests: XCTestCase {
     private let left = "L-UUID"
     private let right = "R-UUID"
@@ -43,10 +43,8 @@ final class PresetDetailTests: XCTestCase {
         ["com.apple.Terminal": "终端", "com.apple.Safari": "Safari", "com.apple.Notes": "备忘录"][bundleID]
     }
 
-    private func detail(_ snap: Snapshot, filter: String? = nil, isCurrent: Bool = false,
-                        currentSpaces: [SpaceEntry]? = nil) -> PresetDetail {
-        PresetDetail.make(snapshot: snap, displays: displays, displayFilter: filter,
-                          isCurrentTopology: isCurrent, currentSpaces: currentSpaces, appName: names)
+    private func detail(_ snap: Snapshot, filter: String? = nil) -> PresetDetail {
+        PresetDetail.make(snapshot: snap, displays: displays, displayFilter: filter, appName: names)
     }
 
     /// 人读化整棵树：屏 / 　Space / 　　应用行，便于对照 spec 文案整体断言
@@ -134,8 +132,7 @@ final class PresetDetailTests: XCTestCase {
         flagged[0].isBuiltin = true
         let snap = snapshot(spaces: [space(left, 1), space(right, 1)], windows: [])
 
-        let made = PresetDetail.make(snapshot: snap, displays: flagged, displayFilter: nil, isCurrentTopology: false,
-                                     currentSpaces: nil, appName: names)
+        let made = PresetDetail.make(snapshot: snap, displays: flagged, displayFilter: nil, appName: names)
 
         XCTAssertEqual(made.displays.map(\.isBuiltin), [true, false])
         XCTAssertEqual(detail(snap).displays.map(\.isBuiltin), [false, false])
@@ -143,33 +140,14 @@ final class PresetDetailTests: XCTestCase {
 
     // MARK: 排列图点屏筛选
 
-    /// 点选某屏：只列该屏（Space 不足提示同样只留该屏）
+    /// 点选某屏：只列该屏
     func testDisplayFilterKeepsOnlySelectedDisplay() {
         let snap = snapshot(
             spaces: [space(left, 1), space(left, 2), space(right, 1), space(right, 2)],
             windows: [window("com.apple.Terminal", on: left), window("com.apple.Safari", on: right)])
-        let current = [SpaceEntry(spaceID: 1, displayUUID: left, index: 1, kind: SpaceKind.user),
-                       SpaceEntry(spaceID: 2, displayUUID: right, index: 1, kind: SpaceKind.user)]
 
-        let filtered = detail(snap, filter: right, isCurrent: true, currentSpaces: current)
+        let filtered = detail(snap, filter: right)
 
         XCTAssertEqual(outline(filtered), ["DELL", "  桌面 1", "    Safari（1 个窗口）", "  桌面 2"])
-        XCTAssertEqual(filtered.spaceShortages.map(\.text),
-                       ["屏幕「DELL」当前 Space 比预设少 1 个，多出的窗口将合并"])
-    }
-
-    // MARK: Space 不足提示（§5.3，仅当前拓扑）
-
-    /// 与恢复提示同源；非当前拓扑的实时 Space 与预设无关，不提示
-    func testSpaceShortageOnlyForCurrentTopology() {
-        let snap = snapshot(spaces: [space(left, 1), space(left, 2), space(left, 3), space(right, 1)], windows: [])
-        let current = [SpaceEntry(spaceID: 1, displayUUID: left, index: 1, kind: SpaceKind.user),
-                       SpaceEntry(spaceID: 2, displayUUID: right, index: 1, kind: SpaceKind.user)]
-
-        XCTAssertEqual(detail(snap, isCurrent: true, currentSpaces: current).spaceShortages,
-                       PresetSummary.spaceShortages(of: snap, displays: displays, currentSpaces: current))
-        XCTAssertEqual(detail(snap, isCurrent: true, currentSpaces: current).spaceShortages.map(\.text),
-                       ["屏幕「内置」当前 Space 比预设少 2 个，多出的窗口将合并"])
-        XCTAssertEqual(detail(snap, isCurrent: false, currentSpaces: current).spaceShortages, [])
     }
 }

@@ -4,7 +4,7 @@ import SnapshotEngine
 import XCTest
 @testable import MenubarKit
 
-// display-presets 票 07：预设管理窗口的操作（display-presets spec §6.4 + §4.1/§4.2 规则在 UI 层的呈现）。
+// display-presets 票 07 起：主窗口拓扑页的操作（ui-refactor spec §5.4 + display-presets §4.1/§4.2 规则在 UI 层的呈现）。
 // 接缝：PresetManagerModel 公共接口（reload / select* / rename / delete / setAuto / editAlias / restore / overwrite）
 // 与其 state。存储用真实 PresetStore（临时目录）；对话框经 PresetManagerDialogs（脚本假件）；
 // 当前拓扑经注入闭包；恢复经注入闭包（生产 = MenuRestoreCoordinator.restorePreset）。
@@ -127,7 +127,7 @@ final class PresetManagerModelTests: XCTestCase {
         XCTAssertEqual(model.state.selected?.rows.map(\.isAuto), [false, false])
     }
 
-    /// 非当前拓扑也可设自动、改名、删除（spec §6.4 左栏：灰显但可操作）
+    /// 非当前拓扑也可设自动、改名、删除（非当前拓扑页：可查看、改名、删除）
     func testOtherTopologyCanBeEditedButNotRestored() throws {
         let away = try save("出差", on: laptop)
         try save("会议", on: laptop)
@@ -180,7 +180,7 @@ final class PresetManagerModelTests: XCTestCase {
 
         XCTAssertEqual(store.topology(key: office.identity.key)?.presets.first?.snapshot.spaces.first?.fullscreenAppBundleID,
                        "new")
-        XCTAssertEqual(model.state.selected?.rows.map(\.savedAtText), ["2026-11-08 15:31"])
+        XCTAssertEqual(model.state.selected?.rows.map { String($0.summaryText.prefix(19)) }, ["2026-11-08 15:31 保存"])
     }
 
     // MARK: 刷新与选择

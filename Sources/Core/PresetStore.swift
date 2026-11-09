@@ -57,7 +57,7 @@ public struct PresetStore: Sendable {
     private let log: LogWriting?
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> String
-    /// 进程内写串行（读-改-写多文件；菜单/管理窗口与恢复管线线程可能并发写同一拓扑元数据）；
+    /// 进程内写串行（读-改-写多文件；菜单/主窗口与恢复管线线程可能并发写同一拓扑元数据）；
     /// 跨进程（app 与 DebugCLI 同写一个目录）另由 writeLockURL 上的 flock 串行，见 acquireWriteLock
     private static let processWriteLock = NSLock()
 

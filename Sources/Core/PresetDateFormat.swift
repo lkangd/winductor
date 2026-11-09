@@ -1,7 +1,7 @@
 import Foundation
 
 // PresetDateFormat.swift — 预设相关时间文本的单一定义（display-presets 评审修复：原先各处各写一份格式串）。
-// 默认预设名：菜单「保存当前布局为预设…」输入框与 DebugCLI snapshot-now；保存时间：管理窗口与 DebugCLI list-presets。
+// 默认预设名：菜单「保存当前布局为预设…」输入框与 DebugCLI snapshot-now；保存时间：主窗口与 DebugCLI list-presets。
 
 public enum PresetDateFormat: String {
     /// 默认预设名「11-08 14:30」（spec §4.3）

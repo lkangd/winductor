@@ -1,7 +1,7 @@
 import Foundation
 
-// PresetDetail.swift — 预设详情「屏幕 → Space → 应用」三层树推导（display-presets spec §6.4「预设详情」）。
-// 纯函数，管理窗口（display-presets 票 08）展开预设行时渲染；屏顺序与命名与恢复提示同源（TopologyNaming.orderedDisplays）。
+// PresetDetail.swift — 预设详情「屏幕 → Space → 应用」三层树推导（display-presets 票 08；ui-refactor spec §5.4 展开详情）。
+// 纯函数，主窗口拓扑页展开预设块时渲染（Space 不足提示不在此，见 PresetManagerState 预设块）；屏顺序与命名与恢复提示同源（TopologyNaming.orderedDisplays）。
 // 口径：
 //   - Space 按 index 升序；用户桌面按该屏用户桌面的序数称「桌面 N」（与调度中心一致，全屏 Space 不占号）
 //   - 全屏 Space 小标题「全屏」，其应用（快照由 Space 携带、不进 windows）作为一行、计 1 个窗口（ui-refactor 票 04）
@@ -44,17 +44,12 @@ public struct PresetDetailDisplay: Equatable, Sendable {
 public struct PresetDetail: Equatable, Sendable {
     /// 屏自左而右
     public let displays: [PresetDetailDisplay]
-    /// Space 不足提示（§5.3，与恢复提示同源 PresetSummary.spaceShortages）；仅当前拓扑，随屏筛选
-    public let spaceShortages: [SpaceShortage]
 
     /// - Parameters:
     ///   - displays: 拓扑展示数据（屏名）
     ///   - displayFilter: 排列图点选的屏 UUID（nil = 全部屏）
-    ///   - isCurrentTopology: 预设所属拓扑是否当前拓扑（Space 不足提示仅当前拓扑）
-    ///   - currentSpaces: 实时受管 Space 清单（nil = 读不到，不提示）
     ///   - appName: bundleID → 应用名（nil = 解析不到，回退 bundleID）
     public static func make(snapshot: Snapshot, displays: [TopologyDisplayInfo], displayFilter: String?,
-                            isCurrentTopology: Bool, currentSpaces: [SpaceEntry]?,
                             appName: (String) -> String?) -> PresetDetail {
         let shown: (String) -> Bool = { uuid in displayFilter == nil || displayFilter == uuid }
         let tree = TopologyNaming.orderedDisplays(of: snapshot, displays: displays)
@@ -64,11 +59,7 @@ public struct PresetDetail: Equatable, Sendable {
                                     isBuiltin: displays.first { $0.uuid == uuid }?.isBuiltin ?? false,
                                     spaces: spaces(on: uuid, of: snapshot, appName: appName))
             }
-        let shortages = isCurrentTopology
-            ? PresetSummary.spaceShortages(of: snapshot, displays: displays, currentSpaces: currentSpaces)
-                .filter { shown($0.displayUUID) }
-            : []
-        return PresetDetail(displays: tree, spaceShortages: shortages)
+        return PresetDetail(displays: tree)
     }
 
     private static func spaces(on uuid: String, of snapshot: Snapshot,

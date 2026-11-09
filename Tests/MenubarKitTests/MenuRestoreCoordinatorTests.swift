@@ -475,7 +475,7 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(item(coordinator.makeReadyMenu(), "保存当前布局为预设…")?.isEnabled, false)
     }
 
-    // MARK: 管理预设…（窗口归 display-presets 票 07，此处只验入口接缝）
+    // MARK: 管理预设…（打开主窗口，此处只验入口接缝）
 
     func testManagePresetsRoutesToInjectedOpener() throws {
         XCTAssertEqual(item(makeCoordinator().makeReadyMenu(), "管理预设…")?.isEnabled, false, "未装配窗口：置灰")

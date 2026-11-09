@@ -9,7 +9,7 @@ import Foundation
 public enum RestoreTriggerKind: String, Equatable, Sendable {
     /// 自动触发（触发链走完）
     case auto
-    /// 手动恢复（菜单「恢复预设 ▸」/ 恢复提示 / 管理窗口）
+    /// 手动恢复（菜单「恢复预设 ▸」/ 恢复提示 / 主窗口）
     case manual
 }
 
@@ -130,7 +130,7 @@ public enum TriggerOutcome: Equatable, Sendable {
     }
 }
 
-/// 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 管理窗口）被触发链拒绝的原因（display-presets 票 04 评审修复：
+/// 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 主窗口）被触发链拒绝的原因（display-presets 票 04 评审修复：
 /// 被拒不再静默，调用方据此告知用户）
 public enum ManualRestoreRejection: Error, Equatable, Sendable {
     /// 所选预设不属于当前拓扑（入口打开后屏幕排列变了；spec §5.2 仅当前拓扑）

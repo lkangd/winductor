@@ -3,7 +3,7 @@ import Core
 import SnapshotEngine
 
 // OverwritePresetFlow.swift — 「用当前布局覆盖」（display-presets 票 07，spec §4.2/§4.3）。
-// 入口两处共用本流程：预设管理窗口的预设行、菜单「恢复预设 ▸」子菜单的「用当前布局覆盖 ▸」。
+// 入口两处共用本流程：主窗口拓扑页预设块的 `⋯` 菜单、菜单「恢复预设 ▸」子菜单的「用当前布局覆盖 ▸」。
 // 流程：可用性门（与保存同口径：未就绪 / 镜像中 / 恢复进行中 → 禁用）→ 确认框（覆盖不可撤回，带预设名）
 // → 一次性拍快照（SnapshotEngine.capture，离主线程）→ 仅当拍快照时的拓扑 = 预设所属拓扑才写
 // （spec「仅当前拓扑」：确认期间拓扑变了也拒绝）→ PresetStore.overwritePreset（保留名称与自动标记，更新快照与保存时间）。
@@ -156,7 +156,7 @@ public final class OverwritePresetFlow {
 
 extension RuntimeAssembly {
     /// 组装覆盖流程：拍快照与保存流程共用 makeLayoutCapture（同一 session 独占、同一延迟几何覆盖；
-    /// 本应用自身窗口不入快照——覆盖从管理窗口发起时它正开着），可用性取保存流程同口径。
+    /// 本应用自身窗口不入快照——覆盖从主窗口发起时它正开着），可用性取保存流程同口径。
     public static func makeOverwritePresetFlow(availability: @escaping () -> LayoutCaptureAvailability,
                                                store: PresetStore,
                                                spaces: SpaceProviding?,

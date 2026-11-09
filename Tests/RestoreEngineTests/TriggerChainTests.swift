@@ -686,7 +686,7 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(rig.store.topology(key: rig.key([screenA, screenB]))?.lastRestoredPresetID, demo.id)
     }
 
-    /// 预设已不存在（菜单打开后在管理窗口删掉）：不恢复
+    /// 预设已不存在（菜单打开后在主窗口删掉）：不恢复
     func testRestoreMissingPresetReturnsNil() throws {
         let rig = try rig(start: [screenA, screenB])
         try rig.addPreset("工作", on: [screenA, screenB])
@@ -729,7 +729,7 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertEqual(triggerSteps(rig.spy.all).filter { $0 == "ignored" }.count, 1)
     }
 
-    /// 异步手动入口被拒时返回原因（提示/菜单/管理窗口据此告知用户，选择不静默丢失）
+    /// 异步手动入口被拒时返回原因（提示/菜单/主窗口据此告知用户，选择不静默丢失）
     func testRestorePresetAsyncReportsRejectionReason() throws {
         let rig = try rig(start: [screenA])
         let two = try rig.addPreset("双屏", on: [screenA, screenB])
