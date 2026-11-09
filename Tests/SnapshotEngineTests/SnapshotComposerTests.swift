@@ -6,7 +6,7 @@ import XCTest
 
 // SnapshotComposerTests — 快照内容映射验收（spec §7.3/§7.5）：
 //   displayUUID 按 bounds 交集最大者、spaceIndex 经 SpaceProviding、兄弟序先 y 后 x、
-//   离屏读 AXMinimized、整屏候选读 AXFullScreen（全屏不进 windows、归记全屏 Space）、
+//   幽灵窗排除与 ordered-out 最小化（Core.LiveWindowSet）、全屏 Space 上的窗不进 windows（归记该 Space）、
 //   Space 数据缺失降级（spaces=[]、spaceIndex=1）。
 final class SnapshotComposerTests: XCTestCase {
     private let ax = FakeAXProber()
@@ -132,14 +132,14 @@ final class SnapshotComposerTests: XCTestCase {
                        "排名：w3(0.1,0.1)=0、w1(0.8,0.1)=1、w2(0.1,0.5)=2")
     }
 
-    /// 离屏候选读 AXMinimized；在屏最小整屏候选读 AXFullScreen：全屏不进 windows、bundleID 归全屏 Space
+    /// 离屏候选读 AXMinimized（排列数据不可用时的降级口径）；全屏 Space 上的窗不进 windows、bundleID 归全屏 Space
     func testFullscreenWindowExcludedAndAttributedToFullscreenSpace() throws {
         let a = fakeDisplay(displayA)
         let spaces = FakeSpaces(
             entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 1, kind: 0),
                       SpaceEntry(spaceID: 99, displayUUID: displayA, index: 2, kind: 4)],
-            byWindow: [1: 11, 7: 99, 8: 99])
-        let ax = FakeAXProber(minimizedIDs: [7], fullscreenIDs: [8])
+            byWindow: [1: 11, 7: 11, 8: 99])
+        let ax = FakeAXProber(minimizedIDs: [7])
         let composer = SnapshotComposer(spaces: spaces, ax: ax)
         let snapshot = compose(composer,
                                [window(7, title: "bg", x: 100, y: 100, onscreen: false),
@@ -152,7 +152,50 @@ final class SnapshotComposerTests: XCTestCase {
         XCTAssertEqual(fullscreenSpace.index, 2)
     }
 
-    /// frame==整屏但 AXFullScreen=false（手动铺满的普通窗）：照常进 windows
+    /// 幽灵窗（诊断 acceptance4 R1）：无 Space 归属、ordered out 且非最小化 → 不入快照；
+    /// ordered out 最小化 → 记 minimized；所属应用被隐藏的 ordered-out 窗 → 按普通窗保留
+    func testGhostWindowsExcludedAndOrderedOutMinimizedRecorded() throws {
+        let a = fakeDisplay(displayA)
+        let spaces = FakeSpaces(
+            entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 1, kind: 0)],
+            byWindow: [1: 11, 3: 11, 4: 11, 5: 11], orderedOut: [3, 4, 5])
+        let ax = FakeAXProber(minimizedIDs: [4])
+        let snapshot = compose(SnapshotComposer(spaces: spaces, ax: ax),
+                               [window(1, bundleID: "com.real", title: "main", x: 100, y: 100),
+                                window(2, bundleID: "com.ghost.nospace", title: "", x: 0, y: 580),
+                                window(3, bundleID: "com.ghost.orderedout", title: "Weixin", x: 0, y: 580, onscreen: false),
+                                window(4, bundleID: "com.minimized", title: "doc", x: 100, y: 100, onscreen: false),
+                                CGWindowSample(windowID: 5, pid: 9, bundleID: "com.hidden", title: "h",
+                                               bounds: CGRect(x: 100, y: 100, width: 400, height: 300),
+                                               isOnscreen: false, appHidden: true)],
+                               displays: [a])
+        XCTAssertEqual(snapshot.windows.map(\.bundleID), ["com.hidden", "com.minimized", "com.real"])
+        XCTAssertEqual(snapshot.windows.map(\.minimized), [false, true, false])
+    }
+
+    /// 全屏判定走 SLS 口径（诊断 acceptance4 R3）：窗所在 Space kind == 全屏即全屏应用窗，不依赖 bounds/AX。
+    /// 刘海屏全屏窗 1512×949@y33 ≠ 屏 bounds、伴生 1512×42 工具条：都只产生该 Space 的 fullscreenAppBundleID
+    func testWindowsOnFullscreenSpaceOnlyAttributeTheSpace() throws {
+        let a = fakeDisplay(displayA, w: 1512, h: 982)
+        let spaces = FakeSpaces(
+            entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 1, kind: 0),
+                      SpaceEntry(spaceID: 196, displayUUID: displayA, index: 2, kind: 4)],
+            byWindow: [1: 196, 2: 196, 3: 11], orderedOut: [])
+        let ax = FakeAXProber()
+        let snapshot = compose(SnapshotComposer(spaces: spaces, ax: ax),
+                               [window(1, bundleID: "com.things", title: "Things", x: 0, y: 33, w: 1512, h: 949,
+                                       onscreen: false),
+                                window(2, bundleID: "com.things", title: "", x: 0, y: 0, w: 1512, h: 42,
+                                       onscreen: false),
+                                window(3, bundleID: "com.other", title: "o", x: 100, y: 100)],
+                               displays: [a])
+        XCTAssertEqual(snapshot.windows.map(\.bundleID), ["com.other"], "全屏 Space 上的窗不进 windows")
+        let fullscreenSpace = try XCTUnwrap(snapshot.spaces.first { $0.kind == .fullscreen })
+        XCTAssertEqual(fullscreenSpace.fullscreenAppBundleID, "com.things")
+        XCTAssertEqual(ax.callCount, 0, "全屏判定不读 AX")
+    }
+
+    /// frame==整屏但在用户桌面（手动铺满的普通窗）：照常进 windows
     func testManuallyMaximizedWindowStaysRegularWindow() throws {
         let a = fakeDisplay(displayA)
         let spaces = FakeSpaces(entries: [SpaceEntry(spaceID: 11, displayUUID: displayA, index: 1, kind: 0)],

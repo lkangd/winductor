@@ -93,4 +93,7 @@ private struct SLSReadSerializedSpaces: SpaceProviding {
 
     func managedSpaces() throws -> [SpaceEntry] { try session.slsRead { try base.managedSpaces() } }
     func spaceIDsByWindowID() throws -> [UInt32: Int64] { try session.slsRead { try base.spaceIDsByWindowID() } }
+    func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? {
+        session.slsRead { base.orderedOutWindowIDs(among: windowIDs) }
+    }
 }

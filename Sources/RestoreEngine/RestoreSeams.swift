@@ -43,6 +43,9 @@ public struct SpaceAdapterBridge: SpaceBridge {
 
     public func managedSpaces() throws -> [SpaceEntry] { try adapter.managedSpaces() }
     public func spaceIDsByWindowID() throws -> [UInt32: Int64] { try adapter.spaceIDsByWindowID() }
+    public func orderedOutWindowIDs(among windowIDs: [UInt32]) -> Set<UInt32>? {
+        adapter.orderedOutWindowIDs(among: windowIDs)
+    }
     public func isLayerAvailable(_ layer: SpaceLayer) -> Bool { adapter.isLayerAvailable(layer) }
     public func activeSpaceIDs() throws -> Set<Int64> { Set(try adapter.currentSpaceIDs().values) }
 

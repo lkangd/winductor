@@ -1,17 +1,17 @@
 import Core
 import CoreGraphics
-import Darwin
 import Foundation
 
 // SnapshotComposer.swift — 快照内容映射（spec §7.3）。仅在一次性拍快照路径执行（SnapshotEngine.capture）。
 // 口径：
+//   - 入快照的窗口集合 + minimized：Core.LiveWindowSet（与恢复实况、VerifyCLI 同一份判定：无 Space 归属/
+//     多 Space 粘性窗、ordered out 且非最小化的隐藏窗不入；ordered out 最小化窗记 minimized）
 //   - 窗口→displayUUID + 比例几何：Core.LiveWindowLocator（Space 所属屏优先，无 Space 按 frame 兜底；
 //     归属屏无稳定 UUID 的窗不入快照）
 //   - 窗口→spaceIndex：Core/Seams 的 SpaceProviding 接缝（spaceIDsByWindowID → SpaceEntry.index）；
 //     Space 数据不可用时降级：spaces=[]、spaceIndex=1（几何层仍可恢复，spec §8.5 降级阶梯）
-//   - minimized：仅对离屏候选读 AXMinimized；在屏窗口恒 false
-//   - AXFullScreen==true 的整屏窗口不进 windows，改记到所属全屏 Space 的 fullscreenAppBundleID
-//     （spec §7.3：全屏应用由 Space 携带，不进 windows）
+//   - 所在 Space kind == 全屏的窗不进 windows，改记到该 Space 的 fullscreenAppBundleID
+//     （spec §7.3：全屏应用由 Space 携带，不进 windows；SLS 口径，不读 AX、不比 bounds）
 //   - 兄弟序：同应用同标题按归一化「先 y 后 x」排序取序号（复用 Core/ConservativeMatch 同一规则，
 //     与 verify 存活侧口径一致）
 
@@ -47,9 +47,11 @@ public struct SnapshotComposer: Sendable {
     public func compose(sample: [CGWindowSample], displays: [Displays.Info], capturedAt: Date,
                         geometryOverrides: [UInt32: WindowGeometryOverride] = [:]) -> Snapshot {
         let entries = loadSpaceEntries()
-        let located = LiveWindowLocator.locate(
+        let members = LiveWindowSet.collect(
             samples: sample.filter { !$0.bundleID.isEmpty }, displays: displays,
-            spaceIDByWindow: loadSpaceIDsByWindow(), spaceEntries: entries)
+            spaceIDByWindow: loadSpaceIDsByWindow(), spaceEntries: entries,
+            orderedOut: { ids in spaces?.orderedOutWindowIDs(among: ids) },
+            minimized: { ax.minimizedWindowIDs($0) })
 
         var fullscreenBySpaceID: [Int64: String] = [:]
         struct Draft: SiblingSortable {
@@ -62,21 +64,13 @@ public struct SnapshotComposer: Sendable {
         }
         var drafts: [Draft] = []
 
-        for lw in located {
+        for member in members {
+            let lw = member.window
             let window = lw.sample, display = lw.display, entry = lw.space
-            var minimized = false
-            var axFullScreen = false
-            if !window.isOnscreen || window.bounds == display.bounds {
-                // AX 仅写盘路径、按候选个位数次（离屏读 minimized；整屏候选读 fullscreen）
-                let state = ax.probe(pid: window.pid, windowID: window.windowID)
-                minimized = window.isOnscreen ? false : state.minimized
-                axFullScreen = state.fullScreen
-            }
-            if axFullScreen {
-                // 全屏应用：改记到所属全屏 Space（spec §7.3），不进 windows
-                if let entry {
-                    fullscreenBySpaceID[entry.spaceID] = window.bundleID
-                }
+            if let entry, entry.kind == SpaceKind.fullscreen {
+                // 全屏应用：窗所在 Space kind == 全屏即是（SLS 口径，不依赖 bounds/AX；伴生工具条窗同理），
+                // 改记到该 Space（spec §7.3），不进 windows；同 Space 多窗只记首个
+                if fullscreenBySpaceID[entry.spaceID] == nil { fullscreenBySpaceID[entry.spaceID] = window.bundleID }
                 continue
             }
             // 待补写窗：只在已就位目标屏时覆盖几何（屏归属仍按实况，未就位不伪造）
@@ -90,7 +84,7 @@ public struct SnapshotComposer: Sendable {
                 y: override.map { LiveWindowLocator.clampRatio($0.y) } ?? lw.y,
                 w: override.map { LiveWindowLocator.clampRatio($0.w) } ?? lw.w,
                 h: override.map { LiveWindowLocator.clampRatio($0.h) } ?? lw.h,
-                minimized: minimized))
+                minimized: member.minimized))
         }
 
         // 兄弟序：与 ConservativeMatcher 存活侧同一排序规则（先 y 后 x，归一化坐标）
@@ -110,7 +104,7 @@ public struct SnapshotComposer: Sendable {
         windows.sort { ($0.bundleID, $0.title, $0.siblingIndex) < ($1.bundleID, $1.title, $1.siblingIndex) }
 
         var snapshotSpaces = entries.map { entry -> SnapshotSpace in
-            let isFullscreen = entry.kind == 4
+            let isFullscreen = entry.kind == SpaceKind.fullscreen
             return SnapshotSpace(
                 displayUUID: entry.displayUUID, index: entry.index,
                 kind: isFullscreen ? .fullscreen : .user,
@@ -133,28 +127,19 @@ public struct SnapshotComposer: Sendable {
         catch { return [] }
     }
 
-    private func loadSpaceIDsByWindow() -> [UInt32: Int64] {
-        guard let spaces else { return [:] }
-        do { return try spaces.spaceIDsByWindowID() }
-        catch { return [:] }
+    /// nil = Space 数据不可用（LiveWindowSet 据此不按归属排除）
+    private func loadSpaceIDsByWindow() -> [UInt32: Int64]? {
+        guard let spaces else { return nil }
+        return try? spaces.spaceIDsByWindowID()
     }
 
     /// 拓扑条目：稳定 UUID + 整块 CGDisplayBounds + 捕获旋转角（spec §7.2/§7.3）。
-    /// localizedName 经 dlsym 取 CGDisplayGetName（Swift 不直接导出），失败回退 "Display <id>"。
-    private static let displayNameFn: @convention(c) (UInt32) -> CFString? = {
-        for lib in ["/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", ""] {
-            let h = lib.isEmpty ? dlopen(nil, RTLD_LAZY) : dlopen(lib, RTLD_LAZY)
-            guard let hh = h, let p = dlsym(hh, "CGDisplayGetName") else { continue }
-            return unsafeBitCast(p, to: (@convention(c) (UInt32) -> CFString?).self)
-        }
-        return { _ in nil }
-    }()
-
+    /// localizedName 与拓扑展示同源（Displays.localizedName：NSScreen.localizedName 优先）。
     private func topologyEntries(_ displays: [Displays.Info]) -> [TopologyDisplay] {
         displays.map { info in
             TopologyDisplay(
                 uuid: info.uuid ?? "",
-                localizedName: Self.displayNameFn(info.id) as String? ?? "Display \(info.id)",
+                localizedName: Displays.localizedName(for: info.id),
                 frame: SnapshotDisplayFrame(x: Double(info.bounds.origin.x), y: Double(info.bounds.origin.y),
                                             w: Double(info.bounds.width), h: Double(info.bounds.height)),
                 orientation: Displays.rotation(for: info.id))

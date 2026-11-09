@@ -85,7 +85,8 @@ public final class DeferredGeometry: DeferredGeometryPort, @unchecked Sendable {
     }
 
     /// 单轮消费（pending 空 / 管线独占时零成本返回）。
-    /// CGWindowList 的 isOnscreen 对跨 Space 后台窗恒为 true，可见性迁移在跨 Space 场景永不触发
+    /// 采样 isOnscreen 曾因缺键缺省 true 对跨 Space 后台窗恒为 true（display-presets 票 11 已改为缺键 = false），
+    /// 可见性迁移在跨 Space 场景永不触发
     /// （11-03 实测：WeChat 记 pending 后一直「可见」却再无补写时机），故以「窗当前 Space ∈ 任一屏活跃 Space」
     /// 判定可写。source 只进日志（space-change / timer）：实测量「切 Space → 补写」延迟
     func tick(source: String = "timer") {
