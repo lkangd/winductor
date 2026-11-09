@@ -45,13 +45,21 @@ public struct RestoreCompletionNotice: Equatable, Sendable {
         return "恢复完成：" + countsText
     }
 
-    /// 计数 + 降级附注（不带「恢复完成：」前缀；自动恢复告知 popover 同口径复用）
+    /// 计数 + 降级附注（不带「恢复完成：」前缀）
     public var countsText: String {
-        var text = "\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
-        if !degradedLayerNames.isEmpty {
-            text += "；本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）"
-        }
-        return text
+        guard let degradeNote else { return tallyText }
+        return tallyText + "；" + degradeNote
+    }
+
+    /// 仅计数：12 窗口归位、1 跳过、0 失败（自动恢复告知 popover 与附注分行呈现，display-presets 票 14）
+    public var tallyText: String {
+        "\(okCount) 窗口归位、\(skipCount) 跳过、\(failCount) 失败"
+    }
+
+    /// 降级附注：本次 Space 归属层失效（几何已恢复）；无降级 → nil
+    public var degradeNote: String? {
+        guard !degradedLayerNames.isEmpty else { return nil }
+        return "本次 \(degradedLayerNames.joined(separator: "、"))层失效（几何已恢复）"
     }
 }
 

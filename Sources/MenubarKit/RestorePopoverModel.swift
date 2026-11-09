@@ -56,8 +56,10 @@ public struct AutoRestoreNoticeContent: Equatable {
     public let topologyKey: String
     /// 「已按『X』恢复」/ 失败时「按『X』恢复失败」（spec §6.3 用『』）
     public let headline: String
-    /// 计数 + 降级附注（口径同完成通知）；失败时为原因
+    /// 计数（口径同完成通知）；失败时为原因
     public let detail: String
+    /// 降级附注（另起一行、次要样式；与 detail 合起来即完成通知的计数段）；无降级或失败时 nil
+    public var degradeNote: String? = nil
     /// 「撤销」按钮（失败 = 管线中止，无可撤销的恢复，不给）
     public let showsUndo: Bool
     /// 「改用其他预设…」（拓扑下还有其他预设时；打开恢复提示）
@@ -68,7 +70,8 @@ public struct AutoRestoreNoticeContent: Equatable {
         return AutoRestoreNoticeContent(
             topologyKey: outcome.topologyKey,
             headline: failed == nil ? "已按『\(outcome.presetName)』恢复" : "按『\(outcome.presetName)』恢复失败",
-            detail: failed ?? outcome.notice.countsText,
+            detail: failed ?? outcome.notice.tallyText,
+            degradeNote: failed == nil ? outcome.notice.degradeNote : nil,
             showsUndo: failed == nil,
             showsSwitchPreset: outcome.hasOtherPresets)
     }

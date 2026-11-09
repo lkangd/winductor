@@ -88,11 +88,15 @@ final class RestorePopoverModelTests: XCTestCase {
         let notice = AutoRestoreNoticeContent.make(autoRestored(degraded: ["Space 归属"], hasOtherPresets: true))
 
         XCTAssertEqual(notice.headline, "已按『工作』恢复")
-        XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败；本次 Space 归属层失效（几何已恢复）")
+        // 计数与降级附注分两行呈现（票 14），合起来仍是完成通知的口径
+        XCTAssertEqual(notice.detail, "12 窗口归位、1 跳过、0 失败")
+        XCTAssertEqual(notice.degradeNote, "本次 Space 归属层失效（几何已恢复）")
         XCTAssertTrue(notice.showsUndo)
         XCTAssertTrue(notice.showsSwitchPreset)
 
-        XCTAssertFalse(AutoRestoreNoticeContent.make(autoRestored(hasOtherPresets: false)).showsSwitchPreset)
+        let clean = AutoRestoreNoticeContent.make(autoRestored(hasOtherPresets: false))
+        XCTAssertFalse(clean.showsSwitchPreset)
+        XCTAssertNil(clean.degradeNote)
     }
 
     /// 管线中止（无显示器 / 回滚快照写失败）：报失败原因，不给撤销
@@ -101,6 +105,7 @@ final class RestorePopoverModelTests: XCTestCase {
 
         XCTAssertEqual(notice.headline, "按『工作』恢复失败")
         XCTAssertEqual(notice.detail, "无活动显示器")
+        XCTAssertNil(notice.degradeNote)
         XCTAssertFalse(notice.showsUndo)
         XCTAssertTrue(notice.showsSwitchPreset)
     }

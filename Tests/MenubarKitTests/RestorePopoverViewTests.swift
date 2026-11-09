@@ -90,4 +90,19 @@ final class RestorePopoverViewTests: XCTestCase {
             showsUndo: false, showsSwitchPreset: false)) { _ in }
         XCTAssertEqual(buttons(in: bare).map(\.title), [])
     }
+
+    /// 告知：降级附注单独成行（与计数分开呈现，票 14）；按钮统一尺寸
+    func testNoticeViewShowsDegradeNoteOnItsOwnLineAndEqualButtons() {
+        var content = AutoRestoreNoticeContent(topologyKey: "k", headline: "已按『工作』恢复",
+                                               detail: "9 窗口归位、2 跳过、1 失败",
+                                               showsUndo: true, showsSwitchPreset: true)
+        content.degradeNote = "本次 Space 归属层失效（几何已恢复）"
+        let view = AutoRestoreNoticeView(content: content) { _ in }
+        view.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(texts(in: view).contains("9 窗口归位、2 跳过、1 失败"))
+        XCTAssertTrue(texts(in: view).contains("本次 Space 归属层失效（几何已恢复）"))
+        let widths = Set(buttons(in: view).map(\.frame.width))
+        XCTAssertEqual(widths.count, 1, "撤销 / 改用其他预设… 应同宽")
+    }
 }

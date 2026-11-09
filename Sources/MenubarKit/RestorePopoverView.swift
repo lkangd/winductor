@@ -78,31 +78,99 @@ private final class ButtonAction: NSObject {
     @objc func fire() { handler() }
 }
 
+/// 两种 popover 共用的排版规格（display-presets 票 14：原生 popover 观感——统一左缘与内边距、固定宽度、
+/// 标题 / 正文 / 附注三级字号与颜色、按钮同宽靠右）
 private enum PopoverLayout {
-    static let width: CGFloat = 300
+    /// 内容列宽（固定；所有文本行撑满此宽，左缘一致）
+    static let contentWidth: CGFloat = 288
+    static let insets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+    /// 按钮最小宽（同一行按钮取同宽，至少此宽）
+    static let minButtonWidth: CGFloat = 72
 
-    static func label(_ text: String, bold: Bool = false, secondary: Bool = false,
-                      color: NSColor? = nil) -> NSTextField {
+    enum TextStyle {
+        /// 标题：13pt 半粗、主色
+        case title
+        /// 正文：13pt、主色（单预设名）
+        case body
+        /// 说明：12pt、次要色（计数、摘要、单选引导语）
+        case secondary
+        /// 附注：11pt、次要色（降级附注）
+        case note
+        /// 警示：12pt、橙色（Space 不足）
+        case warning
+    }
+
+    static func label(_ text: String, _ style: TextStyle) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
-        label.font = bold ? .boldSystemFont(ofSize: NSFont.systemFontSize)
-            : .systemFont(ofSize: secondary ? NSFont.smallSystemFontSize : NSFont.systemFontSize)
-        label.textColor = color ?? (secondary ? .secondaryLabelColor : .labelColor)
-        label.preferredMaxLayoutWidth = width
+        switch style {
+        case .title: label.font = .systemFont(ofSize: 13, weight: .semibold); label.textColor = .labelColor
+        case .body: label.font = .systemFont(ofSize: 13); label.textColor = .labelColor
+        case .secondary: label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor
+        case .note: label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor
+        case .warning: label.font = .systemFont(ofSize: 12); label.textColor = .systemOrange
+        }
+        label.preferredMaxLayoutWidth = contentWidth
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
         return label
     }
 
-    static func button(_ title: String, _ action: ButtonAction, radio: Bool = false) -> NSButton {
+    static func button(_ title: String, _ action: ButtonAction) -> NSButton {
         let button = FirstMouseButton(title: title, target: action, action: #selector(ButtonAction.fire))
-        if radio { button.setButtonType(.radio) } else { button.bezelStyle = .rounded }
+        button.bezelStyle = .push
+        button.controlSize = .regular
         return button
     }
 
-    static func stack(_ views: [NSView], vertical: Bool = true, spacing: CGFloat = 8) -> NSStackView {
+    static func radio(_ title: String, _ action: ButtonAction) -> NSButton {
+        let button = FirstMouseButton(radioButtonWithTitle: title, target: action, action: #selector(ButtonAction.fire))
+        button.font = .systemFont(ofSize: 13)
+        return button
+    }
+
+    static func stack(_ views: [NSView], spacing: CGFloat) -> NSStackView {
         let stack = NSStackView(views: views)
-        stack.orientation = vertical ? .vertical : .horizontal
-        stack.alignment = vertical ? .leading : .centerY
+        stack.orientation = .vertical
+        stack.alignment = .leading
         stack.spacing = spacing
         return stack
+    }
+
+    /// 底部按钮行：撑满内容列宽、按钮靠右且同宽（最右为主操作）
+    static func buttonRow(_ buttons: [NSButton]) -> NSStackView {
+        let row = NSStackView(views: buttons)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        // 左侧弹性留白把按钮推到右缘（留白最易拉伸，按钮保持内容宽）
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        row.insertView(spacer, at: 0, in: .leading)
+        var constraints = [row.widthAnchor.constraint(equalToConstant: contentWidth)]
+        for button in buttons {
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            constraints.append(button.widthAnchor.constraint(greaterThanOrEqualToConstant: minButtonWidth))
+            if let first = buttons.first, first !== button {
+                constraints.append(button.widthAnchor.constraint(equalTo: first.widthAnchor))
+            }
+        }
+        NSLayoutConstraint.activate(constraints)
+        return row
+    }
+
+    /// 根栈铺满宿主视图（宽度 = 内容列 + 左右内边距）
+    static func install(_ root: NSStackView, in host: NSView) {
+        root.edgeInsets = insets
+        root.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            root.topAnchor.constraint(equalTo: host.topAnchor),
+            root.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            root.widthAnchor.constraint(equalToConstant: contentWidth + insets.left + insets.right),
+        ])
     }
 }
 
@@ -112,25 +180,33 @@ final class RestorePromptView: NSView {
     private let onEvent: (RestorePopoverEvent) -> Void
     private var actions: [ButtonAction] = []
     private var radios: [(presetID: String, button: NSButton)] = []
-    private let detail = PopoverLayout.stack([], spacing: 4)
+    private let detail = PopoverLayout.stack([], spacing: 3)
 
     init(content: RestorePromptContent, onEvent: @escaping (RestorePopoverEvent) -> Void) {
         self.content = content
         self.onEvent = onEvent
         super.init(frame: .zero)
 
-        var rows: [NSView] = [PopoverLayout.label(content.title, bold: true)]
+        let title = PopoverLayout.label(content.title, .title)
+        var rows: [NSView] = [title]
+        var pickerTail: NSView = title
         if content.showsPicker {
-            rows.append(PopoverLayout.label("选择要恢复的预设：", secondary: true))
+            let caption = PopoverLayout.label("选择要恢复的预设：", .secondary)
+            rows.append(caption)
+            let radioStack = PopoverLayout.stack([], spacing: 6)
             for option in content.options {
                 let action = ButtonAction { [weak self] in self?.onEvent(.select(presetID: option.presetID)) }
-                let radio = PopoverLayout.button(option.name, action, radio: true)
+                let radio = PopoverLayout.radio(option.name, action)
                 actions.append(action)
                 radios.append((option.presetID, radio))
-                rows.append(radio)
+                radioStack.addArrangedSubview(radio)
             }
+            rows.append(radioStack)
+            pickerTail = radioStack
         } else if let only = content.selected {
-            rows.append(PopoverLayout.label("预设：\(only.name)"))
+            let name = PopoverLayout.label("预设：\(only.name)", .body)
+            rows.append(name)
+            pickerTail = name
         }
         rows.append(detail)
 
@@ -139,20 +215,14 @@ final class RestorePromptView: NSView {
         actions += [ignore, restore]
         let restoreButton = PopoverLayout.button("恢复", restore)
         restoreButton.keyEquivalent = "\r"
-        let buttonRow = PopoverLayout.stack([NSView(), PopoverLayout.button("忽略", ignore), restoreButton],
-                                            vertical: false)
+        let buttonRow = PopoverLayout.buttonRow([PopoverLayout.button("忽略", ignore), restoreButton])
         rows.append(buttonRow)
 
-        let root = PopoverLayout.stack(rows, spacing: 10)
-        root.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        root.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: leadingAnchor), root.trailingAnchor.constraint(equalTo: trailingAnchor),
-            root.topAnchor.constraint(equalTo: topAnchor), root.bottomAnchor.constraint(equalTo: bottomAnchor),
-            root.widthAnchor.constraint(equalToConstant: PopoverLayout.width + 32),
-            buttonRow.widthAnchor.constraint(equalToConstant: PopoverLayout.width),
-        ])
+        let root = PopoverLayout.stack(rows, spacing: 8)
+        root.setCustomSpacing(10, after: title)
+        root.setCustomSpacing(10, after: pickerTail)
+        root.setCustomSpacing(14, after: detail)
+        PopoverLayout.install(root, in: self)
         update(content)
     }
 
@@ -167,43 +237,45 @@ final class RestorePromptView: NSView {
         }
         detail.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard let selected = content.selected else { return }
-        selected.summaryLines.forEach { detail.addArrangedSubview(PopoverLayout.label($0, secondary: true)) }
-        selected.shortageLines.forEach {
-            detail.addArrangedSubview(PopoverLayout.label($0, secondary: true, color: .systemOrange))
+        selected.summaryLines.forEach { detail.addArrangedSubview(PopoverLayout.label($0, .secondary)) }
+        if let lastSummary = detail.arrangedSubviews.last, !selected.shortageLines.isEmpty {
+            detail.setCustomSpacing(6, after: lastSummary)
         }
+        selected.shortageLines.forEach { detail.addArrangedSubview(PopoverLayout.label($0, .warning)) }
     }
 }
 
-/// 自动恢复告知（§6.3）：「已按『X』恢复」+「撤销」、计数与降级附注、（有其他预设时）「改用其他预设…」
+/// 自动恢复告知（§6.3）：标题「已按『X』恢复」、计数、降级附注（次要小字）；底部「改用其他预设…」「撤销」同宽靠右
 final class AutoRestoreNoticeView: NSView {
     private var actions: [ButtonAction] = []
 
     init(content: AutoRestoreNoticeContent, onEvent: @escaping (RestorePopoverEvent) -> Void) {
         super.init(frame: .zero)
-        var headline: [NSView] = [PopoverLayout.label(content.headline, bold: true)]
-        if content.showsUndo {
-            let undo = ButtonAction { onEvent(.undoTapped) }
-            actions.append(undo)
-            headline.append(PopoverLayout.button("撤销", undo))
+        let headline = PopoverLayout.label(content.headline, .title)
+        let detail = PopoverLayout.label(content.detail, .secondary)
+        var rows: [NSView] = [headline, detail]
+        if let note = content.degradeNote {
+            rows.append(PopoverLayout.label(note, .note))
         }
-        var rows: [NSView] = [PopoverLayout.stack(headline, vertical: false),
-                              PopoverLayout.label(content.detail, secondary: true)]
+
+        var buttons: [NSButton] = []
         if content.showsSwitchPreset {
             let switchPreset = ButtonAction { onEvent(.switchPresetTapped) }
             actions.append(switchPreset)
-            let button = PopoverLayout.button("改用其他预设…", switchPreset)
-            button.bezelStyle = .inline
-            rows.append(button)
+            buttons.append(PopoverLayout.button("改用其他预设…", switchPreset))
         }
-        let root = PopoverLayout.stack(rows, spacing: 6)
-        root.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
-        root.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: leadingAnchor), root.trailingAnchor.constraint(equalTo: trailingAnchor),
-            root.topAnchor.constraint(equalTo: topAnchor), root.bottomAnchor.constraint(equalTo: bottomAnchor),
-            root.widthAnchor.constraint(lessThanOrEqualToConstant: PopoverLayout.width + 32),
-        ])
+        if content.showsUndo {
+            let undo = ButtonAction { onEvent(.undoTapped) }
+            actions.append(undo)
+            buttons.append(PopoverLayout.button("撤销", undo))
+        }
+        let textTail = rows.last!
+        if !buttons.isEmpty { rows.append(PopoverLayout.buttonRow(buttons)) }
+
+        let root = PopoverLayout.stack(rows, spacing: 3)
+        root.setCustomSpacing(4, after: headline)
+        root.setCustomSpacing(14, after: textTail)
+        PopoverLayout.install(root, in: self)
     }
 
     @available(*, unavailable)
