@@ -2,7 +2,7 @@ import SwiftUI
 
 // GeneralPage.swift — 主窗口「通用」页（ui-refactor 票 03，spec §5.5）。薄视图：只读 MainWindowModel.general、只调 model 动作
 // （与菜单同源：登录时启动 / 撤销上次恢复 / 打开预设文件夹 / 打开日志文件夹；授权引导… 打开授权窗）。
-//   系统：辅助功能 ● / 屏幕与系统录音 ●（绿 = 已授权，黄 = 待授权，随 PermissionMonitor 实时）+「授权引导…」；登录时启动 ☐
+//   系统：辅助功能 ● / 录屏与系统录音 ●（名称按系统版本，macOS 27 起第一项称「设备控制和数据访问」；绿 = 已授权，黄 = 待授权，随 PermissionMonitor 实时）+「授权引导…」；登录时启动 ☐
 //   恢复：撤销上次恢复 [撤销]（不可撤销时置灰）
 //   数据：预设文件夹 / 日志 [在访达中显示] + 路径说明
 
@@ -14,8 +14,8 @@ struct GeneralPage: View {
         PageScroll {
             SectionHeader(title: "系统")
             SettingRow(caption: general.permissionCaption) {
-                permission("辅助功能", granted: general.accessibilityGranted)
-                permission("屏幕与系统录音", granted: general.screenCaptureGranted)
+                permission(general.accessibilityName, granted: general.accessibilityGranted)
+                permission(general.screenCaptureName, granted: general.screenCaptureGranted)
                 Button("授权引导…", action: model.openPermissionGuide).contentButtonStyle()
             }
             SettingRow(caption: "开机后常驻菜单栏；屏幕排列变化时才能自动恢复。") {

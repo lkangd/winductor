@@ -1,6 +1,7 @@
 // PermissionGuideState.swift — 授权窗的纯状态推导（ui-refactor 票 05，spec §6）。
 // 输入 PermissionMonitor.Status + 本次运行中是否出现过未就绪，输出页头文案、两行逐项状态（已授权/未授权）与底部状态条三态；
-// 视图（PermissionGuideView）只照此排版，不判断。文案按 §6 逐字（测试以独立字面量锁定）。
+// 视图（PermissionGuideView）只照此排版，不判断。文案按 §6 逐字（测试以独立字面量锁定）；
+// 两项名称与灰色路径行按系统版本取（SystemSettingsPaneNames，票 09）。
 
 public struct PermissionGuideState: Equatable {
     /// 分组列表的一行（一项授权）
@@ -10,13 +11,15 @@ public struct PermissionGuideState: Equatable {
         public let name: String
         /// 说明
         public let detail: String
-        /// 图标块 SF Symbol（辅助功能 `accessibility`、屏幕与系统录音 `record.circle`）
+        /// 图标块 SF Symbol（辅助功能 / 设备控制和数据访问 `accessibility`、录屏与系统录音 `record.circle`）
         public let symbolName: String
         public let isGranted: Bool
+        /// 灰色路径全文（系统设置 › 隐私与安全性 › 面板名）
+        let fullSettingsPath: String
 
         /// 第三行灰色路径；已授权不显示
         public var settingsPath: String? {
-            isGranted ? nil : "系统设置 › 隐私与安全性 › " + name
+            isGranted ? nil : fullSettingsPath
         }
 
         /// 行尾列：未授权 =【打开系统设置】，已授权 = 绿色「✓ 已授权」
@@ -59,23 +62,27 @@ public struct PermissionGuideState: Equatable {
 
     public let title = "授权 Winductor"
     public let subtitle = "需要两项系统权限来读取和移动窗口。只在本机使用，不上传任何数据。"
-    /// 行序 = 引导顺序（辅助功能 → 屏幕与系统录音）
+    /// 行序 = 引导顺序（辅助功能 → 录屏与系统录音）
     public let rows: [Row]
     public let footer: Footer
 
     /// - Parameters:
     ///   - hasBeenNotReady: 本次运行（进程）中是否出现过未就绪——首启未就绪、或运行中重确认降级（§8.4）。
     ///     出现过则齐备后须重启生效；启动即就绪且从未降级则无需重启
-    public init(status: PermissionMonitor.Status, hasBeenNotReady: Bool) {
+    ///   - paneNames: 系统设置面板名（随 macOS 版本，默认本机）
+    public init(status: PermissionMonitor.Status, hasBeenNotReady: Bool,
+                paneNames: SystemSettingsPaneNames = .current) {
         // 屏幕录制需重新确认（§8.4）时预检虽通过，仍按未授权呈现（Status.screenCaptureEffectivelyGranted）
         rows = PermissionMonitor.Kind.allCases.map { kind in
             switch kind {
             case .accessibility:
-                Row(kind: kind, name: "辅助功能", detail: "读取和设置窗口的位置、大小，以及最小化与全屏。",
-                    symbolName: "accessibility", isGranted: status.accessibilityGranted)
+                Row(kind: kind, name: paneNames.name(of: kind), detail: "读取和设置窗口的位置、大小，以及最小化与全屏。",
+                    symbolName: "accessibility", isGranted: status.accessibilityGranted,
+                    fullSettingsPath: paneNames.settingsPath(of: kind))
             case .screenCapture:
-                Row(kind: kind, name: "屏幕与系统录音", detail: "读取各屏幕、各桌面上的窗口列表与标题，不录制画面。",
-                    symbolName: "record.circle", isGranted: status.screenCaptureEffectivelyGranted)
+                Row(kind: kind, name: paneNames.name(of: kind), detail: "读取各屏幕、各桌面上的窗口列表与标题，不录制画面。",
+                    symbolName: "record.circle", isGranted: status.screenCaptureEffectivelyGranted,
+                    fullSettingsPath: paneNames.settingsPath(of: kind))
             }
         }
         footer = !status.isReady ? .waiting : hasBeenNotReady ? .restartRequired : .alreadyReady

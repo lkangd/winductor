@@ -94,8 +94,11 @@ public struct MainWindowState: Equatable {
 public struct GeneralPageState: Equatable {
     /// 辅助功能状态点（绿 = 已授权，黄 = 未授权）
     public let accessibilityGranted: Bool
-    /// 屏幕与系统录音状态点（重确认中按未授权）
+    /// 录屏与系统录音状态点（重确认中按未授权）
     public let screenCaptureGranted: Bool
+    /// 两项状态行名称：与授权窗同源，按系统版本取（票 09：macOS 27 起第一项称「设备控制和数据访问」）
+    public let accessibilityName: String
+    public let screenCaptureName: String
     /// 系统分区权限行的说明（随就绪态切换）
     public let permissionCaption: String
     /// 「登录时启动」勾选态（菜单同源）
@@ -114,9 +117,12 @@ public struct GeneralPageState: Equatable {
     }
 
     public static func make(status: PermissionMonitor.Status, loginLaunchChecked: Bool, canUndo: Bool,
-                            presetsFolder: URL, logsFolder: URL) -> GeneralPageState {
+                            presetsFolder: URL, logsFolder: URL,
+                            paneNames: SystemSettingsPaneNames = .current) -> GeneralPageState {
         GeneralPageState(accessibilityGranted: status.accessibilityGranted,
                          screenCaptureGranted: status.screenCaptureEffectivelyGranted,
+                         accessibilityName: paneNames.name(of: .accessibility),
+                         screenCaptureName: paneNames.name(of: .screenCapture),
                          permissionCaption: status.isReady ? readyCaption : notReadyCaption,
                          loginLaunchChecked: loginLaunchChecked,
                          canUndo: canUndo,

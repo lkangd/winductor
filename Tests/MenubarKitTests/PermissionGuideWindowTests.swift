@@ -16,6 +16,7 @@ final class PermissionGuideWindowTests: XCTestCase {
         openedSettings = []
         relaunchCount = 0
         guide = PermissionGuideWindow(
+            paneNames: .forSystem(OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)),
             openSettings: { [unowned self] kind in self.openedSettings.append(kind) },
             relaunch: { [unowned self] in self.relaunchCount += 1 }
         )
@@ -26,7 +27,7 @@ final class PermissionGuideWindowTests: XCTestCase {
                                  screenCaptureNeedsReconfirm: false)
     }
 
-    /// §6 全文逐字：页头标题与说明、两项名称/说明/路径、底部等待提示
+    /// §6 全文逐字：页头标题与说明、两项名称/说明/路径（macOS 15 口径，票 09）、底部等待提示
     func testSpec6TextsVerbatim() {
         let texts = guide.visibleTexts
         XCTAssertTrue(texts.contains("授权 Winductor"))
@@ -34,9 +35,9 @@ final class PermissionGuideWindowTests: XCTestCase {
         XCTAssertTrue(texts.contains("辅助功能"))
         XCTAssertTrue(texts.contains("读取和设置窗口的位置、大小，以及最小化与全屏。"))
         XCTAssertTrue(texts.contains("系统设置 › 隐私与安全性 › 辅助功能"))
-        XCTAssertTrue(texts.contains("屏幕与系统录音"))
+        XCTAssertTrue(texts.contains("录屏与系统录音"))
         XCTAssertTrue(texts.contains("读取各屏幕、各桌面上的窗口列表与标题，不录制画面。"))
-        XCTAssertTrue(texts.contains("系统设置 › 隐私与安全性 › 屏幕与系统录音"))
+        XCTAssertTrue(texts.contains("系统设置 › 隐私与安全性 › 录屏与系统录音"))
         XCTAssertTrue(texts.contains("授权后这里会自动更新。"))
         XCTAssertEqual(guide.settingsButtonTitle, "打开系统设置")
     }

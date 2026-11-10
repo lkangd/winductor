@@ -130,6 +130,20 @@ final class MainWindowStateTests: XCTestCase {
         XCTAssertEqual(reconfirm.permissionCaption, GeneralPageState.notReadyCaption)
     }
 
+    /// 状态行名称与授权窗同源、按系统版本（票 09）：macOS 27 起第一项称「设备控制和数据访问」
+    func testGeneralPagePermissionNamesFollowSystemVersion() {
+        func make(_ major: Int) -> GeneralPageState {
+            GeneralPageState.make(status: status(ax: true, sc: true), loginLaunchChecked: false, canUndo: false,
+                                  presetsFolder: folder("presets"), logsFolder: folder("logs"),
+                                  paneNames: .forSystem(OperatingSystemVersion(majorVersion: major, minorVersion: 0,
+                                                                               patchVersion: 0)))
+        }
+        XCTAssertEqual(make(15).accessibilityName, "辅助功能")
+        XCTAssertEqual(make(15).screenCaptureName, "录屏与系统录音")
+        XCTAssertEqual(make(27).accessibilityName, "设备控制和数据访问")
+        XCTAssertEqual(make(27).screenCaptureName, "录屏与系统录音")
+    }
+
     /// 状态点悬停说明：已授权「已授权」（与授权窗逐项同词）；缺项「待授权」（GLOSSARY「未就绪」_Avoid_ 未授权）
     func testPermissionDotHelp() {
         XCTAssertEqual(GeneralPageState.permissionDotHelp(granted: true), "已授权")

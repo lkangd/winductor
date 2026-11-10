@@ -37,7 +37,7 @@ public final class NotReadyGateCoordinator {
     /// 本次运行中是否出现过未就绪（首启未就绪或运行中重确认降级）：授权须重启应用一次才生效（docs/signing.md §5），
     /// 出现过则齐备后要重启；启动即就绪且从未降级 = 授权早已生效，无需重启。只置不清（重启 = 新进程）
     private var hasBeenNotReady = false
-    /// 菜单动作载体：状态行点击直达系统设置的屏幕与系统录音面板（强持有防释放）
+    /// 菜单动作载体：状态行点击直达系统设置的录屏与系统录音面板（强持有防释放）
     private let menuActionCarrier: ActionCarrier
     /// 就绪态菜单构建闭包（票 19 全量菜单注入；缺省 = 票 18 占位骨架，未就绪恒占位骨架）
     private let makeReadyMenu: () -> NSMenu

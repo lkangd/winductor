@@ -11,13 +11,18 @@ public final class PermissionGuideWindow {
     /// 授权窗本体（独立窗口，非状态项菜单）
     public let window: NSWindow
     private let model: PermissionGuideModel
+    /// 系统设置面板名（随 macOS 版本；票 09）
+    private let paneNames: SystemSettingsPaneNames
 
-    public init(openSettings: @escaping (PermissionMonitor.Kind) -> Void = SystemSettingsOpener.open,
+    public init(paneNames: SystemSettingsPaneNames = .current,
+                openSettings: @escaping (PermissionMonitor.Kind) -> Void = SystemSettingsOpener.open,
                 relaunch: @escaping () -> Void = { SelfRelauncher.perform() }) {
         // 初始 = 两项未授权（首个 update 前的占位；协调器建窗后立即推进到真实现状）
         let initial = PermissionMonitor.Status(accessibilityGranted: false, screenCaptureGranted: false,
                                                screenCaptureNeedsReconfirm: false)
-        model = PermissionGuideModel(state: PermissionGuideState(status: initial, hasBeenNotReady: true),
+        self.paneNames = paneNames
+        model = PermissionGuideModel(state: PermissionGuideState(status: initial, hasBeenNotReady: true,
+                                                                 paneNames: paneNames),
                                      openSettings: openSettings, relaunch: relaunch)
 
         let host = NSHostingView(rootView: PermissionGuideView(model: model))
@@ -61,7 +66,7 @@ public final class PermissionGuideWindow {
 
     /// 依据权限现状推进界面：逐项已授权/未授权，底部条等待 ⇄ 齐备（本次运行中出现过未就绪 → 重启提示，否则无需重启；§6）。不关窗
     public func update(status: PermissionMonitor.Status, hasBeenNotReady: Bool) {
-        let next = PermissionGuideState(status: status, hasBeenNotReady: hasBeenNotReady)
+        let next = PermissionGuideState(status: status, hasBeenNotReady: hasBeenNotReady, paneNames: paneNames)
         guard next != model.state else { return }
         model.state = next
     }

@@ -5,7 +5,7 @@ import AppKit
 // 文案为 §8.4 逐字引文（测试以独立字面量锁定）。
 
 public enum ScreenCaptureReconfirmGuide {
-    /// §8.4 状态行（点击直达系统设置的「屏幕与系统录音」面板）
+    /// §8.4 状态行（点击直达系统设置的「录屏与系统录音」面板）
     public static let statusLineTitle = "屏幕录制权限需重新确认"
     /// §8.4 菜单内固定说明文案（逐字）
     public static let noticeText = "macOS 会定期要求重新确认屏幕录制权限。请在系统设置中重新打开开关，然后重启应用。"

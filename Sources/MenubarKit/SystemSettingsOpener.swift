@@ -1,14 +1,17 @@
 import AppKit
 
 // SystemSettingsOpener.swift — 系统设置面板深链（票 18，spec §8.3 的【打开系统设置】接线）。
-// 面板标识为任务书指定：辅助功能 Privacy_Accessibility、屏幕与系统录音 Privacy_ScreenCapture。
-// 重确认菜单状态行（§8.4「点击直达系统设置」）复用此处打开屏幕与系统录音面板。
+// 面板标识为任务书指定：辅助功能 Privacy_Accessibility、录屏与系统录音 Privacy_ScreenCapture。
+// 重确认菜单状态行（§8.4「点击直达系统设置」）复用此处打开录屏与系统录音面板。
+// 票 09 核实 macOS 27 仍可用、无需按版本分支：SecurityPrivacyExtension.appex 的 Info.plist 声明
+// legacyBundleIdentifier = com.apple.preference.security、allowsXAppleSystemPreferencesURLScheme = true，
+// 其可执行文件仍含锚点 Privacy_Accessibility（面板改称「设备控制和数据访问」，TCC 服务仍是 Accessibility）与 Privacy_ScreenCapture。
 
 public enum SystemSettingsOpener {
-    /// 隐私与安全性 > 辅助功能
+    /// 隐私与安全性 > 辅助功能（macOS 27 起：隐私与安全 > 设备控制和数据访问）
     public static let accessibilityPaneURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-    /// 隐私与安全性 > 屏幕与系统录音
+    /// 隐私与安全性 > 录屏与系统录音
     public static let screenCapturePaneURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 
