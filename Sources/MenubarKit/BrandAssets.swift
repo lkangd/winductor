@@ -7,7 +7,7 @@ import SwiftUI
 // 改为两路显式查找：
 //   - .app 内（Bundle.main 是 .app）：只读 Contents/Resources——make-app.sh 拷入两态 PNG、用 iconutil 生成 AppIcon.icns；
 //     缺文件即返回 nil，不回落源码树，避免开发机上掩盖打包漏拷。
-//   - 其余（swift test / swift run）：读源码树 Resources/Brand（#filePath 推导）。
+//   - 其余（swift test / swift run）：读源码树 Resources/Brand（RuntimeBundle.sourceTreeRoot 推导）。
 // 票 02（菜单栏裁切/徽记）、05（关于页 36pt）、06（授权窗 64pt）从这里取图；本层不缓存，调用方按需缓存。
 
 public enum BrandAssets {
@@ -29,7 +29,7 @@ public enum BrandAssets {
     /// 应用图标原图（多分辨率 16–1024 px，白底方图，未裁圆角）。.app 内读 AppIcon.icns，否则读 appiconset 各 PNG
     public static func appIconSource(bundle: Bundle = .main) -> NSImage? {
         let dir = directory(for: bundle)
-        if isAppBundle(bundle) {
+        if RuntimeBundle.isApp(bundle) {
             return NSImage(contentsOf: dir.appendingPathComponent("AppIcon.icns"))
         }
         return imageFromAppIconSet(dir.appendingPathComponent("AppIcon.appiconset"))
@@ -52,9 +52,8 @@ public enum BrandAssets {
 
     // MARK: - 资源位置
 
-    /// 仓库内素材目录（Sources/MenubarKit/ → 仓库根 → Resources/Brand）
-    static let sourceTreeDirectory = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    /// 仓库内素材目录（仓库根 → Resources/Brand）
+    static let sourceTreeDirectory = RuntimeBundle.sourceTreeRoot
         .appendingPathComponent("Resources/Brand", isDirectory: true)
 
     static func menuBarFileName(_ art: MenuBarArt) -> String {
@@ -64,12 +63,8 @@ public enum BrandAssets {
         }
     }
 
-    private static func isAppBundle(_ bundle: Bundle) -> Bool {
-        bundle.bundleURL.pathExtension == "app"
-    }
-
     private static func directory(for bundle: Bundle) -> URL {
-        if isAppBundle(bundle) {
+        if RuntimeBundle.isApp(bundle) {
             return bundle.resourceURL ?? bundle.bundleURL.appendingPathComponent("Contents/Resources")
         }
         return sourceTreeDirectory

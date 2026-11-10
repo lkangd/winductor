@@ -128,14 +128,12 @@ public final class MainWindowModel: ObservableObject {
 /// 应用版本号（关于页「版本 {VERSION}」）：.app 内取 Info.plist（make-app.sh 由仓库 VERSION 写入），
 /// 否则（swift run / swift test）读源码树 VERSION 文件；取不到为「—」
 public enum AppVersion {
-    /// 仓库根 VERSION（Sources/MenubarKit/ → 仓库根）
-    static let sourceTreeFile = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("VERSION")
+    /// 仓库根 VERSION
+    static let sourceTreeFile = RuntimeBundle.sourceTreeRoot.appendingPathComponent("VERSION")
 
     public static func current(bundle: Bundle = .main) -> String {
         // 只认 .app 的 Info.plist（xctest 宿主的 Bundle.main 也有版本号，那是 Xcode 的）
-        if bundle.bundleURL.pathExtension == "app" {
+        if RuntimeBundle.isApp(bundle) {
             let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             return short.flatMap { $0.isEmpty ? nil : $0 } ?? "—"
         }
