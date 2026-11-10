@@ -218,6 +218,57 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(topologyReads, before + 2, "稳定后补刷一次")
     }
 
+    // MARK: 红绿灯（ui-refactor 票 10）
+
+    /// 真窗口的红绿灯：垂直中心与 header 标题中心对齐（距窗顶 25），关闭按钮左缘 = 侧栏菜单行高亮底左缘；
+    /// 缩放、AppKit 布局复位（系统把按钮放回默认位）、失焦/激活、关闭后重新打开都保持
+    func testTrafficLightsAlignWithHeaderTitleAndSidebarRows() throws {
+        XCTAssertEqual(MainWindowMetrics.headerHeight, 50)
+        XCTAssertEqual(MainWindowMetrics.sidebarRowInset, 10, "侧栏行左右内缩 10（行高亮底左缘）")
+        let controller = makeController()
+        controller.show()
+        let window = try XCTUnwrap(controller.window)
+        assertTrafficLights(in: window, "打开")
+
+        window.setContentSize(NSSize(width: 1000, height: 720))
+        assertTrafficLights(in: window, "放大")
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 740, height: 560)), display: true)
+        assertTrafficLights(in: window, "缩小")
+
+        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+        close.setFrameOrigin(NSPoint(x: 9, y: 9))  // 模拟 AppKit 布局把按钮放回系统默认位
+        assertTrafficLights(in: window, "布局复位后")
+
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        assertTrafficLights(in: window, "失焦再激活")
+
+        window.performClose(nil)
+        controller.show()
+        assertTrafficLights(in: window, "关闭后重新打开")
+    }
+
+    private func assertTrafficLights(in window: NSWindow, _ when: String, file: StaticString = #filePath,
+                                     line: UInt = #line) {
+        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        XCTAssertEqual(buttons.count, 3, file: file, line: line)
+        let rects = buttons.map { $0.convert($0.bounds, to: nil) }  // 窗口坐标（原点在窗口左下）
+        for rect in rects {
+            XCTAssertEqual(window.frame.height - rect.midY, 25, accuracy: 0.5, "\(when)：中心距窗顶", file: file, line: line)
+        }
+        XCTAssertEqual(rects[0].minX, MainWindowMetrics.sidebarRowInset, accuracy: 0.5, "\(when)：关闭按钮左缘",
+                       file: file, line: line)
+        XCTAssertLessThan(rects[0].maxX, rects[1].minX, "\(when)：按钮不重叠", file: file, line: line)
+        XCTAssertLessThan(rects[1].maxX, rects[2].minX, "\(when)：按钮不重叠", file: file, line: line)
+        // 按钮整个落在标题栏容器内（否则超出部分点不中）
+        for (button, rect) in zip(buttons, rects) {
+            guard let container = button.superview?.superview else { return XCTFail("无标题栏容器", file: file, line: line) }
+            XCTAssertTrue(container.convert(container.bounds, to: nil).contains(rect), "\(when)：按钮在标题栏容器内",
+                          file: file, line: line)
+        }
+    }
+
     // MARK: 辅助
 
     private func status(ready: Bool) -> PermissionMonitor.Status {
