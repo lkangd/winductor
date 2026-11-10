@@ -18,8 +18,8 @@ struct TopologyPage: View {
         if let selected = model.state.selected {
             PageScroll {
                 TopologyTitle(selected: selected, onEditAlias: model.editAlias)
-                ArrangementDiagram(displays: selected.displays, isDimmed: !selected.isCurrent,
-                                   selectedUUID: model.state.selectedDisplayUUID, onSelect: model.selectDisplay)
+                ArrangementDiagram(state: model.state, displays: selected.displays, isDimmed: !selected.isCurrent,
+                                   onSelect: model.selectDisplay)
                     .padding(.top, 16)
                 SectionDivider()
                 SectionHeader(title: "预设") {
@@ -29,20 +29,18 @@ struct TopologyPage: View {
                             .disabled(!selected.canSavePreset)
                     }
                 }
-                if selected.rows.isEmpty {
-                    Caption(text: selected.isCurrent ? "还没有预设。点「保存当前布局…」把现在的窗口布局存为预设。" : "无预设")
-                        .padding(.vertical, 14)
+                if let emptyText = selected.emptyPresetsText {
+                    Caption(text: emptyText).padding(.vertical, 14)
                 }
                 ForEach(Array(selected.rows.enumerated()), id: \.element.id) { index, row in
                     if index > 0 { Divider() }
                     PresetBlock(model: model, row: row)
                 }
                 Divider()
-                Caption(text: "勾选「自动恢复」的预设会在屏幕排列切换到这里时直接恢复，不再询问；每个屏幕排列至多一个。")
-                    .padding(.top, 12)
+                Caption(text: SelectedTopologyState.autoRestoreNote).padding(.top, 12)
             }
         } else {
-            Caption(text: "还没有保存过任何预设")
+            Caption(text: PresetManagerState.noTopologyText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -63,7 +61,7 @@ private struct TopologyTitle: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!selected.canEditAlias)
-                .help(selected.canEditAlias ? "改名称" : "保存过预设后才能改名称")
+                .help(selected.editAliasHelp)
             }
             Caption(text: selected.subtitle)
         }
@@ -73,9 +71,10 @@ private struct TopologyTitle: View {
 // MARK: - 排列图
 
 private struct ArrangementDiagram: View {
+    /// 点选的屏与悬停说明（PresetManagerState.selectedDisplayUUID / displayTileHelp）
+    let state: PresetManagerState
     let displays: [TopologyDisplayInfo]
     let isDimmed: Bool
-    let selectedUUID: String?
     let onSelect: (String?) -> Void
 
     /// 相邻屏之间留的缝（每块各内缩一半）
@@ -87,14 +86,14 @@ private struct ArrangementDiagram: View {
             ZStack(alignment: .topLeading) {
                 ForEach(arranged) { display in
                     let rect = display.rect.insetBy(dx: gap / 2, dy: gap / 2)
-                    let isSelected = display.uuid == selectedUUID
+                    let isSelected = display.uuid == state.selectedDisplayUUID
                     ScreenTile(display: display, isCompact: rect.height < 70, isSelected: isSelected,
                                isDimmed: isDimmed)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                         .contentShape(Rectangle())
                         .onTapGesture { onSelect(display.uuid) }
-                        .help(isSelected ? "再次点击显示全部屏幕" : "只看这块屏幕的详情")
+                        .help(state.displayTileHelp(uuid: display.uuid))
                 }
             }
         }
@@ -181,7 +180,7 @@ private struct PresetBlock: View {
                 HStack(spacing: 3) {
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text(isExpanded ? "收起详情" : "显示详情")
+                    Text(model.state.detailToggleTitle(presetID: row.id))
                 }
                 .font(.system(size: 12)).foregroundStyle(Color.accentColor)
                 .contentShape(Rectangle())

@@ -148,6 +148,44 @@ final class PresetManagerStateTests: XCTestCase {
                        "未连接 · 3 块屏幕 · 可以查看、改名、删除，不能恢复或覆盖")
     }
 
+    /// 预设分区空态说明：当前拓扑引导保存；非当前「无预设」；有预设时无说明
+    func testEmptyPresetsCaptionDistinguishesCurrentFromOther() throws {
+        let home = try save("家", on: homeDesk)
+        try store.deletePreset(id: home.id, topologyKey: homeDesk.identity.key)  // 拓扑记录还在、预设清空
+
+        XCTAssertEqual(make(current: officeDesk).selected?.emptyPresetsText,
+                       "还没有预设。点「保存当前布局…」把现在的窗口布局存为预设。")
+        XCTAssertEqual(make(current: officeDesk, selectedKey: homeDesk.identity.key).selected?.emptyPresetsText, "无预设")
+        try save("工作", on: officeDesk)
+        XCTAssertNil(make(current: officeDesk).selected?.emptyPresetsText)
+    }
+
+    /// 笔形改名按钮的悬停说明：可改「改名称」；当前拓扑尚未保存过预设（无拓扑记录）时「保存过预设后才能改名称」
+    func testEditAliasHelpFollowsAvailability() throws {
+        try save("家", on: homeDesk)
+
+        XCTAssertEqual(make(current: officeDesk).selected?.editAliasHelp, "保存过预设后才能改名称")
+        XCTAssertEqual(make(current: officeDesk, selectedKey: homeDesk.identity.key).selected?.editAliasHelp, "改名称")
+    }
+
+    /// 排列图屏幕块的悬停说明随点选切换；预设块详情按钮随展开切换；分区末尾说明与无拓扑空态逐字
+    func testTopologyPageCopy() throws {
+        let preset = try save("工作", on: officeDesk)
+
+        let plain = make(current: officeDesk)
+        XCTAssertEqual(plain.displayTileHelp(uuid: "LG-1"), "只看这块屏幕的详情")
+        XCTAssertEqual(make(current: officeDesk, selectedDisplayUUID: "LG-1").displayTileHelp(uuid: "LG-1"),
+                       "再次点击显示全部屏幕")
+        XCTAssertEqual(plain.detailToggleTitle(presetID: preset.id), "显示详情")
+        let expanded = PresetManagerState.make(topologies: store.topologies(), current: officeDesk,
+                                               availability: .available, selectedKey: nil,
+                                               expandedPresetID: preset.id)
+        XCTAssertEqual(expanded.detailToggleTitle(presetID: preset.id), "收起详情")
+        XCTAssertEqual(SelectedTopologyState.autoRestoreNote,
+                       "勾选「自动恢复」的预设会在屏幕排列切换到这里时直接恢复，不再询问；每个屏幕排列至多一个。")
+        XCTAssertEqual(PresetManagerState.noTopologyText, "还没有保存过任何预设")
+    }
+
     /// 「保存当前布局…」：仅当前拓扑显示（尚无预设也显示）；恢复进行中 / 未就绪置灰
     func testSavePresetButtonOnlyOnCurrentTopology() throws {
         try save("家", on: homeDesk)

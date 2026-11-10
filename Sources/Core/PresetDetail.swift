@@ -21,6 +21,16 @@ public struct PresetDetailApp: Equatable, Sendable {
         let minimized = minimizedCount > 0 ? "，其中 \(minimizedCount) 个最小化" : ""
         return "\(name)（\(windowCount) 个窗口\(minimized)）"
     }
+
+    /// 详情卡片应用行的窗口数「×N」（N>1；单窗口不显示）
+    public var windowCountText: String? {
+        windowCount > 1 ? "×\(windowCount)" : nil
+    }
+
+    /// 详情卡片应用行的「N 个最小化」（无最小化不显示）
+    public var minimizedText: String? {
+        minimizedCount > 0 ? "\(minimizedCount) 个最小化" : nil
+    }
 }
 
 /// 屏下的一个 Space
@@ -30,6 +40,11 @@ public struct PresetDetailSpace: Equatable, Sendable {
     /// 「桌面 1」/「全屏」
     public let title: String
     public let apps: [PresetDetailApp]
+
+    /// 无应用的用户桌面显示「空桌面」；全屏 Space 只有小标题（缺 bundleID 时）不显示
+    public var emptyText: String? {
+        apps.isEmpty && !isFullscreen ? "空桌面" : nil
+    }
 }
 
 /// 一块屏

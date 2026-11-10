@@ -3,7 +3,7 @@ import SwiftUI
 
 // PresetDetailView.swift — 预设块展开详情（display-presets 票 08；ui-refactor 票 04 按 spec §5.4 改为等高卡片，数值取原型
 // Prototypes/UIRefactor MainWindow.swift PresetBlock.detail）。薄视图：只渲染 PresetManagerModel.expandedDetail
-// （推导见 Core/PresetDetail：屏 → Space → 应用，随排列图点屏筛选）。
+// （推导与行内短文案见 Core/PresetDetail：屏 → Space → 应用，随排列图点屏筛选）。
 //   每块屏一张卡片横排、等高；卡片头 = 屏图标（内置屏笔记本、其余显示器）+ 屏名；
 //   内部按 Space 分组（「桌面 N」/「全屏」小标题），每个应用一行：真实应用图标 16pt + 名称 +「×N」（N>1）+「N 个最小化」；
 //   无应用的用户桌面显示「空桌面」。Space 不足提示挂在预设块上（PresetRowState.spaceShortageTexts），不在此重复。
@@ -52,8 +52,8 @@ private struct SpaceGroup: View {
             ForEach(space.apps, id: \.bundleID) { app in
                 AppLine(app: app)
             }
-            if space.apps.isEmpty && !space.isFullscreen {
-                Text("空桌面").font(.system(size: 12)).foregroundStyle(.tertiary).frame(height: 18)
+            if let emptyText = space.emptyText {
+                Text(emptyText).font(.system(size: 12)).foregroundStyle(.tertiary).frame(height: 18)
             }
         }
     }
@@ -67,12 +67,11 @@ private struct AppLine: View {
             Image(nsImage: ApplicationIcons.icon(bundleID: app.bundleID))
                 .resizable().interpolation(.high).frame(width: 16, height: 16)
             Text(app.name).font(.system(size: 12)).lineLimit(1)
-            if app.windowCount > 1 {
-                Text("×\(app.windowCount)").font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+            if let countText = app.windowCountText {
+                Text(countText).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
             }
-            if app.minimizedCount > 0 {
-                Text("\(app.minimizedCount) 个最小化").font(.system(size: 11)).foregroundStyle(.tertiary)
-                    .lineLimit(1)
+            if let minimizedText = app.minimizedText {
+                Text(minimizedText).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
             }
         }
         .frame(height: 18)

@@ -9,7 +9,8 @@ import Foundation
 //   selected —— 选中拓扑的排列图数据（当前拓扑用实况屏幕，其他用存储的展示数据 §3.2）与预设块；
 //     恢复/覆盖仅当前拓扑且可用（未就绪 / 恢复进行中禁用）；改名、删除、设自动任何拓扑都可。
 //     拓扑页（ui-refactor 票 04，spec §5.4）：标题区说明、「保存当前布局…」（仅当前拓扑）、预设块摘要与 Space 不足提示、
-//     `⋯` 菜单（用当前布局覆盖… / 改名… / ─ / 删除…）。
+//     `⋯` 菜单（用当前布局覆盖… / 改名… / ─ / 删除…）；随状态切换的说明与悬停文案（空态、改名称、点屏、详情展开）
+//     也在这里，视图只排版。
 //   selectedDisplayUUID / expandedPresetID —— 预设详情（display-presets 票 08）的筛选与展开接缝。
 
 /// 侧栏的一个拓扑
@@ -78,6 +79,20 @@ public struct SelectedTopologyState: Equatable {
     /// 排列图数据
     public let displays: [TopologyDisplayInfo]
     public let rows: [PresetRowState]
+
+    /// 预设分区空态说明（有预设时 nil）：当前拓扑引导保存，非当前「无预设」
+    public var emptyPresetsText: String? {
+        guard rows.isEmpty else { return nil }
+        return isCurrent ? "还没有预设。点「保存当前布局…」把现在的窗口布局存为预设。" : "无预设"
+    }
+
+    /// 笔形改名按钮的悬停说明
+    public var editAliasHelp: String {
+        canEditAlias ? "改名称" : "保存过预设后才能改名称"
+    }
+
+    /// 预设分区末尾说明（spec §5.4）
+    public static let autoRestoreNote = "勾选「自动恢复」的预设会在屏幕排列切换到这里时直接恢复，不再询问；每个屏幕排列至多一个。"
 }
 
 public struct PresetManagerState: Equatable {
@@ -91,6 +106,19 @@ public struct PresetManagerState: Equatable {
 
     public static let empty = PresetManagerState(entries: [], selectedKey: nil, selected: nil,
                                                  selectedDisplayUUID: nil, expandedPresetID: nil)
+
+    /// 无任何拓扑可选时拓扑页的占位说明
+    public static let noTopologyText = "还没有保存过任何预设"
+
+    /// 排列图屏幕块的悬停说明：已点选该屏 → 再点取消；否则 → 点选筛选详情
+    public func displayTileHelp(uuid: String) -> String {
+        uuid == selectedDisplayUUID ? "再次点击显示全部屏幕" : "只看这块屏幕的详情"
+    }
+
+    /// 预设块「显示详情 / 收起详情」按钮标题
+    public func detailToggleTitle(presetID: String) -> String {
+        presetID == expandedPresetID ? "收起详情" : "显示详情"
+    }
 
     public static func make(topologies: [PresetTopology],
                             current: ObservedTopology,

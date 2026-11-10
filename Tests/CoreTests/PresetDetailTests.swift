@@ -126,6 +126,25 @@ final class PresetDetailTests: XCTestCase {
         XCTAssertEqual(detail(snap).displays.first?.spaces.map(\.isFullscreen), [false, true, false])
     }
 
+    /// 详情卡片的行内短文案：应用「×N」（N>1）与「N 个最小化」；无应用的用户桌面「空桌面」，全屏 Space 无此说明
+    func testCardShortTexts() {
+        let snap = snapshot(
+            spaces: [space(left, 1), space(left, 2), space(right, 1, fullscreen: "com.example.Unknown"),
+                     SnapshotSpace(displayUUID: right, index: 2, kind: .fullscreen, fullscreenAppBundleID: nil)],
+            windows: [
+                window("com.apple.Terminal", on: left),
+                window("com.apple.Terminal", on: left, minimized: true),
+                window("com.apple.Notes", on: left),
+            ])
+        let made = detail(snap)
+        let desktop1 = made.displays[0].spaces[0]
+        XCTAssertEqual(desktop1.apps.map(\.windowCountText), ["×2", nil])
+        XCTAssertEqual(desktop1.apps.map(\.minimizedText), ["1 个最小化", nil])
+        XCTAssertNil(desktop1.emptyText)
+        XCTAssertEqual(made.displays[0].spaces[1].emptyText, "空桌面")
+        XCTAssertEqual(made.displays[1].spaces.map(\.emptyText), [nil, nil], "全屏 Space 不显示「空桌面」")
+    }
+
     /// 卡片头的屏图标：展示数据标了内置屏的用笔记本图标；旧数据（nil）按外接屏
     func testDisplayCarriesBuiltinFlagFromDisplayData() {
         var flagged = displays
