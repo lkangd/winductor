@@ -173,7 +173,7 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(topologyReads, beforeShow, "未打开：不重读")
 
         controller.show()
-        XCTAssertGreaterThan(topologyReads, beforeShow, "打开即重读")
+        XCTAssertEqual(topologyReads, beforeShow + 1, "打开即重读（一次）")
         try save("新", on: office)
         controller.reloadIfVisible()
         XCTAssertEqual(controller.model.presets.state.selected?.rows.map(\.name), ["新"])
@@ -182,6 +182,25 @@ final class MainWindowModelTests: XCTestCase {
         let afterClose = topologyReads
         controller.reloadIfVisible()
         XCTAssertEqual(topologyReads, afterClose, "已关闭（隐藏）：不重读")
+    }
+
+    /// 打开只重读一次：呈现时窗口随即成为 key（生产 makeKeyAndOrderFront 同步发 windowDidBecomeKey）不再重读；
+    /// 此后再激活（切走再回来）照常重读（spec §5.1 打开/激活时刷新）
+    func testOpeningReloadsOnceEvenWhenWindowBecomesKey() throws {
+        let controller = makeController(becomesKeyOnPresent: true)
+        let before = topologyReads
+
+        controller.show()
+        XCTAssertEqual(topologyReads, before + 1, "打开只重读一次")
+
+        let window = try XCTUnwrap(controller.window)
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        XCTAssertEqual(topologyReads, before + 2, "再激活重读")
+
+        controller.show()  // 关窗前再打开（呈现再次成为 key）
+        XCTAssertEqual(topologyReads, before + 3, "再打开仍只重读一次")
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+        XCTAssertEqual(topologyReads, before + 4, "其后的激活不被吞")
     }
 
     /// 屏幕参数变化：可见时立即重读一次，settleDelay 后再补一次
@@ -240,11 +259,16 @@ final class MainWindowModelTests: XCTestCase {
                                version: "9.9.9")
     }
 
-    private func makeController(settleDelay: TimeInterval = 2) -> MainWindowController {
+    /// - Parameter becomesKeyOnPresent: 模拟生产呈现（makeKeyAndOrderFront）在呈现中同步发 windowDidBecomeKey
+    private func makeController(settleDelay: TimeInterval = 2, becomesKeyOnPresent: Bool = false) -> MainWindowController {
         // 离屏呈现：不激活本进程、窗口挪到屏幕外（测试期不闪窗）
         let controller = MainWindowController(model: makeModel(), settleDelay: settleDelay) { window in
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             window.orderFront(nil)
+            if becomesKeyOnPresent {
+                (window.delegate as? MainWindowController)?
+                    .windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+            }
         }
         controllers.append(controller)
         return controller

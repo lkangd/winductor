@@ -5,7 +5,7 @@ import SwiftUI
 // MainWindowController.swift — 统一主窗口的宿主（ui-refactor 票 03，spec §5.1；取代 display-presets 票 07 的预设管理窗口宿主）。
 // 单实例：首次 show() 建窗，之后再打开只前置（关闭 = 隐藏，不释放）。
 // Swish 式外观：.fullSizeContentView + 透明标题栏 + 隐藏标题，红绿灯落在侧栏顶部；可缩放，最小 720×520。
-// 实时刷新（沿用预设管理窗口时机）：打开/激活时、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，
+// 实时刷新（沿用旧窗口时机）：打开/激活时（打开只重读一次，见 skipsNextBecomeKeyReload）、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，
 // 经 reloadIfVisible，装配方挂在菜单刷新同一处）重读存储、当前拓扑与菜单现状。
 // 对话框生产实现 AlertPresetManagerDialogs（NSAlert；菜单栏 agent 应用须先激活自身）。
 
@@ -22,6 +22,9 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
     private let settleDelay: TimeInterval
     /// 前置呈现（生产：激活本应用 + makeKeyAndOrderFront；测试注入离屏呈现）
     private let present: (NSWindow) -> Void
+    /// show() 已重读、呈现随后让窗口成为 key：吞掉这一次 windowDidBecomeKey 的重读（打开只重读一次；
+    /// 激活可能异步，故按「下一次成为 key」而非呈现返回时清除；窗口本已是 key 则不会再收到，不置位）
+    private var skipsNextBecomeKeyReload = false
 
     public convenience init(model: MainWindowModel) {
         self.init(model: model, settleDelay: 2) { window in
@@ -46,6 +49,7 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
         model.reload()
         let window = self.window ?? makeWindow()
         self.window = window
+        skipsNextBecomeKeyReload = !window.isKeyWindow
         present(window)
     }
 
@@ -87,8 +91,18 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
+    /// 激活时重读（切回本窗口）；show() 刚重读过的那一次跳过
     public func windowDidBecomeKey(_ notification: Notification) {
+        guard !skipsNextBecomeKeyReload else {
+            skipsNextBecomeKeyReload = false
+            return
+        }
         model.reload()
+    }
+
+    /// 关闭 = 隐藏：呈现后从未成为 key 的跳过标记不留到下次
+    public func windowWillClose(_ notification: Notification) {
+        skipsNextBecomeKeyReload = false
     }
 }
 
