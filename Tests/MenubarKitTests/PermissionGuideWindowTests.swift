@@ -57,7 +57,7 @@ final class PermissionGuideWindowTests: XCTestCase {
 
     /// 已授权一项：该行按钮换「已授权」（不可点），路径行消失；另一行照旧
     func testOneGrantedHidesThatRowsButton() {
-        guide.update(status: status(accessibility: true, screenCapture: false))
+        guide.update(status: status(accessibility: true, screenCapture: false), hasBeenNotReady: true)
         XCTAssertEqual(guide.visibleSettingsButtons, [.screenCapture])
         XCTAssertFalse(guide.visibleTexts.contains("系统设置 › 隐私与安全性 › 辅助功能"))
         XCTAssertTrue(guide.visibleTexts.contains("已授权"))
@@ -70,7 +70,7 @@ final class PermissionGuideWindowTests: XCTestCase {
 
     /// 两项齐备：底部条换「两项授权已齐备」/「重启 Winductor 后生效。」+【立即重启】，能干净重启
     func testReadyShowsRestartPromptAndRelaunch() {
-        guide.update(status: status(accessibility: true, screenCapture: true))
+        guide.update(status: status(accessibility: true, screenCapture: true), hasBeenNotReady: true)
         XCTAssertEqual(guide.statusTexts, ["两项授权已齐备", "重启 Winductor 后生效。"])
         XCTAssertEqual(guide.visibleSettingsButtons, [])
         XCTAssertTrue(guide.isRestartButtonVisible)
@@ -78,6 +78,15 @@ final class PermissionGuideWindowTests: XCTestCase {
 
         guide.pressRestart()
         XCTAssertEqual(relaunchCount, 1)
+    }
+
+    /// 启动即就绪后按需打开：底部条「两项授权已齐备」/「Winductor 已可正常保存和恢复布局。」，无【立即重启】、入口不响应
+    func testAlreadyReadyShowsNoRestart() {
+        guide.update(status: status(accessibility: true, screenCapture: true), hasBeenNotReady: false)
+        XCTAssertEqual(guide.statusTexts, ["两项授权已齐备", "Winductor 已可正常保存和恢复布局。"])
+        XCTAssertFalse(guide.isRestartButtonVisible)
+        guide.pressRestart()
+        XCTAssertEqual(relaunchCount, 0)
     }
 
     /// 未齐备时重启入口不响应（按钮不可见）
@@ -88,8 +97,8 @@ final class PermissionGuideWindowTests: XCTestCase {
 
     /// 齐备后又失一项（重启前被收回）：回到等待提示并隐藏重启按钮
     func testNotReadyAgainHidesRestart() {
-        guide.update(status: status(accessibility: true, screenCapture: true))
-        guide.update(status: status(accessibility: true, screenCapture: false))
+        guide.update(status: status(accessibility: true, screenCapture: true), hasBeenNotReady: true)
+        guide.update(status: status(accessibility: true, screenCapture: false), hasBeenNotReady: true)
         XCTAssertEqual(guide.statusTexts, ["授权后这里会自动更新。"])
         XCTAssertFalse(guide.isRestartButtonVisible)
         XCTAssertEqual(guide.visibleSettingsButtons, [.screenCapture])

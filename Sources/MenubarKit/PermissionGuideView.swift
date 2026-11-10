@@ -97,7 +97,7 @@ struct PermissionGuideView: View {
         let footer = model.state.footer
         return HStack(alignment: .center, spacing: PermissionGuideMetrics.columnSpacing) {
             Group {
-                if footer == .ready {
+                if footer.isReady {
                     Image(systemName: "checkmark.circle.fill").font(.system(size: 18)).foregroundStyle(.green)
                 } else {
                     ProgressView().controlSize(.small)

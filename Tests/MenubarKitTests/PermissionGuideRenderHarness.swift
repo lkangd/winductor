@@ -4,7 +4,8 @@ import XCTest
 @testable import MenubarKit
 
 // PermissionGuideRenderHarness — 授权窗内容视图的离屏渲染（人工对照原型 perm-*.png 用，ui-refactor 票 05）。
-// 默认跳过；设环境变量 WINDUCTOR_PERMISSION_RENDER_DIR=<目录> 时渲染 未授权 / 已授权一项 / 两项齐备 × 浅/深色 各一张 PNG
+// 默认跳过；设环境变量 WINDUCTOR_PERMISSION_RENDER_DIR=<目录> 时渲染 未授权 / 已授权一项 / 两项齐备（需重启）/
+// 启动即就绪（无需重启，评审修复）× 浅/深色 各一张 PNG
 //（文件名前缀取 WINDUCTOR_PERMISSION_RENDER_PREFIX，默认 ui-perm-）。
 // 离屏技巧：可成为 key 的离屏无边框窗口 + controlActiveState=.key（控件画成激活态），2x cacheDisplay；
 // 透明标题栏的红绿灯由真窗口提供，离屏时在左上角画静态占位，便于与原型对照。
@@ -28,19 +29,21 @@ final class PermissionGuideRenderHarness: XCTestCase {
         }
     }
 
-    private let cases: [(String, Bool, Bool)] = [("0-none", false, false), ("1-partial", true, false),
-                                                 ("2-ready", true, true)]
+    /// （文件名, 辅助功能, 屏幕录音, 本次运行中出现过未就绪）
+    private let cases: [(String, Bool, Bool, Bool)] = [("0-none", false, false, true), ("1-partial", true, false, true),
+                                                       ("2-ready", true, true, true),
+                                                       ("3-already-ready", true, true, false)]
 
     func testRenderPermissionWindowCases() throws {
         guard let dir = ProcessInfo.processInfo.environment["WINDUCTOR_PERMISSION_RENDER_DIR"] else {
             throw XCTSkip("未设 WINDUCTOR_PERMISSION_RENDER_DIR：跳过离屏渲染")
         }
         let prefix = ProcessInfo.processInfo.environment["WINDUCTOR_PERMISSION_RENDER_PREFIX"] ?? "ui-perm-"
-        for (name, accessibility, screenCapture) in cases {
+        for (name, accessibility, screenCapture, hasBeenNotReady) in cases {
             let status = PermissionMonitor.Status(accessibilityGranted: accessibility,
                                                   screenCaptureGranted: screenCapture,
                                                   screenCaptureNeedsReconfirm: false)
-            let model = PermissionGuideModel(state: PermissionGuideState(status: status),
+            let model = PermissionGuideModel(state: PermissionGuideState(status: status, hasBeenNotReady: hasBeenNotReady),
                                              openSettings: { _ in }, relaunch: {})
             for (appearanceName, dark) in [("light", false), ("dark", true)] {
                 let url = URL(fileURLWithPath: dir).appendingPathComponent("\(prefix)\(name)-\(appearanceName).png")

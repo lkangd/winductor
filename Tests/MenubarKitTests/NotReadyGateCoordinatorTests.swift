@@ -21,8 +21,13 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
     private final class GuideSpy: GuideWindowPresenting {
         private(set) var showCount = 0
         private(set) var updates: [PermissionMonitor.Status] = []
+        /// 每次推进带的「本次运行中出现过未就绪」（决定齐备态是否要重启）
+        private(set) var hasBeenNotReadyFlags: [Bool] = []
         func show() { showCount += 1 }
-        func update(status: PermissionMonitor.Status) { updates.append(status) }
+        func update(status: PermissionMonitor.Status, hasBeenNotReady: Bool) {
+            updates.append(status)
+            hasBeenNotReadyFlags.append(hasBeenNotReady)
+        }
     }
 
     // MARK: 状态
@@ -96,6 +101,36 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
         XCTAssertEqual(guideSpy.updates.last?.isReady, true)
     }
 
+    /// 启动即就绪后按需打开：本次运行从未未就绪 → 窗内齐备态无需重启
+    func testShowPermissionGuideWhenLaunchedReadyNeedsNoRestart() {
+        accessibilityGranted.value = true
+        screenCaptureGranted.value = true
+        titles.value = ["邮件"]
+        coordinator.start()
+
+        coordinator.showPermissionGuide()
+
+        XCTAssertEqual(guideSpy.updates.last?.isReady, true)
+        XCTAssertEqual(guideSpy.hasBeenNotReadyFlags.last, false)
+    }
+
+    /// 运行中降级又恢复后按需打开：出现过未就绪 → 齐备态仍提示重启（§8.4 引导语「然后重启应用」）
+    func testShowPermissionGuideAfterRuntimeLapseRequiresRestart() {
+        accessibilityGranted.value = true
+        screenCaptureGranted.value = true
+        titles.value = ["邮件"]
+        coordinator.start()
+        titles.value = [nil]
+        checkNow()
+        titles.value = ["邮件"]
+        checkNow()
+
+        coordinator.showPermissionGuide()
+
+        XCTAssertEqual(guideSpy.updates.last?.isReady, true)
+        XCTAssertEqual(guideSpy.hasBeenNotReadyFlags.last, true)
+    }
+
     /// 齐备推进：引导窗未关闭，收到就绪状态（窗内换「✓ …【立即重启】」文案）
     func testGuideWindowFollowsReadiness() {
         coordinator.start()
@@ -106,6 +141,7 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(guideSpy.showCount, 1, "不重复弹窗")
         XCTAssertEqual(guideSpy.updates.last?.isReady, true)
+        XCTAssertEqual(guideSpy.hasBeenNotReadyFlags.last, true, "首启未就绪后齐备：需重启")
         XCTAssertFalse(statusSpy.notReadyBadgeVisible)
     }
 

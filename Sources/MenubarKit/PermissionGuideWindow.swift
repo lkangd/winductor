@@ -3,7 +3,7 @@ import SwiftUI
 
 // PermissionGuideWindow.swift — 首启授权窗（票 18 起；ui-refactor 票 05 按 spec §6 重写为 SwiftUI，NSHostingView 宿主）。
 // 独立窗口、浮层前置、首启硬前置；宽 580，透明标题栏。每 2s 由 PermissionMonitor 状态推进（update(status:)），
-// 逐项显示已授权/未授权，两项齐备后底部条换重启提示 +【立即重启】。
+// 逐项显示已授权/未授权，本次运行中两项齐备后底部条换重启提示 +【立即重启】；启动即就绪后按需打开则只显示齐备、无需重启。
 // 窗口不随权限就绪自动关闭——重启提示是用户需要看到的终态。
 // 排版见 PermissionGuideView，状态推导见 PermissionGuideState；本类只做宿主与观察接缝。
 
@@ -17,7 +17,7 @@ public final class PermissionGuideWindow {
         // 初始 = 两项未授权（首个 update 前的占位；协调器建窗后立即推进到真实现状）
         let initial = PermissionMonitor.Status(accessibilityGranted: false, screenCaptureGranted: false,
                                                screenCaptureNeedsReconfirm: false)
-        model = PermissionGuideModel(state: PermissionGuideState(status: initial),
+        model = PermissionGuideModel(state: PermissionGuideState(status: initial, hasBeenNotReady: true),
                                      openSettings: openSettings, relaunch: relaunch)
 
         let host = NSHostingView(rootView: PermissionGuideView(model: model))
@@ -59,9 +59,9 @@ public final class PermissionGuideWindow {
 
     // MARK: 状态推进（PermissionMonitor 每 2s 回调驱动）
 
-    /// 依据权限现状推进界面：逐项已授权/未授权，底部条等待 ⇄ 齐备重启提示（§6）。不关窗
-    public func update(status: PermissionMonitor.Status) {
-        let next = PermissionGuideState(status: status)
+    /// 依据权限现状推进界面：逐项已授权/未授权，底部条等待 ⇄ 齐备（本次运行中出现过未就绪 → 重启提示，否则无需重启；§6）。不关窗
+    public func update(status: PermissionMonitor.Status, hasBeenNotReady: Bool) {
+        let next = PermissionGuideState(status: status, hasBeenNotReady: hasBeenNotReady)
         guard next != model.state else { return }
         model.state = next
     }

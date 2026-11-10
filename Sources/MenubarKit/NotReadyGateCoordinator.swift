@@ -4,7 +4,8 @@ import AppKit
 // 职责：把 PermissionMonitor 的状态变化接到三处呈现——
 //   1. 状态项未就绪徽记（ui-refactor spec §4.2：常态图 + 镂空「!」，画进模板图）
 //   2. 菜单：运行中屏幕录制重确认降级 → 顶部 §8.4 逐字引导块（不弹窗）；恢复 → 占位骨架回归
-//   3. 引导窗：仅首启未就绪弹一次（§8.3），就绪后窗内换重启提示；运行中降级绝不弹窗（§8.4）
+//   3. 引导窗：仅首启未就绪弹一次（§8.3），就绪后窗内换重启提示；运行中降级绝不弹窗（§8.4）；
+//      通用页「授权引导…」按需打开——本次运行中从未未就绪则齐备态无需重启（授权在启动前已生效）
 // 呈现经接缝注入（StatusPresenting/GuideWindowPresenting），单测用假件驱动。
 
 /// 状态项呈现接缝（生产：StatusItemController；测试：假件——无 Aqua 会话时 NSStatusBar 崩溃）
@@ -18,7 +19,8 @@ extension StatusItemController: StatusPresenting {}
 /// 引导窗呈现接缝（生产：PermissionGuideWindow；测试：假件）
 public protocol GuideWindowPresenting: AnyObject {
     func show()
-    func update(status: PermissionMonitor.Status)
+    /// - Parameter hasBeenNotReady: 本次运行中是否出现过未就绪（决定齐备态是否提示重启）
+    func update(status: PermissionMonitor.Status, hasBeenNotReady: Bool)
 }
 
 extension PermissionGuideWindow: GuideWindowPresenting {}
@@ -32,6 +34,9 @@ public final class NotReadyGateCoordinator {
     private var guideWindow: GuideWindowPresenting?
     /// 首启弹窗决策只做一次：此后任何状态变化不再创建引导窗（§8.4 运行中降级不弹窗）
     private var hasDecidedInitialGuide = false
+    /// 本次运行中是否出现过未就绪（首启未就绪或运行中重确认降级）：授权须重启应用一次才生效（docs/signing.md §5），
+    /// 出现过则齐备后要重启；启动即就绪且从未降级 = 授权早已生效，无需重启。只置不清（重启 = 新进程）
+    private var hasBeenNotReady = false
     /// 菜单动作载体：状态行点击直达系统设置的屏幕与系统录音面板（强持有防释放）
     private let menuActionCarrier: ActionCarrier
     /// 就绪态菜单构建闭包（票 19 全量菜单注入；缺省 = 票 18 占位骨架，未就绪恒占位骨架）
@@ -76,6 +81,7 @@ public final class NotReadyGateCoordinator {
     // MARK: 状态应用（主线程；观察者定时路径已投递主线程）
 
     private func apply(_ status: PermissionMonitor.Status) {
+        if !status.isReady { hasBeenNotReady = true }
         statusItem.setShowsNotReadyBadge(!status.isReady)
         refreshMenu(status)
 
@@ -84,14 +90,14 @@ public final class NotReadyGateCoordinator {
             guard !status.isReady else { return }  // 启动时就绪：不弹（重启后授权生效不再弹）
             presentGuide(status)
         } else {
-            guideWindow?.update(status: status)  // 已有授权窗跟随推进（逐项状态；等待 ⇄ 齐备重启提示，ui-refactor §6）
+            guideWindow?.update(status: status, hasBeenNotReady: hasBeenNotReady)  // 已有授权窗跟随推进（逐项状态；等待 ⇄ 齐备重启提示，ui-refactor §6）
         }
     }
 
     /// 呈现授权窗：已有则复用（单实例），推进到给定现状后前置
     private func presentGuide(_ status: PermissionMonitor.Status) {
         let window = guideWindow ?? makeGuideWindow()
-        window.update(status: status)
+        window.update(status: status, hasBeenNotReady: hasBeenNotReady)
         window.show()
         guideWindow = window
     }
