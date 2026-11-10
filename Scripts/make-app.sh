@@ -77,7 +77,7 @@ cp "$BIN" "$APP_DIR/Contents/MacOS/$APP_NAME"
 # 品牌资源（ui-refactor spec §3，票 08）：运行时由 MenubarKit 的 BrandAssets 只从 Contents/Resources 读——
 # 菜单栏两态原图、透明底主体 AppIconSubject.png 原样拷入；
 # 应用图标是 Icon Composer 分层图标 AppIcon.icon（白底 + 透明主体图层），经 actool 编译成 Assets.car（macOS 26 起
-# 按 CFBundleIconName 取，系统按规范圆角/边距渲染，不再给非规范图标套底框缩小）+ AppIcon.icns（旧系统 CFBundleIconFile 回落）
+# 按 CFBundleIconName 取，系统按规范圆角/边距渲染）；传统消费者使用独立、完整档位的 AppIconLegacy.icns。
 BRAND_DIR="Resources/Brand"
 RES_DIR="$APP_DIR/Contents/Resources"
 mkdir -p "$RES_DIR"
@@ -94,6 +94,14 @@ for f in Assets.car AppIcon.icns; do
 done
 rm -f "$ICON_PLIST"
 
+# 不依赖 actool 的精简 icns 回落（缺 64/512/1024px）：通知中心等传统消费者可能无法取到所需档位。
+# 新文件名也避免沿用旧 AppIcon.icns 的图标服务缓存；不改 bundle id，不影响 TCC 授权。
+ICONSET="$BUILD_DIR/AppIconLegacy.iconset"
+rm -rf "$ICONSET"
+swift Scripts/legacy-app-icon.swift "$BRAND_DIR/AppIcon.icon/Assets/Subject.png" "$ICONSET"
+iconutil -c icns "$ICONSET" -o "$RES_DIR/AppIconLegacy.icns"
+rm -rf "$ICONSET"
+
 # Info.plist：CFBundleIdentifier 冻结；LSUIElement=true 即菜单栏 agent（无 Dock 图标）
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -105,7 +113,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>AppIconLegacy</string>
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>CFBundleName</key>

@@ -118,6 +118,33 @@ final class BrandAssetsTests: XCTestCase {
         XCTAssertNil(BrandAssets.appIcon(side: 36, bundle: bundle))
     }
 
+    /// 打包门禁：现代图标仍走 Composer；传统通知消费者有完整档位的独立 icns。
+    /// WINDUCTOR_APP_BUNDLE_PATH=<app> swift test --filter testPackagedAppHasCompleteLegacyIcon
+    func testPackagedAppHasCompleteLegacyIcon() throws {
+        guard let path = ProcessInfo.processInfo.environment["WINDUCTOR_APP_BUNDLE_PATH"] else {
+            throw XCTSkip("未指定待验收 app")
+        }
+        let bundle = try XCTUnwrap(Bundle(path: path))
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleIconName") as? String, "AppIcon")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleIconFile") as? String, "AppIconLegacy")
+        let file = try XCTUnwrap(bundle.url(forResource: "AppIconLegacy", withExtension: "icns"))
+        let reps = try XCTUnwrap(NSImageRep.imageReps(withContentsOf: file))
+        XCTAssertEqual(Set(reps.map(\.pixelsWide)), [16, 32, 64, 128, 256, 512, 1024])
+        for rep in reps {
+            XCTAssertEqual(rep.pixelsWide, rep.pixelsHigh)
+        }
+        let image = try XCTUnwrap(NSImage(contentsOf: file))
+        image.size = NSSize(width: 64, height: 64)
+        let bitmap = render(image, scale: 1)
+        let colorful = (0..<64).reduce(0) { count, y in
+            count + (0..<64).filter { x in
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+                return color.alphaComponent > 0.9 && color.saturationComponent > 0.25
+            }.count
+        }
+        XCTAssertGreaterThan(colorful, 200, "必须含彩色品牌主体，不能是空白或通用网格占位图")
+    }
+
     // MARK: - 辅助
 
     private func render(_ image: NSImage, scale: CGFloat) -> NSBitmapImageRep {
