@@ -11,7 +11,8 @@ import Foundation
 //     拓扑页（ui-refactor 票 04，spec §5.4）：标题区说明、「保存当前布局…」（仅当前拓扑）、预设块摘要与 Space 不足提示、
 //     `⋯` 菜单（用当前布局覆盖… / 改名… / ─ / 删除…）；随状态切换的说明与悬停文案（空态、改名称、点屏、详情展开）
 //     也在这里，视图只排版。
-//   selectedDisplayUUID / expandedPresetID —— 预设详情（display-presets 票 08）的筛选与展开接缝。
+//   selectedDisplayUUID / collapsedPresetIDs —— 预设详情（display-presets 票 08）的筛选与收起接缝；
+//     详情默认展开（ui-refactor 票 10），只记用户收起的块。
 
 /// 侧栏的一个拓扑
 public struct TopologyListEntry: Equatable, Identifiable {
@@ -101,11 +102,11 @@ public struct PresetManagerState: Equatable {
     public let selected: SelectedTopologyState?
     /// 排列图点选的屏（nil = 全部屏；display-presets 票 08 预设详情据此只显示该屏）
     public let selectedDisplayUUID: String?
-    /// 展开详情的预设（display-presets 票 08）
-    public let expandedPresetID: String?
+    /// 用户收起详情的预设（详情默认展开，ui-refactor 票 10；只含选中拓扑现存的块）
+    public let collapsedPresetIDs: Set<String>
 
     public static let empty = PresetManagerState(entries: [], selectedKey: nil, selected: nil,
-                                                 selectedDisplayUUID: nil, expandedPresetID: nil)
+                                                 selectedDisplayUUID: nil, collapsedPresetIDs: [])
 
     /// 无任何拓扑可选时拓扑页的占位说明
     public static let noTopologyText = "还没有保存过任何预设"
@@ -115,9 +116,12 @@ public struct PresetManagerState: Equatable {
         uuid == selectedDisplayUUID ? "再次点击显示全部屏幕" : "只看这块屏幕的详情"
     }
 
+    /// 预设块详情是否展开（默认展开，用户收起后为 false）
+    public func isDetailExpanded(presetID: String) -> Bool { !collapsedPresetIDs.contains(presetID) }
+
     /// 预设块「显示详情 / 收起详情」按钮标题
     public func detailToggleTitle(presetID: String) -> String {
-        presetID == expandedPresetID ? "收起详情" : "显示详情"
+        isDetailExpanded(presetID: presetID) ? "收起详情" : "显示详情"
     }
 
     public static func make(topologies: [PresetTopology],
@@ -125,7 +129,7 @@ public struct PresetManagerState: Equatable {
                             availability: LayoutCaptureAvailability,
                             selectedKey: String?,
                             selectedDisplayUUID: String? = nil,
-                            expandedPresetID: String? = nil,
+                            collapsedPresetIDs: Set<String> = [],
                             currentSpaces: [SpaceEntry]? = nil,
                             timeZone: TimeZone = .current) -> PresetManagerState {
         let currentKey = current.isMirrored || current.displays.isEmpty ? nil : current.identity.key
@@ -186,9 +190,10 @@ public struct PresetManagerState: Equatable {
         let displayUUID = selectedDisplayUUID.flatMap { uuid in
             selected?.displays.contains { $0.uuid == uuid } == true ? uuid : nil
         }
-        let expanded = expandedPresetID.flatMap { id in selected?.rows.contains { $0.id == id } == true ? id : nil }
+        let rowIDs = Set(selected?.rows.map(\.id) ?? [])
         return PresetManagerState(entries: entries, selectedKey: resolvedKey, selected: selected,
-                                  selectedDisplayUUID: displayUUID, expandedPresetID: expanded)
+                                  selectedDisplayUUID: displayUUID,
+                                  collapsedPresetIDs: collapsedPresetIDs.intersection(rowIDs))
     }
 
     /// 默认标题：屏名按排列顺序，同名合并「×N」（首次出现的位置）

@@ -30,8 +30,9 @@ public final class PresetManagerModel: ObservableObject {
     @Published public private(set) var state: PresetManagerState = .empty
     /// 选中拓扑的存储记录（含预设快照；当前拓扑尚无预设时为 nil）。display-presets 票 08 预设详情据此展开「屏幕 → Space → 应用」
     public private(set) var selectedTopologyRecord: PresetTopology?
-    /// 展开预设块的详情（display-presets 票 08：屏 → Space → 应用，随点屏筛选）。未展开为 nil
-    @Published public private(set) var expandedDetail: PresetDetail?
+    /// 各展开预设块的详情（display-presets 票 08：屏 → Space → 应用，随点屏筛选；键 = 预设 ID）。
+    /// 详情默认展开（ui-refactor 票 10），收起的块不推导
+    @Published public private(set) var expandedDetails: [String: PresetDetail] = [:]
 
     private let store: PresetStore
     private let topologyProvider: () -> ObservedTopology
@@ -46,7 +47,8 @@ public final class PresetManagerModel: ObservableObject {
     /// 用户手动选中的拓扑（nil = 跟随当前拓扑）
     private var manualSelectedKey: String?
     private var selectedDisplayUUID: String?
-    private var expandedPresetID: String?
+    /// 用户收起详情的预设（切换拓扑清空 = 重新全部展开）
+    private var collapsedPresetIDs: Set<String> = []
 
     /// - Parameters:
     ///   - topologyProvider: 当前观测拓扑（生产 = ObservedTopology.current）
@@ -88,7 +90,7 @@ public final class PresetManagerModel: ObservableObject {
             PresetManagerState.make(topologies: topologies, current: current, availability: availability,
                                     selectedKey: self.manualSelectedKey,
                                     selectedDisplayUUID: self.selectedDisplayUUID,
-                                    expandedPresetID: self.expandedPresetID,
+                                    collapsedPresetIDs: self.collapsedPresetIDs,
                                     currentSpaces: spaces, timeZone: self.timeZone)
         }
         var fresh = make(nil)
@@ -97,25 +99,25 @@ public final class PresetManagerModel: ObservableObject {
             fresh = make(spaces)
         }
         selectedDisplayUUID = fresh.selectedDisplayUUID
-        expandedPresetID = fresh.expandedPresetID
+        collapsedPresetIDs = fresh.collapsedPresetIDs
         selectedTopologyRecord = topologies.first { $0.key == fresh.selectedKey }
-        expandedDetail = detail(for: fresh)
+        expandedDetails = details(for: fresh)
         state = fresh
     }
 
-    /// 侧栏选中拓扑（清除屏筛选与展开）
+    /// 侧栏选中拓扑（清除屏筛选与收起，详情重新全部展开）
     public func selectTopology(_ key: String) {
         manualSelectedKey = key
         selectedDisplayUUID = nil
-        expandedPresetID = nil
+        collapsedPresetIDs = []
         reload()
     }
 
-    /// 回到跟随当前拓扑（主窗口经菜单「管理预设…」打开时；清除屏筛选与展开，ui-refactor 票 03）
+    /// 回到跟随当前拓扑（主窗口经菜单「管理预设…」打开时；清除屏筛选与收起，ui-refactor 票 03）
     public func selectCurrentTopology() {
         manualSelectedKey = nil
         selectedDisplayUUID = nil
-        expandedPresetID = nil
+        collapsedPresetIDs = []
         reload()
     }
 
@@ -125,11 +127,14 @@ public final class PresetManagerModel: ObservableObject {
         reload()
     }
 
-    /// 展开/收起预设详情（display-presets 票 08）
+    /// 收起/展开预设详情（display-presets 票 08；默认展开，ui-refactor 票 10）
     public func toggleExpanded(presetID: String) {
-        expandedPresetID = expandedPresetID == presetID ? nil : presetID
+        if collapsedPresetIDs.remove(presetID) == nil { collapsedPresetIDs.insert(presetID) }
         reload()
     }
+
+    /// 某预设块展开时的详情（收起或不存在为 nil）
+    public func detail(presetID: String) -> PresetDetail? { expandedDetails[presetID] }
 
     // MARK: 预设块操作
 
@@ -202,12 +207,15 @@ public final class PresetManagerModel: ObservableObject {
 
     // MARK: 内部
 
-    /// 展开预设块的详情推导（纯计算在 PresetDetail）
-    private func detail(for state: PresetManagerState) -> PresetDetail? {
-        guard let selected = state.selected, let id = state.expandedPresetID,
-              let preset = selectedTopologyRecord?.presets.first(where: { $0.id == id }) else { return nil }
-        return PresetDetail.make(snapshot: preset.snapshot, displays: selected.displays,
-                                 displayFilter: state.selectedDisplayUUID, appName: appName)
+    /// 各展开预设块的详情推导（纯计算在 PresetDetail）
+    private func details(for state: PresetManagerState) -> [String: PresetDetail] {
+        guard let selected = state.selected, let presets = selectedTopologyRecord?.presets else { return [:] }
+        var details: [String: PresetDetail] = [:]
+        for preset in presets where state.isDetailExpanded(presetID: preset.id) {
+            details[preset.id] = PresetDetail.make(snapshot: preset.snapshot, displays: selected.displays,
+                                                   displayFilter: state.selectedDisplayUUID, appName: appName)
+        }
+        return details
     }
 
     private func selectedRow(_ presetID: String) -> (String, PresetRowState)? {

@@ -4,7 +4,7 @@ import SwiftUI
 
 // TopologyPage.swift — 主窗口的拓扑页（ui-refactor 票 04，spec §5.4；数值取原型 Prototypes/UIRefactor MainWindow.swift /
 // Style.swift 的 TopologyPage、ArrangementDiagram、ScreenTile、PresetBlock、MoreButton）。
-// 薄视图：只读 PresetManagerModel.state / expandedDetail、只调 model 方法；说明文案、可用性、摘要、`⋯` 菜单项见
+// 薄视图：只读 PresetManagerModel.state / expandedDetails、只调 model 方法；说明文案、可用性、摘要、`⋯` 菜单项见
 // PresetManagerState，排列图几何见 DisplayArrangementLayout，详情卡片见 PresetDetailView。自上而下：
 //   标题区：拓扑名（别名优先，22pt bold）+ 笔形改名按钮（别名对话框）；说明（当前 / 未连接）
 //   排列图：高 150 的极淡容器；屏幕块 = 控件底色面板 + 1pt 次要描边 + 顶部 6pt 菜单栏条（内置屏居中刘海），不用渐变；
@@ -144,7 +144,7 @@ private struct PresetBlock: View {
     @ObservedObject var model: PresetManagerModel
     let row: PresetRowState
 
-    private var isExpanded: Bool { model.state.expandedPresetID == row.id }
+    private var isExpanded: Bool { model.state.isDetailExpanded(presetID: row.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -186,7 +186,7 @@ private struct PresetBlock: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if isExpanded, let detail = model.expandedDetail {
+            if isExpanded, let detail = model.detail(presetID: row.id) {
                 PresetDetailView(detail: detail).padding(.top, 4)
             }
         }

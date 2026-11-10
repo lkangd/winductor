@@ -2,7 +2,7 @@ import Core
 import SwiftUI
 
 // PresetDetailView.swift — 预设块展开详情（display-presets 票 08；ui-refactor 票 04 按 spec §5.4 改为等高卡片，数值取原型
-// Prototypes/UIRefactor MainWindow.swift PresetBlock.detail）。薄视图：只渲染 PresetManagerModel.expandedDetail
+// Prototypes/UIRefactor MainWindow.swift PresetBlock.detail）。薄视图：只渲染 PresetManagerModel.detail(presetID:)
 // （推导与行内短文案见 Core/PresetDetail：屏 → Space → 应用，随排列图点屏筛选）。
 //   每块屏一张卡片横排、等高；卡片头 = 屏图标（内置屏笔记本、其余显示器）+ 屏名；
 //   内部按 Space 分组（「桌面 N」/「全屏」小标题），每个应用一行：真实应用图标 16pt + 名称 +「×N」（N>1）+「N 个最小化」；

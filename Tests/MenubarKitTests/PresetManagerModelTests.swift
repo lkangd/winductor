@@ -228,18 +228,44 @@ final class PresetManagerModelTests: XCTestCase {
         XCTAssertNil(model.state.selectedDisplayUUID)
     }
 
-    /// display-presets 票 08 接缝：选中拓扑的存储记录（含快照）随选择切换；展开状态随行存在
-    func testSelectedRecordAndExpansionFollowSelection() throws {
+    /// display-presets 票 08 接缝：选中拓扑的存储记录（含快照）随选择切换
+    func testSelectedRecordFollowsSelection() throws {
         let work = try save("工作", on: office)
         let away = try save("出差", on: laptop)
         let model = makeModel()
         XCTAssertEqual(model.selectedTopologyRecord?.presets.map(\.id), [work.id])
 
-        model.toggleExpanded(presetID: work.id)
-        XCTAssertEqual(model.state.expandedPresetID, work.id)
         model.selectTopology(laptop.identity.key)
         XCTAssertEqual(model.selectedTopologyRecord?.presets.map(\.id), [away.id])
-        XCTAssertNil(model.state.expandedPresetID, "切换拓扑收起详情")
+    }
+
+    /// ui-refactor 票 10：预设详情默认展开（不用点「显示详情」），可逐块收起、再展开；切换拓扑 / 回到当前拓扑后重新全部展开
+    func testDetailsExpandedByDefaultAndCollapsible() throws {
+        let work = try save("工作", on: office)
+        let demo = try save("演示", on: office)
+        let away = try save("出差", on: laptop)
+        let model = makeModel()
+
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: work.id))
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: demo.id))
+        XCTAssertNotNil(model.detail(presetID: work.id), "展开即推导详情")
+        XCTAssertNotNil(model.detail(presetID: demo.id))
+
+        model.toggleExpanded(presetID: work.id)
+        XCTAssertFalse(model.state.isDetailExpanded(presetID: work.id), "收起")
+        XCTAssertNil(model.detail(presetID: work.id), "收起不推导")
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: demo.id), "只收起点的那块")
+        model.reload()
+        XCTAssertFalse(model.state.isDetailExpanded(presetID: work.id), "重读保留收起")
+
+        model.toggleExpanded(presetID: work.id)
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: work.id), "再展开")
+
+        model.toggleExpanded(presetID: work.id)
+        model.selectTopology(laptop.identity.key)
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: away.id))
+        model.selectCurrentTopology()
+        XCTAssertTrue(model.state.isDetailExpanded(presetID: work.id), "切换拓扑后重新全部展开")
     }
 
     /// display-presets 票 08：展开行的预设详情（屏 → Space → 应用）随点屏筛选；Space 不足提示仅当前拓扑、按实时 Space 对比
@@ -260,23 +286,19 @@ final class PresetManagerModelTests: XCTestCase {
         liveSpaces = [SpaceEntry(spaceID: 1, displayUUID: "BUILTIN", index: 1, kind: SpaceKind.user),
                       SpaceEntry(spaceID: 2, displayUUID: "LG-1", index: 1, kind: SpaceKind.user)]
         let model = makeModel()
-        XCTAssertNil(model.expandedDetail, "未展开不推导")
-
-        model.toggleExpanded(presetID: work.id)
-        XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置", "LG HDR 4K"])
-        XCTAssertEqual(model.expandedDetail?.displays.last?.spaces.last?.apps.map(\.text),
+        XCTAssertEqual(model.detail(presetID: work.id)?.displays.map(\.name), ["内置", "LG HDR 4K"])
+        XCTAssertEqual(model.detail(presetID: work.id)?.displays.last?.spaces.last?.apps.map(\.text),
                        ["终端（1 个窗口，其中 1 个最小化）"])
         XCTAssertEqual(model.state.selected?.rows.first?.spaceShortageTexts,
                        ["屏幕「LG HDR 4K」当前 Space 比预设少 1 个，多出的窗口将合并"])
 
         model.selectDisplay("BUILTIN")
-        XCTAssertEqual(model.expandedDetail?.displays.map(\.name), ["内置"])
+        XCTAssertEqual(model.detail(presetID: work.id)?.displays.map(\.name), ["内置"])
 
         current = laptop
         model.selectDisplay("BUILTIN")
         model.selectTopology(office.identity.key)
-        model.toggleExpanded(presetID: work.id)
-        XCTAssertEqual(model.expandedDetail?.displays.count, 2)
+        XCTAssertEqual(model.detail(presetID: work.id)?.displays.count, 2)
         XCTAssertEqual(model.state.selected?.rows.first?.spaceShortageTexts, [], "非当前拓扑不提示")
     }
 

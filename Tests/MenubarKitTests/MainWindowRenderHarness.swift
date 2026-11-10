@@ -10,12 +10,18 @@ import XCTest
 // （文件名前缀取 WINDUCTOR_MAINWINDOW_RENDER_PREFIX，默认 ui-main-）；
 // 拓扑页（ui-refactor 票 04）：当前拓扑展开详情 / 非当前拓扑 / 点屏筛选 × 浅/深色（另附当前拓扑失焦一张），
 // 数据仿原型 MockData（前缀取 WINDUCTOR_TOPOLOGY_RENDER_PREFIX，默认 ui-topo-）。
-// 离屏做法同原型 Render.swift：可成为 key 的离屏无边框窗口 + controlActiveState 注入，2x cacheDisplay；红绿灯画占位。
+// 固定 header（ui-refactor 票 10）：拓扑页 / 通用 / 关于 × 浅/深色，另附拓扑页上滚到 header 之下一张（看模糊），
+// 文件名 ui-main-header-*.png。
+// 离屏做法（票 10 改为真窗口形态，同授权窗 harness）：与真窗口同 styleMask / 配置（MainWindowController.install，含红绿灯定位）
+// 的离屏标题栏窗口（不被约束回屏幕内），内容视图注入 controlActiveState；取图用窗口服务器合成结果（本进程自己的窗口，
+// 不需录屏权限）——材质的背景模糊、真红绿灯与圆角都与真窗口一致（cacheDisplay 画不出背景模糊，仅作取不到时的回退）。
 // 例：WINDUCTOR_MAINWINDOW_RENDER_DIR=/tmp swift test --filter MainWindowRenderHarness
 final class MainWindowRenderHarness: XCTestCase {
     private final class KeyWindow: NSWindow {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { true }
+        /// 留在屏幕外（标题栏窗口默认会被约束回可见屏幕，测试期会闪到用户屏幕上）
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
     }
 
     private final class NoDialogs: PresetManagerDialogs, PresetOverwriteConfirming {
@@ -72,16 +78,38 @@ final class MainWindowRenderHarness: XCTestCase {
 
         // 当前拓扑全部收起（可见「演示」的 Space 不足提示）；再展开「工作」详情（原型 main-current.png 同态）
         model.selectCurrentTopology()
+        let presetIDs = model.presets.state.selected?.rows.map(\.id) ?? []
+        presetIDs.forEach { model.presets.toggleExpanded(presetID: $0) }
         try render("current-collapsed", darkVariants: [false])
-        model.presets.toggleExpanded(presetID: fixture.workID)
+        presetIDs.forEach { model.presets.toggleExpanded(presetID: $0) }  // 详情默认展开（票 10）
         try render("current")
         try render("current", inactive: true, darkVariants: [false])
         // 点屏筛选：只看 DELL #1
         model.presets.selectDisplay("DELL-1")
         try render("filter")
-        // 非当前拓扑「家里」（原型 main-other.png 同态，全部收起）
+        // 非当前拓扑「家里」（详情默认展开）
         model.select(.topology(fixture.homeKey))
         try render("other")
+    }
+
+    /// 固定 header（票 10）：三页 × 浅/深色 + 拓扑页上滚到 header 之下（排列图从 header 下穿过）
+    func testRenderHeaderPages() throws {
+        guard let dir = ProcessInfo.processInfo.environment["WINDUCTOR_MAINWINDOW_RENDER_DIR"] else {
+            throw XCTSkip("未设 WINDUCTOR_MAINWINDOW_RENDER_DIR：跳过离屏渲染")
+        }
+        let fixture = try makeTopologyFixture()
+        let model = fixture.model
+        let output = URL(fileURLWithPath: dir, isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let pages: [(String, MainWindowPage?, CGFloat)] = [("topology", nil, 0), ("general", .general, 0),
+                                                           ("about", .about, 0), ("topology-scrolled", nil, 64)]
+        for (name, page, scroll) in pages {
+            if let page { model.select(page) } else { model.selectCurrentTopology() }
+            for dark in [false, true] {
+                try png(MainWindowView(model: model), dark: dark, inactive: false, scrollBy: scroll)
+                    .write(to: output.appendingPathComponent("ui-main-header-\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
     }
 
     // MARK: 数据：当前「内置 + DELL ×2」2 个预设 / 其他「家里」3 个 / 「内置视网膜显示器」1 个（原型同款）
@@ -242,23 +270,32 @@ final class MainWindowRenderHarness: XCTestCase {
 
     // MARK: 渲染
 
-    private func png<V: View>(_ view: V, dark: Bool, inactive: Bool) throws -> Data {
+    /// - Parameter scrollBy: 页面滚动视图下滚的点数（0 = 顶部）
+    private func png<V: View>(_ view: V, dark: Bool, inactive: Bool, scrollBy: CGFloat = 0) throws -> Data {
         let size = MainWindowController.defaultSize
         let appearance = try XCTUnwrap(NSAppearance(named: dark ? .darkAqua : .aqua))
-        let host = NSHostingView(rootView: view
-            .environment(\.controlActiveState, inactive ? .inactive : .key)
-            .environment(\.drawsTrafficLightPlaceholder, true))
-        host.appearance = appearance
-        host.frame = NSRect(origin: .zero, size: size)
+        let host = NSHostingView(rootView: view.environment(\.controlActiveState, inactive ? .inactive : .key))
         let window = KeyWindow(contentRect: NSRect(x: -8000, y: -8000, width: size.width, height: size.height),
-                               styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
+                               styleMask: MainWindowController.styleMask, backing: .buffered, defer: false)
         window.appearance = appearance
-        window.contentView = host
+        let trafficLights = MainWindowController.install(host, in: window)
+        window.setFrameOrigin(NSPoint(x: -8000, y: -8000))
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-        host.layoutSubtreeIfNeeded()
+        if scrollBy > 0, let scrollView = Self.scrollViews(in: host).max(by: { $0.frame.width < $1.frame.width }) {
+            let clip = scrollView.contentView
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + scrollBy))
+            scrollView.reflectScrolledClipView(clip)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
+        defer { window.orderOut(nil) }
+        withExtendedLifetime(trafficLights) {}
+        if let image = Self.composited(window) {
+            return try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        }
+        let frameView = try XCTUnwrap(host.superview)  // 回退：整窗 frame view（无背景模糊）
+        frameView.layoutSubtreeIfNeeded()
 
         let scale: CGFloat = 2
         let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
@@ -266,8 +303,23 @@ final class MainWindowRenderHarness: XCTestCase {
                                                  samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         rep.size = size
-        host.cacheDisplay(in: host.bounds, to: rep)
-        window.orderOut(nil)
+        frameView.cacheDisplay(in: frameView.bounds, to: rep)
         return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+    }
+
+    /// 窗口服务器合成的窗口图（2x、不含阴影）。CGWindowListCreateImage 在 macOS 15 SDK 标为不可用（建议 ScreenCaptureKit，
+    /// 但那要录屏权限）；取本进程自己的窗口仍可用且无需权限，故经 dlsym 调用。取不到返回 nil
+    private static func composited(_ window: NSWindow) -> CGImage? {
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return nil }
+        let createImage = unsafeBitCast(symbol, to: CreateImage.self)
+        let includingWindow: UInt32 = 1 << 3  // kCGWindowListOptionIncludingWindow
+        let options: UInt32 = 1 << 0 | 1 << 3  // kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution
+        return createImage(.null, includingWindow, UInt32(window.windowNumber), options)?.takeRetainedValue()
+    }
+
+    /// 视图树里的滚动视图（最宽的是内容区页面，侧栏分组的较窄）
+    private static func scrollViews(in view: NSView) -> [NSScrollView] {
+        (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
     }
 }
