@@ -130,6 +130,12 @@ final class MainWindowStateTests: XCTestCase {
         XCTAssertEqual(reconfirm.permissionCaption, GeneralPageState.notReadyCaption)
     }
 
+    /// 状态点悬停说明：已授权「已授权」（与授权窗逐项同词）；缺项「待授权」（GLOSSARY「未就绪」_Avoid_ 未授权）
+    func testPermissionDotHelp() {
+        XCTAssertEqual(GeneralPageState.permissionDotHelp(granted: true), "已授权")
+        XCTAssertEqual(GeneralPageState.permissionDotHelp(granted: false), "待授权")
+    }
+
     /// 数据说明：两目录同在一个父目录 → 合并说父目录（家目录缩写为 ~）
     func testGeneralPageDataCaptionAbbreviatesHome() {
         let state = GeneralPageState.make(status: status(ax: true, sc: true), loginLaunchChecked: false, canUndo: false,

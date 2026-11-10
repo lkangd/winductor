@@ -2,7 +2,7 @@ import AppKit
 import Core
 import SwiftUI
 
-// MainWindowController.swift — 统一主窗口的宿主（ui-refactor 票 03，spec §5.1；取代 display-presets 票 07 的预设管理窗口宿主）。
+// MainWindowController.swift — 统一主窗口的宿主（ui-refactor 票 03，spec §5.1；取代 display-presets §6.4 的旧窗口宿主）。
 // 单实例：首次 show() 建窗，之后再打开只前置（关闭 = 隐藏，不释放）。
 // Swish 式外观：.fullSizeContentView + 透明标题栏 + 隐藏标题，红绿灯落在侧栏顶部；可缩放，最小 720×520。
 // 实时刷新（沿用旧窗口时机）：打开/激活时（打开只重读一次，见 skipsNextBecomeKeyReload）、屏幕参数变化时（立即一次 + 2s 后再一次，等拓扑稳定）、外部事件（恢复/保存/撤销完成，

@@ -108,6 +108,11 @@ public struct GeneralPageState: Equatable {
     static let readyCaption = "两项权限已就绪。Winductor 只在本机读取和移动窗口，不上传任何数据。"
     static let notReadyCaption = "缺少权限时无法保存或恢复布局。打开授权引导按步骤开启。"
 
+    /// 状态点悬停说明：「已授权」与授权窗逐项同词；缺项称「待授权」（GLOSSARY「未就绪」条 _Avoid_ 未授权）
+    static func permissionDotHelp(granted: Bool) -> String {
+        granted ? "已授权" : "待授权"
+    }
+
     public static func make(status: PermissionMonitor.Status, loginLaunchChecked: Bool, canUndo: Bool,
                             presetsFolder: URL, logsFolder: URL) -> GeneralPageState {
         GeneralPageState(accessibilityGranted: status.accessibilityGranted,
