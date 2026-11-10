@@ -2,9 +2,9 @@ import AppKit
 import XCTest
 @testable import MenubarKit
 
-// UI 重构票 01：品牌资源入口（ui-refactor spec §3）。
-// 接缝：BrandAssets 的公开加载入口——菜单栏两态原图、应用图标（原图 / 按边长裁连续圆角）。
-// 独立事实来源：素材本体（菜单栏两态 128px RGBA；appiconset 10 张 16–1024px），测试自带期望数值。
+// UI 重构票 01：品牌资源入口（ui-refactor spec §3）；票 08：应用图标改由透明底主体派生。
+// 接缝：BrandAssets 的公开加载入口——菜单栏两态原图、透明底主体、界面用白底圆角图标。
+// 独立事实来源：素材本体（菜单栏两态 128px RGBA；AppIconSubject.png 841×696 RGBA，已裁到 alpha 外接框），测试自带期望数值。
 // 资源位置两路：swift test / swift run（非 .app）读仓库 Resources/Brand；.app 内只读 Contents/Resources，
 // 不回落源码树（打包漏拷须暴露为加载失败）——用临时伪 .app 覆盖后一路。
 final class BrandAssetsTests: XCTestCase {
@@ -30,13 +30,41 @@ final class BrandAssetsTests: XCTestCase {
 
     // MARK: 应用图标
 
-    /// 原图：多分辨率（16–1024 px 共 10 张），逻辑尺寸取最大点数 512pt
-    func testAppIconSourceHasAllResolutions() throws {
-        let image = try XCTUnwrap(BrandAssets.appIconSource())
-        let pixelWidths = Set(image.representations.map(\.pixelsWide))
-        XCTAssertEqual(pixelWidths, [16, 32, 64, 128, 256, 512, 1024])
-        XCTAssertEqual(image.representations.count, 10)
-        XCTAssertEqual(image.size, NSSize(width: 512, height: 512))
+    /// 透明底主体：841×696 带 alpha，逻辑尺寸 = 像素尺寸；外接框外的白底已去除（四角透明），
+    /// 主体内部的白色元素保留不透明（领结、窗口圆点、脸）
+    func testAppIconSubjectIsTransparentWithInteriorWhitesKept() throws {
+        let image = try XCTUnwrap(BrandAssets.appIconSubject())
+        XCTAssertEqual(image.size, NSSize(width: 841, height: 696))
+        let rep = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
+        XCTAssertTrue(rep.hasAlpha)
+        let last = (x: rep.pixelsWide - 1, y: rep.pixelsHigh - 1)
+        for (x, y) in [(0, 0), (last.x, 0), (0, last.y), (last.x, last.y), (590, 40)] {
+            XCTAssertEqual(alpha(rep, x, y), 0, accuracy: 0.01, "(\(x),\(y)) 应是去掉的白底")
+        }
+        for (x, y, what) in [(410, 600, "领结"), (65, 305, "绿窗圆点"), (400, 500, "脸")] {
+            let color = try XCTUnwrap(rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+            XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.01, "\(what)应不透明")
+            XCTAssertGreaterThan(color.brightnessComponent, 0.9, "\(what)应保留白色")
+        }
+    }
+
+    /// 已裁到 alpha 外接框：四条边上都有不透明度 > 0 的像素（没有多余透明留白）
+    func testAppIconSubjectIsTrimmedToAlphaBounds() throws {
+        let rep = try XCTUnwrap(BrandAssets.appIconSubject()?.representations.first as? NSBitmapImageRep)
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        let edges: [(String, [(Int, Int)])] = [
+            ("上", (0 ..< w).map { ($0, 0) }), ("下", (0 ..< w).map { ($0, h - 1) }),
+            ("左", (0 ..< h).map { (0, $0) }), ("右", (0 ..< h).map { (w - 1, $0) }),
+        ]
+        for (name, points) in edges {
+            XCTAssertTrue(points.contains { alpha(rep, $0.0, $0.1) > 0 }, "\(name)边全透明 = 未裁切")
+        }
+    }
+
+    /// 同一资源目录只解码一次（缓存）
+    func testAppIconSubjectIsCached() throws {
+        let first = try XCTUnwrap(BrandAssets.appIconSubject())
+        XCTAssertTrue(first === BrandAssets.appIconSubject())
     }
 
     /// 按边长取图：关于页 36pt、授权窗 64pt（spec §3）——尺寸正好等于请求边长
@@ -47,7 +75,7 @@ final class BrandAssetsTests: XCTestCase {
         }
     }
 
-    /// 裁圆角（半径 = 边长 × 0.225）、不描边：四角透明；中心与四边中点不透明且是原图白底（无深色描边、无内缩）
+    /// 裁圆角（半径 = 边长 × 0.225）、不描边：四角透明；中心与四边中点不透明且是白底（无深色描边、无内缩）
     func testAppIconIsClippedToRoundedCornersWithoutStroke() throws {
         let image = try XCTUnwrap(BrandAssets.appIcon(side: 36))
         let rep = render(image, scale: 2)
@@ -67,7 +95,7 @@ final class BrandAssetsTests: XCTestCase {
 
     // MARK: .app 内的资源位置
 
-    /// .app 内：从 Contents/Resources 读两态 PNG 与 AppIcon.icns（make-app.sh 的产物布局）
+    /// .app 内：从 Contents/Resources 读两态 PNG 与 AppIconSubject.png（make-app.sh 的产物布局）
     func testInsideAppBundleLoadsFromContentsResources() throws {
         let app = try makeFakeApp(populated: true)
         let bundle = try XCTUnwrap(Bundle(url: app))
@@ -75,8 +103,8 @@ final class BrandAssetsTests: XCTestCase {
             let rep = try XCTUnwrap(BrandAssets.menuBarSource(art, bundle: bundle), "\(art)")
             XCTAssertEqual(rep.pixelsWide, 128)
         }
-        let source = try XCTUnwrap(BrandAssets.appIconSource(bundle: bundle))
-        XCTAssertEqual(source.representations.map(\.pixelsWide).max(), 1024)
+        let subject = try XCTUnwrap(BrandAssets.appIconSubject(bundle: bundle))
+        XCTAssertEqual(subject.size, NSSize(width: 841, height: 696))
         let icon = try XCTUnwrap(BrandAssets.appIcon(side: 64, bundle: bundle))
         XCTAssertEqual(icon.size, NSSize(width: 64, height: 64))
     }
@@ -86,7 +114,7 @@ final class BrandAssetsTests: XCTestCase {
         let app = try makeFakeApp(populated: false)
         let bundle = try XCTUnwrap(Bundle(url: app))
         XCTAssertNil(BrandAssets.menuBarSource(.idle, bundle: bundle))
-        XCTAssertNil(BrandAssets.appIconSource(bundle: bundle))
+        XCTAssertNil(BrandAssets.appIconSubject(bundle: bundle))
         XCTAssertNil(BrandAssets.appIcon(side: 36, bundle: bundle))
     }
 
@@ -109,7 +137,7 @@ final class BrandAssetsTests: XCTestCase {
         rep.colorAt(x: x, y: y)?.alphaComponent ?? -1
     }
 
-    /// 临时伪 .app：populated 时按 make-app.sh 布局放两态 PNG 与 iconutil 生成的 AppIcon.icns
+    /// 临时伪 .app：populated 时按 make-app.sh 布局放两态 PNG 与透明底主体
     private func makeFakeApp(populated: Bool) throws -> URL {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("BrandAssetsTests-\(UUID().uuidString)")
@@ -126,18 +154,8 @@ final class BrandAssetsTests: XCTestCase {
             let name = BrandAssets.menuBarFileName(art)
             try fm.copyItem(at: source.appendingPathComponent(name), to: resources.appendingPathComponent(name))
         }
-        let iconset = root.appendingPathComponent("AppIcon.iconset")
-        try fm.createDirectory(at: iconset, withIntermediateDirectories: true)
-        let appiconset = source.appendingPathComponent("AppIcon.appiconset")
-        for file in try fm.contentsOfDirectory(atPath: appiconset.path) where file.hasSuffix(".png") {
-            try fm.copyItem(at: appiconset.appendingPathComponent(file), to: iconset.appendingPathComponent(file))
-        }
-        let iconutil = Process()
-        iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-        iconutil.arguments = ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("AppIcon.icns").path]
-        try iconutil.run()
-        iconutil.waitUntilExit()
-        XCTAssertEqual(iconutil.terminationStatus, 0, "iconutil 失败")
+        let subject = BrandAssets.appIconSubjectFileName
+        try fm.copyItem(at: source.appendingPathComponent(subject), to: resources.appendingPathComponent(subject))
         return app
     }
 }

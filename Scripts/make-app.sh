@@ -74,18 +74,25 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 cp "$BIN" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
-# 品牌资源（ui-refactor spec §3）：运行时由 MenubarKit 的 BrandAssets 只从 Contents/Resources 读——
-# 菜单栏两态原图原样拷入；应用图标由 appiconset 经 iconutil 生成 AppIcon.icns（Info.plist 的 CFBundleIconFile 指向它）
+# 品牌资源（ui-refactor spec §3，票 08）：运行时由 MenubarKit 的 BrandAssets 只从 Contents/Resources 读——
+# 菜单栏两态原图、透明底主体 AppIconSubject.png 原样拷入；
+# 应用图标是 Icon Composer 分层图标 AppIcon.icon（白底 + 透明主体图层），经 actool 编译成 Assets.car（macOS 26 起
+# 按 CFBundleIconName 取，系统按规范圆角/边距渲染，不再给非规范图标套底框缩小）+ AppIcon.icns（旧系统 CFBundleIconFile 回落）
 BRAND_DIR="Resources/Brand"
 RES_DIR="$APP_DIR/Contents/Resources"
-ICONSET="$BUILD_DIR/AppIcon.iconset"
 mkdir -p "$RES_DIR"
-cp "$BRAND_DIR"/MenuBar*.png "$RES_DIR/"
-rm -rf "$ICONSET"
-mkdir -p "$ICONSET"
-cp "$BRAND_DIR"/AppIcon.appiconset/icon_*.png "$ICONSET/" # iconutil 只认 .iconset 目录 + 规范文件名，不收 Contents.json
-iconutil -c icns "$ICONSET" -o "$RES_DIR/AppIcon.icns"
-rm -rf "$ICONSET"
+cp "$BRAND_DIR"/MenuBar*.png "$BRAND_DIR/AppIconSubject.png" "$RES_DIR/"
+if ! ACTOOL="$(xcrun --find actool 2>/dev/null)"; then
+    echo "错误：找不到 actool（随 Xcode 提供，Command Line Tools 不含）。请安装 Xcode 并 sudo xcode-select -s /Applications/Xcode.app" >&2
+    exit 1
+fi
+ICON_PLIST="$BUILD_DIR/AppIcon.partial.plist"
+"$ACTOOL" "$BRAND_DIR/AppIcon.icon" --compile "$RES_DIR" --platform macosx --minimum-deployment-target 15.0 \
+    --app-icon AppIcon --output-partial-info-plist "$ICON_PLIST" --errors --warnings --output-format human-readable-text
+for f in Assets.car AppIcon.icns; do
+    [ -f "$RES_DIR/$f" ] || { echo "错误：actool 未产出 $f（见上方输出）" >&2; exit 1; }
+done
+rm -f "$ICON_PLIST"
 
 # Info.plist：CFBundleIdentifier 冻结；LSUIElement=true 即菜单栏 agent（无 Dock 图标）
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -98,6 +105,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>CFBundleName</key>
     <string>$DISPLAY_NAME</string>
@@ -128,6 +137,10 @@ MSG
     exit 1
 fi
 codesign --verify --strict --verbose=1 "$APP_DIR"
+
+# 向 LaunchServices 登记本次产物（刷新图标/Info.plist 记录）：通知中心、访达按 bundle id 取图标，
+# 旧登记（如图标接入前的构建）不刷新时通知里的应用图标会是空白
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" || true
 
 echo "==> 完成：$APP_DIR"
 echo "    启动：open $APP_DIR （应成为无 Dock 图标的菜单栏 agent）"
