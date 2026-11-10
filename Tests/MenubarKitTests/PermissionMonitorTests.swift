@@ -39,6 +39,17 @@ final class PermissionMonitorTests: XCTestCase {
         XCTAssertEqual(status.missing, [.accessibility])
     }
 
+    /// 屏幕录制「实际已授权」= 预检通过且无重确认信号（§8.4）；通用页状态点与授权窗逐项同用这一口径
+    func testScreenCaptureEffectivelyGrantedExcludesReconfirm() {
+        func status(_ granted: Bool, reconfirm: Bool) -> PermissionMonitor.Status {
+            PermissionMonitor.Status(accessibilityGranted: true, screenCaptureGranted: granted,
+                                     screenCaptureNeedsReconfirm: reconfirm)
+        }
+        XCTAssertTrue(status(true, reconfirm: false).screenCaptureEffectivelyGranted)
+        XCTAssertFalse(status(true, reconfirm: true).screenCaptureEffectivelyGranted)
+        XCTAssertFalse(status(false, reconfirm: false).screenCaptureEffectivelyGranted)
+    }
+
     /// 只缺屏幕录制：缺失列表只含屏幕录制
     func testScreenCaptureMissingAlone() {
         accessibilityGranted = true

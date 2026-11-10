@@ -58,16 +58,15 @@ public struct PermissionGuideState: Equatable {
     public let footer: Footer
 
     public init(status: PermissionMonitor.Status) {
-        // 屏幕录制需重新确认（§8.4）时预检虽通过，仍按未授权呈现——与 Status.missing 同口径
-        let missing = Set(status.missing)
+        // 屏幕录制需重新确认（§8.4）时预检虽通过，仍按未授权呈现（Status.screenCaptureEffectivelyGranted）
         rows = PermissionMonitor.Kind.allCases.map { kind in
             switch kind {
             case .accessibility:
                 Row(kind: kind, name: "辅助功能", detail: "读取和设置窗口的位置、大小，以及最小化与全屏。",
-                    symbolName: "accessibility", isGranted: !missing.contains(kind))
+                    symbolName: "accessibility", isGranted: status.accessibilityGranted)
             case .screenCapture:
                 Row(kind: kind, name: "屏幕与系统录音", detail: "读取各屏幕、各桌面上的窗口列表与标题，不录制画面。",
-                    symbolName: "record.circle", isGranted: !missing.contains(kind))
+                    symbolName: "record.circle", isGranted: status.screenCaptureEffectivelyGranted)
             }
         }
         footer = status.isReady ? .ready : .waiting

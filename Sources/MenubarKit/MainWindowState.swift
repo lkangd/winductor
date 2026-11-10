@@ -111,7 +111,7 @@ public struct GeneralPageState: Equatable {
     public static func make(status: PermissionMonitor.Status, loginLaunchChecked: Bool, canUndo: Bool,
                             presetsFolder: URL, logsFolder: URL) -> GeneralPageState {
         GeneralPageState(accessibilityGranted: status.accessibilityGranted,
-                         screenCaptureGranted: status.screenCaptureGranted && !status.screenCaptureNeedsReconfirm,
+                         screenCaptureGranted: status.screenCaptureEffectivelyGranted,
                          permissionCaption: status.isReady ? readyCaption : notReadyCaption,
                          loginLaunchChecked: loginLaunchChecked,
                          canUndo: canUndo,

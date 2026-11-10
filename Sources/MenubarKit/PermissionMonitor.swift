@@ -25,16 +25,21 @@ public final class PermissionMonitor {
         /// §8.4：运行中标题从可读变全空 → 需重新确认（未就绪；重新可读且预检通过则解除）
         public let screenCaptureNeedsReconfirm: Bool
 
+        /// 屏幕录制实际已授权：预检通过且无重确认信号（§8.4 重确认中按未授权；通用页状态点、授权窗逐项同此口径）
+        public var screenCaptureEffectivelyGranted: Bool {
+            screenCaptureGranted && !screenCaptureNeedsReconfirm
+        }
+
         /// 两项齐备且无重确认信号 = 就绪（spec §4.6）
         public var isReady: Bool {
-            accessibilityGranted && screenCaptureGranted && !screenCaptureNeedsReconfirm
+            accessibilityGranted && screenCaptureEffectivelyGranted
         }
 
         /// 缺失项，按引导顺序（辅助功能 → 屏幕录音）
         public var missing: [Kind] {
             var out: [Kind] = []
             if !accessibilityGranted { out.append(.accessibility) }
-            if !screenCaptureGranted || screenCaptureNeedsReconfirm { out.append(.screenCapture) }
+            if !screenCaptureEffectivelyGranted { out.append(.screenCapture) }
             return out
         }
     }
