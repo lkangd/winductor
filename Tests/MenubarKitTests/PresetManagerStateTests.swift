@@ -168,7 +168,7 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(make(current: officeDesk, selectedKey: homeDesk.identity.key).selected?.editAliasHelp, "改名称")
     }
 
-    /// 排列图屏幕块的悬停说明随点选切换；预设块详情按钮随展开切换；分区末尾说明与无拓扑空态逐字
+    /// 排列图屏幕块的悬停说明随点选切换；预设块详情默认展开、按钮随收起切换；分区末尾说明与无拓扑空态逐字
     func testTopologyPageCopy() throws {
         let preset = try save("工作", on: officeDesk)
 
@@ -176,11 +176,13 @@ final class PresetManagerStateTests: XCTestCase {
         XCTAssertEqual(plain.displayTileHelp(uuid: "LG-1"), "只看这块屏幕的详情")
         XCTAssertEqual(make(current: officeDesk, selectedDisplayUUID: "LG-1").displayTileHelp(uuid: "LG-1"),
                        "再次点击显示全部屏幕")
-        XCTAssertEqual(plain.detailToggleTitle(presetID: preset.id), "显示详情")
-        let expanded = PresetManagerState.make(topologies: store.topologies(), current: officeDesk,
-                                               availability: .available, selectedKey: nil,
-                                               expandedPresetID: preset.id)
-        XCTAssertEqual(expanded.detailToggleTitle(presetID: preset.id), "收起详情")
+        XCTAssertTrue(plain.isDetailExpanded(presetID: preset.id), "详情默认展开（ui-refactor 票 10）")
+        XCTAssertEqual(plain.detailToggleTitle(presetID: preset.id), "收起详情")
+        let collapsed = PresetManagerState.make(topologies: store.topologies(), current: officeDesk,
+                                                availability: .available, selectedKey: nil,
+                                                collapsedPresetIDs: [preset.id])
+        XCTAssertFalse(collapsed.isDetailExpanded(presetID: preset.id))
+        XCTAssertEqual(collapsed.detailToggleTitle(presetID: preset.id), "显示详情")
         XCTAssertEqual(SelectedTopologyState.autoRestoreNote,
                        "勾选「自动恢复」的预设会在屏幕排列切换到这里时直接恢复，不再询问；每个屏幕排列至多一个。")
         XCTAssertEqual(PresetManagerState.noTopologyText, "还没有保存过任何预设")
