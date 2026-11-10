@@ -70,10 +70,7 @@ public final class NotReadyGateCoordinator {
 
     /// 按需打开授权引导窗（主窗口通用页「授权引导…」，ui-refactor 票 03）：已有窗口则前置，否则新建；随后照常跟随状态推进
     public func showPermissionGuide() {
-        let window = guideWindow ?? makeGuideWindow()
-        window.update(status: monitor.status)
-        window.show()
-        guideWindow = window
+        presentGuide(monitor.status)
     }
 
     // MARK: 状态应用（主线程；观察者定时路径已投递主线程）
@@ -85,13 +82,18 @@ public final class NotReadyGateCoordinator {
         if !hasDecidedInitialGuide {
             hasDecidedInitialGuide = true
             guard !status.isReady else { return }  // 启动时就绪：不弹（重启后授权生效不再弹）
-            let window = makeGuideWindow()
-            window.update(status: status)
-            window.show()
-            guideWindow = window
+            presentGuide(status)
         } else {
             guideWindow?.update(status: status)  // 已有授权窗跟随推进（逐项状态；等待 ⇄ 齐备重启提示，ui-refactor §6）
         }
+    }
+
+    /// 呈现授权窗：已有则复用（单实例），推进到给定现状后前置
+    private func presentGuide(_ status: PermissionMonitor.Status) {
+        let window = guideWindow ?? makeGuideWindow()
+        window.update(status: status)
+        window.show()
+        guideWindow = window
     }
 
     /// 重建菜单：就绪 → 注入的全量菜单（票 19）；未就绪 → 占位骨架，重确认态顶部换 §8.4 引导块
