@@ -33,16 +33,9 @@ public final class NotReadyGateCoordinator {
     /// 首启弹窗决策只做一次：此后任何状态变化不再创建引导窗（§8.4 运行中降级不弹窗）
     private var hasDecidedInitialGuide = false
     /// 菜单动作载体：状态行点击直达系统设置的屏幕与系统录音面板（强持有防释放）
-    private let menuActionCarrier: MenuActionCarrier
+    private let menuActionCarrier: ActionCarrier
     /// 就绪态菜单构建闭包（票 19 全量菜单注入；缺省 = 票 18 占位骨架，未就绪恒占位骨架）
     private let makeReadyMenu: () -> NSMenu
-
-    /// 菜单动作载体（§8.4 状态行 target/action 需要 NSObject 目标）
-    private final class MenuActionCarrier: NSObject {
-        private let handler: () -> Void
-        init(_ handler: @escaping () -> Void) { self.handler = handler }
-        @objc func openScreenCaptureSettings() { handler() }
-    }
 
     public init(monitor: PermissionMonitor,
                 statusItem: StatusPresenting,
@@ -53,7 +46,7 @@ public final class NotReadyGateCoordinator {
         self.statusItem = statusItem
         self.makeGuideWindow = makeGuideWindow
         self.makeReadyMenu = makeReadyMenu
-        self.menuActionCarrier = MenuActionCarrier(openScreenCaptureSettings)
+        self.menuActionCarrier = ActionCarrier(openScreenCaptureSettings)
     }
 
     /// 启动：接线观察者回调 + 每 2s 定时检测 + 按首检现状做弹窗决策（§8.3）。
@@ -108,7 +101,7 @@ public final class NotReadyGateCoordinator {
             ScreenCaptureReconfirmGuide.install(
                 into: menu,
                 statusLineTarget: menuActionCarrier,
-                action: #selector(MenuActionCarrier.openScreenCaptureSettings)
+                action: #selector(ActionCarrier.fire)
             )
         }
         statusItem.set(menu: menu)

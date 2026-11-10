@@ -71,13 +71,6 @@ private final class FirstMouseButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// target/action 载体（NSButton 闭包回调）
-private final class ButtonAction: NSObject {
-    let handler: () -> Void
-    init(_ handler: @escaping () -> Void) { self.handler = handler }
-    @objc func fire() { handler() }
-}
-
 /// 两种 popover 共用的排版规格（display-presets 票 14：原生 popover 观感——统一左缘与内边距、固定宽度、
 /// 标题 / 正文 / 附注三级字号与颜色、按钮同宽靠右）
 private enum PopoverLayout {
@@ -115,15 +108,15 @@ private enum PopoverLayout {
         return label
     }
 
-    static func button(_ title: String, _ action: ButtonAction) -> NSButton {
-        let button = FirstMouseButton(title: title, target: action, action: #selector(ButtonAction.fire))
+    static func button(_ title: String, _ action: ActionCarrier) -> NSButton {
+        let button = FirstMouseButton(title: title, target: action, action: #selector(ActionCarrier.fire))
         button.bezelStyle = .push
         button.controlSize = .regular
         return button
     }
 
-    static func radio(_ title: String, _ action: ButtonAction) -> NSButton {
-        let button = FirstMouseButton(radioButtonWithTitle: title, target: action, action: #selector(ButtonAction.fire))
+    static func radio(_ title: String, _ action: ActionCarrier) -> NSButton {
+        let button = FirstMouseButton(radioButtonWithTitle: title, target: action, action: #selector(ActionCarrier.fire))
         button.font = .systemFont(ofSize: 13)
         return button
     }
@@ -178,7 +171,7 @@ private enum PopoverLayout {
 final class RestorePromptView: NSView {
     private(set) var content: RestorePromptContent
     private let onEvent: (RestorePopoverEvent) -> Void
-    private var actions: [ButtonAction] = []
+    private var actions: [ActionCarrier] = []
     private var radios: [(presetID: String, button: NSButton)] = []
     private let detail = PopoverLayout.stack([], spacing: 3)
 
@@ -195,7 +188,7 @@ final class RestorePromptView: NSView {
             rows.append(caption)
             let radioStack = PopoverLayout.stack([], spacing: 6)
             for option in content.options {
-                let action = ButtonAction { [weak self] in self?.onEvent(.select(presetID: option.presetID)) }
+                let action = ActionCarrier { [weak self] in self?.onEvent(.select(presetID: option.presetID)) }
                 let radio = PopoverLayout.radio(option.name, action)
                 actions.append(action)
                 radios.append((option.presetID, radio))
@@ -210,8 +203,8 @@ final class RestorePromptView: NSView {
         }
         rows.append(detail)
 
-        let ignore = ButtonAction { [weak self] in self?.onEvent(.ignoreTapped) }
-        let restore = ButtonAction { [weak self] in self?.onEvent(.restoreTapped) }
+        let ignore = ActionCarrier { [weak self] in self?.onEvent(.ignoreTapped) }
+        let restore = ActionCarrier { [weak self] in self?.onEvent(.restoreTapped) }
         actions += [ignore, restore]
         let restoreButton = PopoverLayout.button("恢复", restore)
         restoreButton.keyEquivalent = "\r"
@@ -247,7 +240,7 @@ final class RestorePromptView: NSView {
 
 /// 自动恢复告知（§6.3）：标题「已按『X』恢复」、计数、降级附注（次要小字）；底部「改用其他预设…」「撤销」同宽靠右
 final class AutoRestoreNoticeView: NSView {
-    private var actions: [ButtonAction] = []
+    private var actions: [ActionCarrier] = []
 
     init(content: AutoRestoreNoticeContent, onEvent: @escaping (RestorePopoverEvent) -> Void) {
         super.init(frame: .zero)
@@ -260,12 +253,12 @@ final class AutoRestoreNoticeView: NSView {
 
         var buttons: [NSButton] = []
         if content.showsSwitchPreset {
-            let switchPreset = ButtonAction { onEvent(.switchPresetTapped) }
+            let switchPreset = ActionCarrier { onEvent(.switchPresetTapped) }
             actions.append(switchPreset)
             buttons.append(PopoverLayout.button("改用其他预设…", switchPreset))
         }
         if content.showsUndo {
-            let undo = ButtonAction { onEvent(.undoTapped) }
+            let undo = ActionCarrier { onEvent(.undoTapped) }
             actions.append(undo)
             buttons.append(PopoverLayout.button("撤销", undo))
         }

@@ -171,13 +171,7 @@ public enum WiredMenuBuilder {
         return parent
     }
 
-    // MARK: 动作载体（NSMenuItem target 必须是 NSObject；representedObject 强引用防释放）
-
-    private final class ActionCarrier: NSObject {
-        private let handler: () -> Void
-        init(_ handler: @escaping () -> Void) { self.handler = handler }
-        @objc func fire() { handler() }
-    }
+    // MARK: 动作项（载体见 ActionCarrier；representedObject 强引用防释放）
 
     /// 动作项：handler 非 nil = 可用（target = 载体，representedObject 挂同一载体保活）；nil = 置灰无动作
     private static func item(_ title: String, _ handler: (() -> Void)?) -> NSMenuItem {

@@ -228,8 +228,8 @@ private struct MoreMenuButton: View {
             case .separator:
                 menu.addItem(.separator())
             case let .action(action, title, isEnabled):
-                let carrier = MenuActionCarrier { onSelect(action) }
-                let menuItem = NSMenuItem(title: title, action: #selector(MenuActionCarrier.fire), keyEquivalent: "")
+                let carrier = ActionCarrier { onSelect(action) }
+                let menuItem = NSMenuItem(title: title, action: #selector(ActionCarrier.fire), keyEquivalent: "")
                 menuItem.target = carrier
                 menuItem.representedObject = carrier  // NSMenuItem.target 是弱引用：挂在 representedObject 上保活
                 menuItem.isEnabled = isEnabled
@@ -239,12 +239,4 @@ private struct MoreMenuButton: View {
         guard let event = NSApp.currentEvent, let view = event.window?.contentView else { return }
         menu.popUp(positioning: nil, at: view.convert(event.locationInWindow, from: nil), in: view)
     }
-}
-
-private final class MenuActionCarrier: NSObject {
-    private let handler: () -> Void
-
-    init(_ handler: @escaping () -> Void) { self.handler = handler }
-
-    @objc func fire() { handler() }
 }
