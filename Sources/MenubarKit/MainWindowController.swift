@@ -86,7 +86,7 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: Self.defaultSize),
+        let window = MainAppWindow(contentRect: NSRect(origin: .zero, size: Self.defaultSize),
                               styleMask: Self.styleMask, backing: .buffered, defer: false)
         trafficLights = Self.install(NSHostingView(rootView: MainWindowView(model: model)), in: window)
         window.setFrameAutosaveName("WinductorMainWindow")
@@ -116,6 +116,19 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
     /// 关闭 = 隐藏：呈现后从未成为 key 的跳过标记不留到下次
     public func windowWillClose(_ notification: Notification) {
         skipsNextBecomeKeyReload = false
+    }
+}
+
+/// 菜单栏 agent 没有默认的「文件 > 关闭」菜单：由当前窗口处理标准关闭快捷键，
+/// 不装全局 event monitor，避免吞掉其他窗口或输入框的按键。
+private final class MainAppWindow: NSWindow {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if event.type == .keyDown, modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "w" {
+            performClose(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

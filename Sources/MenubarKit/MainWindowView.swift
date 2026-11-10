@@ -2,7 +2,7 @@ import SwiftUI
 
 // MainWindowView.swift — 统一主窗口根视图（ui-refactor 票 03，spec §5.1/§5.2）。薄视图：只读 MainWindowModel.state、
 // 只调 model 方法（侧栏分组/选中/状态点推导在 MainWindowState）。
-// 布局（Swish 式）：通高 150pt 实底侧栏（顶部让出与 header 同高的红绿灯带、分组行可滚动、底部固定「退出」）| 1pt 分隔线 | 内容区。
+// 布局（Swish 式）：通高 150pt 实底侧栏（红绿灯带、可滚分组、固定「退出」）| 内容区；内容区左边框通高，与 header 底框共用样式。
 // 内容区顶部固定玻璃 header（票 10，MainWindowHeader），页面内容从其下方起排、上滚时从其下穿过；按选中页切换：拓扑页（TopologyPage，票 04 替换）/ 通用页（GeneralPage）/ 关于页（AboutPage）。
 
 struct MainWindowView: View {
@@ -11,11 +11,10 @@ struct MainWindowView: View {
     var body: some View {
         HStack(spacing: 0) {
             MainSidebar(model: model)
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .safeAreaInset(edge: .top, spacing: 0) { MainWindowHeader() }
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(MainContentBackground())
+                .overlay(alignment: .leading) { MainWindowSeparator(axis: .vertical) }
         }
         .ignoresSafeArea()  // 全尺寸内容：侧栏通到窗口顶，红绿灯浮在侧栏上
         .frame(minWidth: MainWindowController.minimumSize.width, minHeight: MainWindowController.minimumSize.height)

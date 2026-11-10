@@ -52,8 +52,11 @@ enum PermissionGuideMetrics {
 struct PermissionGuideView: View {
     @ObservedObject var model: PermissionGuideModel
 
-    /// 页头 64pt 应用图标（BrandAssets 不缓存，这里只取一次；资源缺失时为 nil，页头去掉图标）
-    private static let headerIcon = BrandAssets.appIcon(side: PermissionGuideMetrics.headerIcon)
+    /// 页头只用透明主体，不加底板、边框或裁圆角；资源缺失时去掉图标。
+    static let headerIcon = BrandAssets.appIconSubject()
+    private static let headerIconCenter = headerIcon.map {
+        PermissionHeaderAlignment.iconCenter($0, side: PermissionGuideMetrics.headerIcon)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -68,14 +71,22 @@ struct PermissionGuideView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: PermissionHeaderAlignment.vertical, spacing: 14) {
             if let icon = Self.headerIcon {
-                Image(nsImage: icon)
+                Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
                     .frame(width: PermissionGuideMetrics.headerIcon, height: PermissionGuideMetrics.headerIcon)
+                    .alignmentGuide(PermissionHeaderAlignment.vertical) { dimensions in
+                        Self.headerIconCenter ?? dimensions[VerticalAlignment.center]
+                    }
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.state.title).font(.system(size: 20, weight: .bold))
                 GuideCaption(text: model.state.subtitle)
+            }
+            .alignmentGuide(PermissionHeaderAlignment.vertical) { dimensions in
+                PermissionHeaderAlignment.textCenter(
+                    firstBaseline: dimensions[.firstTextBaseline], lastBaseline: dimensions[.lastTextBaseline],
+                    title: model.state.title, subtitle: model.state.subtitle)
             }
         }
     }

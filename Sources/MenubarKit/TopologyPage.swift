@@ -42,6 +42,7 @@ struct TopologyPage: View {
         } else {
             Caption(text: PresetManagerState.noTopologyText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .top, spacing: 0) { MainWindowHeader() }
         }
     }
 }
@@ -70,7 +71,7 @@ private struct TopologyTitle: View {
 
 // MARK: - 排列图
 
-private struct ArrangementDiagram: View {
+struct ArrangementDiagram: View {
     /// 点选的屏与悬停说明（PresetManagerState.selectedDisplayUUID / displayTileHelp）
     let state: PresetManagerState
     let displays: [TopologyDisplayInfo]
@@ -87,13 +88,18 @@ private struct ArrangementDiagram: View {
                 ForEach(arranged) { display in
                     let rect = display.rect.insetBy(dx: gap / 2, dy: gap / 2)
                     let isSelected = display.uuid == state.selectedDisplayUUID
-                    ScreenTile(display: display, isCompact: rect.height < 70, isSelected: isSelected,
-                               isDimmed: isDimmed)
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onSelect(display.uuid) }
-                        .help(state.displayTileHelp(uuid: display.uuid))
+                    Button { onSelect(display.uuid) } label: {
+                        ScreenTile(display: display, isCompact: rect.height < 70, isSelected: isSelected,
+                                   isDimmed: isDimmed)
+                            .frame(width: rect.width, height: rect.height)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(display.name)
+                    .accessibilityIdentifier(display.uuid)
+                    .help(state.displayTileHelp(uuid: display.uuid))
+                    // position 会把外层布局框扩到整幅画布：交互区域必须先限定在屏幕块内。
+                    .position(x: rect.midX, y: rect.midY)
                 }
             }
         }

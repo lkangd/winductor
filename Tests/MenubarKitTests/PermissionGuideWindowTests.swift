@@ -128,6 +128,36 @@ final class PermissionGuideWindowTests: XCTestCase {
         XCTAssertLessThan(lightsBottomFromTop + 6, PermissionGuideMetrics.edgeSpace, "页头与红绿灯至少隔 6pt")
     }
 
+    /// 授权页页头与关于页同用透明主体：没有合成白底或描边。
+    func testHeaderIconUsesTransparentSubject() throws {
+        let icon = try XCTUnwrap(PermissionGuideView.headerIcon)
+        XCTAssertTrue(icon === BrandAssets.appIconSubject())
+        let rep = try XCTUnwrap(icon.representations.first as? NSBitmapImageRep)
+        XCTAssertEqual(rep.colorAt(x: 590, y: 40)?.alphaComponent ?? 1, 0, accuracy: 0.01)
+    }
+
+    /// 透明主体的 alpha 重心略低于几何中心（独立像素测量为 0.5452），不能继续只对齐 64pt 画布。
+    func testHeaderAlignmentUsesVisibleIconCenter() throws {
+        let icon = try XCTUnwrap(BrandAssets.appIconSubject())
+        let centroid = PermissionHeaderAlignment.alphaCentroidY(icon)
+        XCTAssertEqual(centroid, 0.5452, accuracy: 0.001)
+        let visibleHeight = 64.0 * 696 / 841
+        let expected = (64 - visibleHeight) / 2 + visibleHeight * 0.5452
+        XCTAssertEqual(PermissionHeaderAlignment.iconCenter(icon, side: 64), expected, accuracy: 0.01)
+        XCTAssertGreaterThan(expected, 34, "按画布中心 32pt 对齐会显得图标下沉")
+    }
+
+    /// 用实际中英文字形边界而非完整行框；说明多一行时，视觉中点随末行基线移动半行。
+    func testHeaderTextCenterFollowsLastBaseline() {
+        let title = "授权 Winductor", subtitle = "需要两项系统权限来读取和移动窗口。只在本机使用，不上传任何数据。"
+        let single = PermissionHeaderAlignment.textCenter(firstBaseline: 20, lastBaseline: 40,
+                                                          title: title, subtitle: subtitle)
+        let wrapped = PermissionHeaderAlignment.textCenter(firstBaseline: 20, lastBaseline: 55,
+                                                           title: title, subtitle: subtitle)
+        XCTAssertEqual(wrapped - single, 7.5, accuracy: 0.01)
+        XCTAssertEqual(single, 23.18, accuracy: 0.1)
+    }
+
     /// 深链 URL 常量独立核对（任务书指定面板标识）
     func testSystemSettingsURLs() {
         XCTAssertEqual(SystemSettingsOpener.accessibilityPaneURL.absoluteString,

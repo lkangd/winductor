@@ -163,6 +163,23 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(window.contentMinSize.height, 520)
     }
 
+    /// LSUIElement 没有默认菜单栏的「关闭」菜单项，窗口自身必须响应 Cmd+W；关闭后仍复用窗口和页面。
+    func testCommandWClosesAndReopensSameWindow() throws {
+        let controller = makeController()
+        controller.show()
+        controller.model.select(.about)
+        let window = try XCTUnwrap(controller.window)
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13))
+        XCTAssertTrue(window.performKeyEquivalent(with: event))
+        XCTAssertFalse(window.isVisible)
+        controller.show()
+        XCTAssertTrue(controller.window === window)
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(controller.model.state.selection, .about)
+    }
+
     /// 打开即重读；外部事件后 reloadIfVisible 仅在可见时重读
     func testReloadIfVisibleOnlyWhileVisible() throws {
         let controller = makeController()

@@ -9,7 +9,7 @@ import SwiftUI
 //   - .app 内（Bundle.main 是 .app）：只读 Contents/Resources——make-app.sh 拷入两态 PNG 与 AppIconSubject.png；
 //     缺文件即返回 nil，不回落源码树，避免开发机上掩盖打包漏拷。
 //   - 其余（swift test / swift run）：读源码树 Resources/Brand（RuntimeBundle.sourceTreeRoot 推导）。
-// 票 02（菜单栏裁切/徽记）、关于页（透明主体，与标题 W 等高）、授权窗页头（64pt 白底圆角块）从这里取图。
+// 菜单栏裁切/徽记、关于页（透明主体，标题 W 字高 ×1.1×1.2）、授权窗页头（64pt 框内透明主体）从这里取图。
 
 public enum BrandAssets {
     /// 菜单栏图形两态

@@ -1,7 +1,7 @@
 import SwiftUI
 
 // AboutPage.swift — 主窗口「关于」页（ui-refactor 票 03，spec §5.6，参照 Swish About，不要授权行）。
-//   「Winductor」34pt heavy + 透明底应用主体（同行；票 08：无白底，可见主体高 = 标题字高，底边落在基线上）；
+//   「Winductor」34pt heavy + 透明底应用主体（同行；票 08：无白底，可见主体高 = 标题字高 × 1.1 × 1.2，底边落在基线上）；
 //   三行（13pt，前置 13pt 次要色图标）：c.circle 作者 / globe 仓库链接（点开浏览器）/ rectangle.3.group 本机数据统计；
 //   分隔线；「版本 {VERSION}」+「发行说明 ›」（打开 GitHub Releases）。无第三方依赖 → 不设开源库一节。
 
@@ -21,15 +21,15 @@ struct AboutPage: View {
     /// 透明底应用主体（已裁到可见外接框；取不到则不显示）
     private static let subject = BrandAssets.appIconSubject()
 
-    /// 主体显示尺寸：高 = 标题字体大写字高（即「W」的高度），宽按原图比例
+    /// 在上一版 1.1 倍尺寸上再放大 20%，宽高同比增加、仍保持底边基线对齐。
     static func subjectSize(for image: NSImage) -> CGSize {
-        let height = titleFont.capHeight
+        let height = titleFont.capHeight * 1.1 * 1.2
         return CGSize(width: height * image.size.width / image.size.height, height: height)
     }
 
     var body: some View {
         PageScroll {
-            // 首行基线对齐：图片的基线即其底边，故主体底边与「W」同落基线、顶边齐大写字高
+            // 首行基线对齐：图片基线即其底边，放大后仍与「W」同落基线
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("Winductor").font(.system(size: 34, weight: .heavy))
                 if let subject = Self.subject {
@@ -50,10 +50,10 @@ struct AboutPage: View {
             HStack(spacing: 12) {
                 FieldLabel(text: "版本 \(model.version)")
                 Button { openURL(AboutLinks.releases) } label: {
-                    HStack(spacing: 3) {
-                        Text("发行说明")
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-                    }
+                    // 一条文本行共享基线；独立 HStack 的字框/符号框在旧式原生按钮中会错位。
+                    Text("发行说明 \(Text(Image(systemName: "chevron.right")).baselineOffset(0.25))")
+                        .imageScale(.small)
+                        .accessibilityLabel("发行说明")
                 }
                 .contentButtonStyle()
             }

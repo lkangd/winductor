@@ -32,32 +32,106 @@ extension EnvironmentValues {
 
 // MARK: - 内容区版式
 
+/// 内容区与 header 共用底色：浅色纯白，深色沿用系统窗口底色。
+struct MainContentBackground: View {
+    static let color = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .windowBackgroundColor : .white
+    }
+
+    var body: some View { Color(nsColor: Self.color) }
+}
+
+/// 内容区与 header 共用 1pt、primary 8% 的边框；不占用内容布局空间。
+struct MainWindowSeparator: View {
+    static let thickness: CGFloat = 1
+    let axis: Axis
+
+    var body: some View {
+        Rectangle().fill(Color.primary.opacity(0.08))
+            .frame(width: axis == .vertical ? Self.thickness : nil,
+                   height: axis == .horizontal ? Self.thickness : nil)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 /// 内容区固定 header（票 10，参照 Swish）：高 50，左侧应用名 15pt bold 垂直居中、左缘与内容对齐；
-/// 系统薄材质（内容上滚时从下方穿过、透出高斯模糊）+ 底缘细分隔线。由 MainWindowView 以 safeAreaInset 挂在内容区顶部，
-/// 页面滚动视图的内容因此从 header 下方起排、可滚到 header 之下
+/// 无额外底色、底框与左框一致的轻玻璃（内容上滚时从下方穿过）。由 PageScroll 以 safeAreaInset 挂在内容区顶部，
+/// PageScroll 提供与页面滚动同步的只读模糊背景；内容从 header 下方起排、可滚到 header 之下
 struct MainWindowHeader: View {
     var body: some View {
         Text("Winductor").font(.system(size: 15, weight: .bold))
             .padding(.horizontal, MainWindowMetrics.contentInset)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: MainWindowMetrics.headerHeight)
-            .background(.ultraThinMaterial)
-            .overlay(alignment: .bottom) { VStack(spacing: 0) { Divider() } }  // 包一层竖排，分隔线才横向
+            .overlay(alignment: .bottom) {
+                // 左边框由根视图通高绘制；横线让出 1pt，避免左下角半透明颜色叠加变深。
+                MainWindowSeparator(axis: .horizontal).padding(.leading, MainWindowSeparator.thickness)
+            }
+    }
+}
+
+/// 无系统自动边缘高光/描边的高斯背景。旧玻璃黑白阶跃的 10%→90% 过渡实测 43.5pt（sigma≈17pt）。
+/// 对页面的只读副本做一半半径的模糊；不使用私有 backdrop API，也不把整层 alpha 降低。
+struct HeaderBackdrop<Content: View>: View {
+    static var gaussianRadius: CGFloat { 8.5 }
+    @ViewBuilder var content: () -> Content
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                MainContentBackground()
+            } else {
+                content()
+                    .clipped()
+                    .compositingGroup()
+                    .blur(radius: Self.gaussianRadius, opaque: true)
+                    .clipped()
+            }
+        }
+        .allowsHitTesting(false)
+        .disabled(true)
+        .accessibilityHidden(true)
     }
 }
 
 /// 页面滚动骨架：左右 32、header 下方 24、底部 32，内容左对齐
 struct PageScroll<Content: View>: View {
     @ViewBuilder var content: () -> Content
+    @State private var scrollOffset: CGFloat = -MainWindowMetrics.headerHeight
+
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 0) { content() }
+            .padding(.horizontal, MainWindowMetrics.contentInset)
+            .padding(.top, MainWindowMetrics.contentTop)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) { content() }
-                .padding(.horizontal, MainWindowMetrics.contentInset)
-                .padding(.top, MainWindowMetrics.contentTop)
-                .padding(.bottom, 32)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        ScrollView { page }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                scrollOffset = offset
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                MainWindowHeader()
+                    .background {
+                        GeometryReader { proxy in
+                            HeaderBackdrop {
+                                ZStack(alignment: .topLeading) {
+                                    MainContentBackground()
+                                    // 与 ScrollView 同宽、同偏移的只读页面，不参与命中测试或辅助功能。
+                                    // 固定纵向理想尺寸，避免 50pt 的裁切区压缩页面布局。
+                                    page.fixedSize(horizontal: false, vertical: true)
+                                        .offset(y: -scrollOffset)
+                                }
+                                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                            }
+                        }
+                    }
+            }
     }
 }
 
@@ -129,10 +203,20 @@ struct StatusDot: View {
     var body: some View { Circle().fill(color).frame(width: 7, height: 7) }
 }
 
+/// 旧式原生按钮的可见底框与标签布局框有 1pt 差异；保持原生绘制/交互，只校正标签绘制位置。
+private struct ContentButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button(role: configuration.role, action: configuration.trigger) {
+            configuration.label.offset(y: 1)
+        }
+        .buttonStyle(.bordered)
+    }
+}
+
 /// 内容区按钮统一外观（.bordered + 同一 controlSize）
 extension View {
     func contentButtonStyle() -> some View {
-        buttonStyle(.bordered).controlSize(.regular)
+        buttonStyle(ContentButtonStyle()).controlSize(.regular).font(.system(size: 13))
     }
 }
 
