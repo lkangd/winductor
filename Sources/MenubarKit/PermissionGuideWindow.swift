@@ -27,16 +27,26 @@ public final class PermissionGuideWindow {
 
         let host = NSHostingView(rootView: PermissionGuideView(model: model))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize),
-                          styleMask: [.titled, .closable, .fullSizeContentView],
-                          backing: .buffered, defer: false)
+                          styleMask: Self.styleMask, backing: .buffered, defer: false)
         window.title = model.state.title
+        Self.install(host, in: window)
+        window.center()
+    }
+
+    /// 窗口形态（§6）：透明全尺寸标题栏——内容铺满整窗，红绿灯浮在内容左上角
+    static let styleMask: NSWindow.StyleMask = [.titled, .closable, .fullSizeContentView]
+
+    /// 窗口外观配置 + 装入宿主（离屏渲染 harness 复用，保证与真窗口同一几何：标题栏高度、红绿灯位置）。
+    /// 宿主不传安全区：页头留白由视图自己按 edgeSpace 排（票 09），否则 SwiftUI 在顶部再让出整条标题栏高度
+    static func install<Content: View>(_ host: NSHostingView<Content>, in window: NSWindow) {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating
+        host.safeAreaRegions = []
         window.contentView = host  // 高度随内容（路径行增减）由宿主固有尺寸驱动
-        window.center()
+        window.setContentSize(host.fittingSize)
     }
 
     // MARK: 呈现观察接缝（测试与装配方复用）

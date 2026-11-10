@@ -4,7 +4,9 @@ import SwiftUI
 // PermissionGuideView.swift — 授权窗 SwiftUI 视图（ui-refactor 票 05，spec §6；视觉以原型 PermissionWindow.swift 为准）。
 // 薄视图：只读 PermissionGuideModel.state、按钮只回调 model 动作；状态推导见 PermissionGuideState。
 // 对齐：页头、分组框、底部状态条共用同一左缘；行内边距 14，状态条图标列与行图标列（28pt）对齐；
-// 行间分隔线从文字列起（14 + 28 + 12）。顶部留出透明标题栏红绿灯的高度。
+// 行间分隔线从文字列起（14 + 28 + 12）。
+// 上下留白（票 09）：内容铺进透明标题栏（宿主不传安全区，见 PermissionGuideWindow.install——否则 SwiftUI 会再让出
+// 整条标题栏高度），页头上方与底部状态条下方同为 edgeSpace；edgeSpace 须让页头避开红绿灯（macOS 27 红绿灯下缘距窗顶 23pt）。
 
 /// 授权窗视图模型：PermissionGuideWindow 每次 update(status:) 换新状态；视图按钮经 press* 回传
 ///（按钮不可见时入口不响应，测试与视图同走这一处）
@@ -43,8 +45,8 @@ enum PermissionGuideMetrics {
     static let trailingColumn: CGFloat = 116
     static let headerIcon: CGFloat = 64
     static let groupRadius: CGFloat = 10
-    /// 透明标题栏红绿灯占位（原型：上 14 + 灯高 12）
-    static let titlebarSpace: CGFloat = 26
+    /// 窗顶到页头、底部状态条到窗底的留白（相等，视觉平衡；= macOS 27 透明标题栏高度，页头恰在红绿灯区之下）
+    static let edgeSpace: CGFloat = 32
 }
 
 struct PermissionGuideView: View {
@@ -55,12 +57,12 @@ struct PermissionGuideView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header.padding(.top, PermissionGuideMetrics.titlebarSpace + 14)
+            header
             list.padding(.top, 20)
             footer.padding(.top, 16)
         }
         .padding(.horizontal, PermissionGuideMetrics.inset)
-        .padding(.bottom, 22)
+        .padding(.vertical, PermissionGuideMetrics.edgeSpace)
         .frame(width: PermissionGuideMetrics.width)
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -117,7 +119,6 @@ struct PermissionGuideView: View {
             }
         }
         .padding(.horizontal, PermissionGuideMetrics.rowInset)
-        .frame(minHeight: 32)
     }
 }
 

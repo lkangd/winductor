@@ -7,26 +7,14 @@ import XCTest
 // 默认跳过；设环境变量 WINDUCTOR_PERMISSION_RENDER_DIR=<目录> 时渲染 未授权 / 已授权一项 / 两项齐备（需重启）/
 // 启动即就绪（无需重启，评审修复）× 浅/深色 各一张 PNG
 //（文件名前缀取 WINDUCTOR_PERMISSION_RENDER_PREFIX，默认 ui-perm-）。
-// 离屏技巧：可成为 key 的离屏无边框窗口 + controlActiveState=.key（控件画成激活态），2x cacheDisplay；
-// 透明标题栏的红绿灯由真窗口提供，离屏时在左上角画静态占位，便于与原型对照。
+// 离屏技巧（票 09 改为忠实真窗口几何）：与真窗口同 styleMask / 配置（PermissionGuideWindow.install）的离屏标题栏窗口，
+// 内容视图注入 controlActiveState=.key（控件画成激活态），对整窗 frame view 做 2x cacheDisplay——
+// 标题栏高度、宿主安全区设置、真红绿灯（系统按钮，离屏未激活时画成灰色）都与真窗口一致。
 // 例：WINDUCTOR_PERMISSION_RENDER_DIR=/tmp swift test --filter PermissionGuideRenderHarness
 final class PermissionGuideRenderHarness: XCTestCase {
     private final class KeyWindow: NSWindow {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { true }
-    }
-
-    /// 离屏红绿灯占位（原型 FakeTrafficLights：上 14、左 24 + 6、直径 12、间距 8）
-    private struct FakeTrafficLights: View {
-        var body: some View {
-            HStack(spacing: 8) {
-                Circle().fill(Color(red: 1, green: 0.37, blue: 0.34))
-                Circle().fill(Color(red: 1, green: 0.74, blue: 0.18))
-                Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25))
-            }
-            .frame(width: 52, height: 12, alignment: .leading)
-            .padding(.top, 14).padding(.leading, PermissionGuideMetrics.inset + 6)
-        }
     }
 
     /// （文件名, 辅助功能, 屏幕录音, 本次运行中出现过未就绪）
@@ -54,30 +42,25 @@ final class PermissionGuideRenderHarness: XCTestCase {
 
     private func png(_ view: PermissionGuideView, dark: Bool) throws -> Data {
         let appearance = try XCTUnwrap(NSAppearance(named: dark ? .darkAqua : .aqua))
-        let root = ZStack(alignment: .topLeading) {
-            view
-            FakeTrafficLights()
-        }
-        .environment(\.controlActiveState, .key)
-        let host = NSHostingView(rootView: root)
-        host.appearance = appearance
-        let size = host.fittingSize
-        host.frame = NSRect(origin: .zero, size: size)
-        let window = KeyWindow(contentRect: NSRect(x: -8000, y: -8000, width: size.width, height: size.height),
-                               styleMask: [.borderless], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: view.environment(\.controlActiveState, .key))
+        let window = KeyWindow(contentRect: NSRect(x: -8000, y: -8000, width: PermissionGuideMetrics.width, height: 300),
+                               styleMask: PermissionGuideWindow.styleMask, backing: .buffered, defer: false)
         window.appearance = appearance
-        window.contentView = host
-        window.makeKeyAndOrderFront(nil)
+        PermissionGuideWindow.install(host, in: window)
+        window.setFrameOrigin(NSPoint(x: -8000, y: -8000))
+        window.orderFront(nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-        host.layoutSubtreeIfNeeded()
+        let frameView = try XCTUnwrap(host.superview)  // 整窗 frame view：含标题栏与红绿灯
+        frameView.layoutSubtreeIfNeeded()
 
+        let size = frameView.bounds.size
         let scale: CGFloat = 2
         let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
                                                  pixelsHigh: Int(size.height * scale), bitsPerSample: 8,
                                                  samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         rep.size = size
-        host.cacheDisplay(in: host.bounds, to: rep)
+        frameView.cacheDisplay(in: frameView.bounds, to: rep)
         window.orderOut(nil)
         return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
     }

@@ -117,6 +117,17 @@ final class PermissionGuideWindowTests: XCTestCase {
         XCTAssertEqual(window.level, .floating)
     }
 
+    /// 票 09 上下留白：内容铺进透明标题栏（宿主不再让出标题栏安全区，窗高 = 内容高），页头留白仍在红绿灯下缘之下
+    func testHeaderSpaceClearsTrafficLightsWithoutTitlebarInset() throws {
+        let window = guide.window
+        let host = try XCTUnwrap(window.contentView as? NSHostingView<PermissionGuideView>)
+        XCTAssertTrue(host.safeAreaRegions.isEmpty)
+        XCTAssertEqual(window.frame.height, host.fittingSize.height)
+        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+        let lightsBottomFromTop = window.frame.height - close.convert(close.bounds, to: nil).minY
+        XCTAssertLessThan(lightsBottomFromTop + 6, PermissionGuideMetrics.edgeSpace, "页头与红绿灯至少隔 6pt")
+    }
+
     /// 深链 URL 常量独立核对（任务书指定面板标识）
     func testSystemSettingsURLs() {
         XCTAssertEqual(SystemSettingsOpener.accessibilityPaneURL.absoluteString,
