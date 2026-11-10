@@ -21,7 +21,11 @@ private struct DrawsTrafficLightPlaceholderKey: EnvironmentKey {
 
 extension EnvironmentValues {
     /// 窗口是否为前台 key 窗口（失焦时侧栏图标与文字转次要灰）
-    var isMainWindowKey: Bool { controlActiveState == .key || controlActiveState == .active }
+    var isMainWindowKey: Bool { Self.isMainWindowKey(controlActiveState) }
+
+    /// 前台判定只认 .key（spec §5.2「前台（key）」）：同应用其他窗口（授权窗、NSAlert）为 key 时主窗口若报 .active，
+    /// 按失焦呈现
+    static func isMainWindowKey(_ state: ControlActiveState) -> Bool { state == .key }
 
     /// 离屏渲染时在侧栏顶部画红绿灯占位（实况由真窗口提供；只供渲染 harness 打开）
     var drawsTrafficLightPlaceholder: Bool {
