@@ -2,20 +2,21 @@ import AppKit
 import SwiftUI
 
 // BrandAssets.swift — 品牌资源入口（UI 重构票 01，ui-refactor spec §3；票 08 换透明底主体）。
-// 素材在仓库 Resources/Brand/：菜单栏两态 128px 模板原图（黑 + 透明）、透明底主体 AppIconSubject.png
+// 素材在仓库 Resources/Brand/：菜单栏三态 1x/2x 最终尺寸模板图（黑 + 透明）、透明底主体 AppIconSubject.png
 // （由用户白底原图抠出、按 alpha 外接框裁切，见 Scripts/brand-subject.swift）、Icon Composer 图标 AppIcon.icon（仅 make-app.sh 编译用）。
 // 不走 SwiftPM resources（Bundle.module 在自组装 .app 里要求资源包放 .app 根目录，签名不收；找不到还 fatalError），
 // 改为两路显式查找：
-//   - .app 内（Bundle.main 是 .app）：只读 Contents/Resources——make-app.sh 拷入两态 PNG 与 AppIconSubject.png；
+//   - .app 内（Bundle.main 是 .app）：只读 Contents/Resources——make-app.sh 拷入三态倍率 PNG 与 AppIconSubject.png；
 //     缺文件即返回 nil，不回落源码树，避免开发机上掩盖打包漏拷。
 //   - 其余（swift test / swift run）：读源码树 Resources/Brand（RuntimeBundle.sourceTreeRoot 推导）。
-// 菜单栏裁切/徽记、关于页（透明主体，标题 W 字高 ×1.1×1.2）、授权窗页头（64pt 框内透明主体）从这里取图。
+// 菜单栏模板图、关于页（透明主体，标题 W 字高 ×1.1×1.2）、授权窗页头（64pt 框内透明主体）从这里取图。
 
 public enum BrandAssets {
-    /// 菜单栏图形两态
+    /// 菜单栏图形三态
     public enum MenuBarArt: CaseIterable {
         case idle
         case restoring
+        case notReady
     }
 
     /// 应用图标圆角半径 / 边长（spec §3：连续圆角，半径 = 边长 × 0.225）
@@ -25,9 +26,10 @@ public enum BrandAssets {
     /// （主体外接框 x 92…919、y 142…826 / 1024）
     static let appIconSubjectFrame = CGRect(x: 92.0 / 1024, y: 142.0 / 1024, width: 828.0 / 1024, height: 685.0 / 1024)
 
-    /// 菜单栏两态原图（128×128 px RGBA）。原样返回位图，供票 02 按 alpha 求主体框、裁切缩放成模板图
-    public static func menuBarSource(_ art: MenuBarArt, bundle: Bundle = .main) -> NSBitmapImageRep? {
-        let url = directory(for: bundle).appendingPathComponent(menuBarFileName(art))
+    /// 已按共用裁切框从 SVG 直接栅格化的最终尺寸 PNG（21×22 / 42×44px）。
+    public static func menuBarRepresentation(_ art: MenuBarArt, scale: Int, bundle: Bundle = .main) -> NSBitmapImageRep? {
+        guard scale == 1 || scale == 2 else { return nil }
+        let url = directory(for: bundle).appendingPathComponent(menuBarFileName(art, scale: scale))
         return NSImageRep(contentsOf: url) as? NSBitmapImageRep
     }
 
@@ -67,11 +69,14 @@ public enum BrandAssets {
 
     static let appIconSubjectFileName = "AppIconSubject.png"
 
-    static func menuBarFileName(_ art: MenuBarArt) -> String {
+    static func menuBarFileName(_ art: MenuBarArt, scale: Int) -> String {
+        let name: String
         switch art {
-        case .idle: "MenuBarIdle_128px.png"
-        case .restoring: "MenuBarRestoring_128px.png"
+        case .idle: name = "Idle"
+        case .restoring: name = "Restoring"
+        case .notReady: name = "NotReady"
         }
+        return "MenuBar\(name)\(scale == 2 ? "@2x" : "").png"
     }
 
     private static func directory(for bundle: Bundle) -> URL {

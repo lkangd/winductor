@@ -3,6 +3,7 @@
 # 用法：Scripts/make-app.sh [swift build 参数透传]
 #   CODESIGN_IDENTITY=证书名 Scripts/make-app.sh   # 覆盖自动选择的证书
 #   RELEASE=1 Scripts/make-app.sh                   # 通用二进制（arm64+x86_64）
+#   SKIP_LAUNCH_SERVICES_REGISTRATION=1 Scripts/make-app.sh  # 只验证打包，不登记新 app
 # 证书选择：CODESIGN_IDENTITY → 唯一的 Developer ID Application → 自签证书 Winductor Dev（过渡期）。
 # 仅 Developer ID 签名加安全时间戳（需联网；公证要求），其余离线可构建。
 # 流程：swift build -c release → 组装 .app（Info.plist 冻结字段见下）→ codesign（Hardened Runtime）。
@@ -75,13 +76,18 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 cp "$BIN" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 # 品牌资源（ui-refactor spec §3，票 08）：运行时由 MenubarKit 的 BrandAssets 只从 Contents/Resources 读——
-# 菜单栏两态原图、透明底主体 AppIconSubject.png 原样拷入；
+# 菜单栏三态最终 1x/2x PNG、透明底主体 AppIconSubject.png 原样拷入；
 # 应用图标是 Icon Composer 分层图标 AppIcon.icon（白底 + 透明主体图层），经 actool 编译成 Assets.car（macOS 26 起
 # 按 CFBundleIconName 取，系统按规范圆角/边距渲染）；传统消费者使用独立、完整档位的 AppIconLegacy.icns。
 BRAND_DIR="Resources/Brand"
 RES_DIR="$APP_DIR/Contents/Resources"
 mkdir -p "$RES_DIR"
-cp "$BRAND_DIR"/MenuBar*.png "$BRAND_DIR/AppIconSubject.png" "$RES_DIR/"
+for state in Idle Restoring NotReady; do
+    for suffix in "" "@2x"; do
+        cp "$BRAND_DIR/MenuBar${state}${suffix}.png" "$RES_DIR/"
+    done
+done
+cp "$BRAND_DIR/AppIconSubject.png" "$RES_DIR/"
 if ! ACTOOL="$(xcrun --find actool 2>/dev/null)"; then
     echo "错误：找不到 actool（随 Xcode 提供，Command Line Tools 不含）。请安装 Xcode 并 sudo xcode-select -s /Applications/Xcode.app" >&2
     exit 1
@@ -148,7 +154,9 @@ codesign --verify --strict --verbose=1 "$APP_DIR"
 
 # 向 LaunchServices 登记本次产物（刷新图标/Info.plist 记录）：通知中心、访达按 bundle id 取图标，
 # 旧登记（如图标接入前的构建）不刷新时通知里的应用图标会是空白
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" || true
+if [ "${SKIP_LAUNCH_SERVICES_REGISTRATION:-0}" != "1" ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" || true
+fi
 
 echo "==> 完成：$APP_DIR"
 echo "    启动：open $APP_DIR （应成为无 Dock 图标的菜单栏 agent）"

@@ -3,29 +3,24 @@ import XCTest
 @testable import MenubarKit
 
 // UI 重构票 01：品牌资源入口（ui-refactor spec §3）；票 08：应用图标改由透明底主体派生。
-// 接缝：BrandAssets 的公开加载入口——菜单栏两态原图、透明底主体、界面用白底圆角图标。
-// 独立事实来源：素材本体（菜单栏两态 128px RGBA；AppIconSubject.png 841×696 RGBA，已裁到 alpha 外接框），测试自带期望数值。
+// 接缝：BrandAssets 的公开加载入口——菜单栏三态倍率图、透明底主体、界面用白底圆角图标。
+// 独立事实来源：素材本体（菜单栏三态 21×22 / 42×44px RGBA；AppIconSubject.png 841×696 RGBA，已裁到 alpha 外接框），测试自带期望数值。
 // 资源位置两路：swift test / swift run（非 .app）读仓库 Resources/Brand；.app 内只读 Contents/Resources，
 // 不回落源码树（打包漏拷须暴露为加载失败）——用临时伪 .app 覆盖后一路。
 final class BrandAssetsTests: XCTestCase {
-    // MARK: 菜单栏两态原图
-
-    /// 两态原图都能加载：128×128 px、带 alpha（模板图 = 黑 + 透明）
-    func testMenuBarSourcesLoadAt128PixelsWithAlpha() throws {
+    func testMenuBarFinalRepresentationsLoadAtBothScalesWithAlpha() throws {
         for art in BrandAssets.MenuBarArt.allCases {
-            let rep = try XCTUnwrap(BrandAssets.menuBarSource(art), "\(art) 未加载")
-            XCTAssertEqual(rep.pixelsWide, 128, "\(art)")
-            XCTAssertEqual(rep.pixelsHigh, 128, "\(art)")
-            XCTAssertTrue(rep.hasAlpha, "\(art)")
+            for scale in [1, 2] {
+                let rep = try XCTUnwrap(BrandAssets.menuBarRepresentation(art, scale: scale))
+                XCTAssertEqual(rep.pixelsWide, 21 * scale)
+                XCTAssertEqual(rep.pixelsHigh, 22 * scale)
+                XCTAssertTrue(rep.hasAlpha)
+            }
+            XCTAssertNil(BrandAssets.menuBarRepresentation(art, scale: 3))
         }
-    }
-
-    /// 两态是不同的图（恢复中多出光芒/箭头），防止两态误指同一文件
-    func testMenuBarSourcesDiffer() throws {
-        let idle = try XCTUnwrap(BrandAssets.menuBarSource(.idle))
-        let restoring = try XCTUnwrap(BrandAssets.menuBarSource(.restoring))
-        XCTAssertNotEqual(idle.representation(using: .png, properties: [:]),
-                          restoring.representation(using: .png, properties: [:]))
+        let idle = try XCTUnwrap(BrandAssets.menuBarRepresentation(.idle, scale: 2))
+        let restoring = try XCTUnwrap(BrandAssets.menuBarRepresentation(.restoring, scale: 2))
+        XCTAssertNotEqual(idle.representation(using: .png, properties: [:]), restoring.representation(using: .png, properties: [:]))
     }
 
     // MARK: 应用图标
@@ -95,14 +90,17 @@ final class BrandAssetsTests: XCTestCase {
 
     // MARK: .app 内的资源位置
 
-    /// .app 内：从 Contents/Resources 读两态 PNG 与 AppIconSubject.png（make-app.sh 的产物布局）
+    /// .app 内：从 Contents/Resources 读三态倍率 PNG 与 AppIconSubject.png（make-app.sh 的产物布局）
     func testInsideAppBundleLoadsFromContentsResources() throws {
         let app = try makeFakeApp(populated: true)
         let bundle = try XCTUnwrap(Bundle(url: app))
         for art in BrandAssets.MenuBarArt.allCases {
-            let rep = try XCTUnwrap(BrandAssets.menuBarSource(art, bundle: bundle), "\(art)")
-            XCTAssertEqual(rep.pixelsWide, 128)
+            for scale in [1, 2] {
+                let rep = try XCTUnwrap(BrandAssets.menuBarRepresentation(art, scale: scale, bundle: bundle))
+                XCTAssertEqual(rep.pixelsWide, 21 * scale)
+            }
         }
+        XCTAssertNotNil(MenuBarIconImages.make(bundle: bundle))
         let subject = try XCTUnwrap(BrandAssets.appIconSubject(bundle: bundle))
         XCTAssertEqual(subject.size, NSSize(width: 841, height: 696))
         let icon = try XCTUnwrap(BrandAssets.appIcon(side: 64, bundle: bundle))
@@ -113,7 +111,12 @@ final class BrandAssetsTests: XCTestCase {
     func testInsideAppBundleDoesNotFallBackToSourceTree() throws {
         let app = try makeFakeApp(populated: false)
         let bundle = try XCTUnwrap(Bundle(url: app))
-        XCTAssertNil(BrandAssets.menuBarSource(.idle, bundle: bundle))
+        for art in BrandAssets.MenuBarArt.allCases {
+            for scale in [1, 2] {
+                XCTAssertNil(BrandAssets.menuBarRepresentation(art, scale: scale, bundle: bundle))
+            }
+        }
+        XCTAssertNil(MenuBarIconImages.make(bundle: bundle))
         XCTAssertNil(BrandAssets.appIconSubject(bundle: bundle))
         XCTAssertNil(BrandAssets.appIcon(side: 36, bundle: bundle))
     }
@@ -145,6 +148,28 @@ final class BrandAssetsTests: XCTestCase {
         XCTAssertGreaterThan(colorful, 200, "必须含彩色品牌主体，不能是空白或通用网格占位图")
     }
 
+    func testMissingRetinaFrameFailsRatherThanFallingBackToSourceTree() throws {
+        let app = try makeFakeApp(populated: true)
+        try FileManager.default.removeItem(at: app.appendingPathComponent("Contents/Resources/MenuBarNotReady@2x.png"))
+        XCTAssertNil(MenuBarIconImages.make(bundle: try XCTUnwrap(Bundle(url: app))))
+    }
+
+    func testPackagedAppContainsAllFinalMenuBarResources() throws {
+        guard let path = ProcessInfo.processInfo.environment["WINDUCTOR_APP_BUNDLE_PATH"] else {
+            throw XCTSkip("未指定待验收 app")
+        }
+        let bundle = try XCTUnwrap(Bundle(path: path))
+        XCTAssertNotNil(MenuBarIconImages.make(bundle: bundle))
+        for art in BrandAssets.MenuBarArt.allCases {
+            for scale in [1, 2] {
+                let name = BrandAssets.menuBarFileName(art, scale: scale)
+                let packaged = try Data(contentsOf: bundle.resourceURL!.appendingPathComponent(name))
+                XCTAssertEqual(packaged, try Data(contentsOf: BrandAssets.sourceTreeDirectory.appendingPathComponent(name)))
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bundle.resourceURL!.appendingPathComponent("MenuBarIdle_128px.png").path))
+    }
+
     // MARK: - 辅助
 
     private func render(_ image: NSImage, scale: CGFloat) -> NSBitmapImageRep {
@@ -164,7 +189,7 @@ final class BrandAssetsTests: XCTestCase {
         rep.colorAt(x: x, y: y)?.alphaComponent ?? -1
     }
 
-    /// 临时伪 .app：populated 时按 make-app.sh 布局放两态 PNG 与透明底主体
+    /// 临时伪 .app：populated 时按 make-app.sh 布局放三态倍率 PNG 与透明底主体
     private func makeFakeApp(populated: Bool) throws -> URL {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("BrandAssetsTests-\(UUID().uuidString)")
@@ -178,8 +203,10 @@ final class BrandAssetsTests: XCTestCase {
 
         let source = BrandAssets.sourceTreeDirectory
         for art in BrandAssets.MenuBarArt.allCases {
-            let name = BrandAssets.menuBarFileName(art)
-            try fm.copyItem(at: source.appendingPathComponent(name), to: resources.appendingPathComponent(name))
+            for scale in [1, 2] {
+                let name = BrandAssets.menuBarFileName(art, scale: scale)
+                try fm.copyItem(at: source.appendingPathComponent(name), to: resources.appendingPathComponent(name))
+            }
         }
         let subject = BrandAssets.appIconSubjectFileName
         try fm.copyItem(at: source.appendingPathComponent(subject), to: resources.appendingPathComponent(subject))
