@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # UI 验证必须使用与正式 app 相同的 linked-SDK，以及真实的 1×/2× backing。
 # 用法：bash Scripts/test-mainwindow-render.sh [输出目录] [1|2]
+# 单次诊断可能因缺少真实屏幕而跳过；完整验收用 make check-ui 汇总 skip/SDK/backing。
+# 通用 macOS 检查，不依赖 Pi 或其他编码 agent。
 # 仅在临时目录复制/重签 XCTest 宿主；不修改 Xcode、产品 SDK、应用签名或系统设置。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-APP="$ROOT/build/Winductor.app"
+APP="${WINDUCTOR_APP_BUNDLE_PATH:-$ROOT/build/Winductor.app}"
 BIN="$APP/Contents/MacOS/Winductor"
 OUT="${1:-/tmp/winductor-mainwindow-render}"
 SCALE="${2:-1}"

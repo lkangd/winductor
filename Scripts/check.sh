@@ -1,5 +1,6 @@
 #!/bin/bash
-# Repo guardrail: build + test (+ format check when tools are installed).
+# Agent-neutral guardrail: build + test + deterministic CLI regressions (Python 3.12+).
+# Optional format checks run when installed; real-screen UI and Pi-only checks are separate.
 # Run by .githooks/{pre-commit,post-merge,pre-push}; safe to run by hand.
 set -euo pipefail
 
@@ -26,6 +27,14 @@ if ! swift test 2>&1 | grep -E "Test Suite 'All tests'|error:|failed" | tail -8;
   echo "CHECK FAILED: swift test" >&2
   fail=1
 fi
+
+echo "==> tooling regression (agent-neutral; no GUI)"
+TOOLING_LOG="$(mktemp "${TMPDIR:-/tmp}/winductor-tooling.XXXXXX")"
+if ! python3 -m unittest discover -s Tests/ToolingTests -p 'test_*.py' >"$TOOLING_LOG" 2>&1; then
+  echo "CHECK FAILED: tooling regression (full log: $TOOLING_LOG)" >&2
+  fail=1
+fi
+tail -12 "$TOOLING_LOG"
 
 if command -v swiftformat >/dev/null 2>&1; then
   echo "==> swiftformat --lint"

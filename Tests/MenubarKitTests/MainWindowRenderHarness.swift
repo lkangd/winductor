@@ -198,6 +198,7 @@ final class MainWindowRenderHarness: XCTestCase {
             ?? repo.appendingPathComponent("build/Winductor.app")
         let productSDK = try linkedSDK(app.appendingPathComponent("Contents/MacOS/Winductor"))
         let hostSDK = try linkedSDK(XCTUnwrap(Bundle.main.executableURL))
+        print("[render-sdk] product=\(productSDK) host=\(hostSDK)")
         guard hostSDK == productSDK else {
             throw XCTSkip("宿主 SDK \(hostSDK) ≠ 产品 SDK \(productSDK)，不能代替真机验收；请用 Scripts/test-mainwindow-render.sh")
         }
@@ -552,7 +553,7 @@ final class MainWindowRenderHarness: XCTestCase {
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-        print("[render-environment] backingScale=\(window.backingScaleFactor) requested1x=\(wants1x)")
+        print("[render-environment] backingScale=\(window.backingScaleFactor) requestedScale=\(scaleSetting ?? "0") dark=\(dark) width=\(size.width) height=\(size.height)")
         if wants1x { XCTAssertEqual(window.backingScaleFactor, 1) }
         if wants2x { XCTAssertEqual(window.backingScaleFactor, 2) }
         if scrollBy > 0, let scrollView = Self.scrollViews(in: host).max(by: { $0.frame.width < $1.frame.width }) {

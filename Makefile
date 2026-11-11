@@ -6,14 +6,17 @@ LOG := $(HOME)/Library/Application Support/Winductor/logs/app.log
 FILTER ?= aftershock|debounce-extend|deferred-consume|deferred wid|give-up|topology-changed-while|perf|done ok
 N ?= 50
 
-.PHONY: help build test test-tsan check app dmg release setup-dist relaunch displays spaces debug log log-follow hooks issue
+.PHONY: help build test test-tsan test-tooling test-pi-guardrails check check-ui app dmg release setup-dist relaunch displays spaces debug log log-follow hooks issue
 
 help:
 	@echo "Targets:"
 	@echo "  make build          swift build"
 	@echo "  make test           swift test"
 	@echo "  make test-tsan      swift test --sanitize=thread（并发改动必跑）"
-	@echo "  make check          Scripts/check.sh（pre-commit 同款门禁）"
+	@echo "  make check          Scripts/check.sh（pre-commit 同款门禁，不代表 UI 验收）"
+	@echo "  make check-ui       单测 + 真 SDK/1x/2x UI 分层报告；先准备 app，不启动产品"
+	@echo "  make test-tooling   通用验收/审查脚本回归（Python 3.12+）"
+	@echo "  make test-pi-guardrails  Pi agent 专用扩展回归（先 npm ci --prefix .pi/extensions/codemode-guardrails）"
 	@echo "  make app            Scripts/make-app.sh（release 构建 + 组装 + 签名：Developer ID，没有则用自签 Winductor Dev）"
 	@echo "  make dmg            通用二进制 .app + 未公证 DMG（本地分发，对方首次打开需手动放行）"
 	@echo "  make release        Scripts/release.sh（通用二进制 + 公证 + DMG + tag + GitHub Release；先改 VERSION 并提交）"
@@ -38,6 +41,17 @@ test-tsan:
 
 check:
 	bash "$(ROOT)/Scripts/check.sh"
+
+# Agent-neutral: explicit UI acceptance, not a pre-commit requirement (real screens needed).
+check-ui:
+	python3 "$(ROOT)/Scripts/check-ui.py" --app "$(APP)" $(if $(OUT),--out "$(OUT)",)
+
+test-tooling:
+	python3 -m unittest discover -s "$(ROOT)/Tests/ToolingTests" -p 'test_*.py'
+
+# Pi agent only; Node/npm is not required for the Swift app or generic checks.
+test-pi-guardrails:
+	npm test --prefix "$(ROOT)/.pi/extensions/codemode-guardrails"
 
 app:
 	bash "$(ROOT)/Scripts/make-app.sh"

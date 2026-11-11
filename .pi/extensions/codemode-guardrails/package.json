@@ -1,0 +1,10 @@
+{
+  "name": "winductor-pi-codemode-guardrails",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.18.0" },
+  "description": "Pi-only project guardrails; not a Swift/product dependency.",
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": { "test": "node --test guardrails.test.mjs" },
+  "dependencies": { "acorn": "8.15.0" }
+}

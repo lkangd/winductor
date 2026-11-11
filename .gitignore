@@ -1,6 +1,9 @@
 # Scratch files
 .scratch/
 
+# Python tooling cache
+__pycache__/
+
 # SwiftPM build
 .build/
 
@@ -17,6 +20,9 @@ materials/
 .code-review/
 .claude/code-review.local.md
 .pi/tasks
+
+# Pi-only extension dependencies (source and lockfile stay tracked)
+.pi/extensions/**/node_modules/
 
 # Local docs
 docs/handoffs/

@@ -20,7 +20,7 @@ Whatever the user said is the fixed point (a commit SHA, branch name, tag, `main
 
 Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
 
-Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here, not inside two parallel sub-agents.
+Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here, not inside two parallel sub-agents. This range covers committed changes only; an empty range does not review working-tree changes.
 
 ### 2. Identify the spec source
 
@@ -57,7 +57,7 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 ### 4. Spawn both sub-agents in parallel
 
-Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
+Prepare and verify the fixed-range evidence with `Scripts/prepare-review.py` before dispatch; follow `docs/agents/orchestration.md` for artifact contents, resolved child-tool checks and coordination. Supply the artifact path and pinned refs to both reviewers. The reviewers first confirm the manifest and required material are readable. Use the current harness's non-blocking launch mechanism when supervisor interaction is possible. Launch both independent reviews together, then aggregate their completed reports.
 
 **Standards sub-agent prompt** should include:
 
