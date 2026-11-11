@@ -8,7 +8,7 @@ import Foundation
 //   改名 / 改别名 → 输入框（撞名/空名提示后重弹）→ PresetStore.renamePreset / setAlias；
 //   删除 → 确认框 → deletePreset；自动开关 → setAuto；
 //   恢复 → 注入的 restore（生产 = MenuRestoreCoordinator.restorePreset，与菜单同一管线）；
-//   用当前布局覆盖 → OverwritePresetFlow（与菜单「恢复预设 ▸」同一流程）；
+//   用当前布局覆盖 → OverwritePresetFlow（与菜单「保存预设 ▸」同一流程）；
 //   拓扑页 `⋯` 菜单（ui-refactor 票 04）→ perform(_:presetID:) 分派到覆盖 / 改名 / 删除；
 //   保存当前布局… → 注入的 save（生产 = MenuRestoreCoordinator.saveCurrentLayout，与菜单同一流程）。
 // 存储无变更通知：每次操作后、窗口激活时、拓扑变化时 reload 重读（拓扑实时刷新）。

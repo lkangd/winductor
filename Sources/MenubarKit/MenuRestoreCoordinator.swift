@@ -6,12 +6,13 @@ import SnapshotEngine
 // MenuRestoreCoordinator.swift — 菜单接线协调器（票 19 起步；display-presets 票 06 改为 display-presets spec §6.1 菜单）。
 // 职责：组装 TriggerChain（按预设判定）并把菜单各项接到引擎/服务——
 //   状态行 → StatusLineState 四态（当前观测拓扑 + PresetStore 中该拓扑的预设）；
-//   保存当前布局为预设… → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
+//   保存新预设 → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
 //   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
 //   「恢复中」交替图（ui-refactor §4.2，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
 //   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
 //   管理预设… → 注入的打开入口（统一主窗口并选中当前拓扑，ui-refactor 票 03；未注入置灰）；
-//   登录时启动 → LoginItemServicing（SMAppService.mainApp）；Finder 入口 → 目录打开接缝（目录不存在先创建）；
+//   设置 → 同一主窗口通用页；通用页的登录时启动 → LoginItemServicing（SMAppService.mainApp），
+//   Finder 入口 → 目录打开接缝（目录不存在先创建）；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
 //   popover，§6.2/§6.3；提示「恢复」= restorePreset（菜单同入口，被拒告知），告知「撤销」= 菜单同款撤销管线）。
@@ -114,10 +115,12 @@ public final class MenuRestoreCoordinator {
     private let openFolder: (URL) -> Void
     private let refreshMenu: () -> Void
     private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
+    private let readiness: () -> Bool
     private let presetStore: PresetStore
     private let topologyProvider: () -> ObservedTopology
     private let savePreset: SavePresetFlow
     private let openPresetManager: (() -> Void)?
+    private let openSettings: (() -> Void)?
     private let overwritePreset: OverwritePresetFlow?
     private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
@@ -133,9 +136,9 @@ public final class MenuRestoreCoordinator {
 
     /// - presetStore / topologyProvider：触发链按预设判定（display-presets §5.1）与状态行、恢复预设子菜单同源
     /// - readiness：触发链未就绪门
-    /// - savePreset：「保存当前布局为预设…」流程（RuntimeAssembly.makeSavePresetFlow）
+    /// - savePreset：「保存新预设」流程（RuntimeAssembly.makeSavePresetFlow）
     /// - openPresetManager：「管理预设…」打开入口（display-presets 票 07 注入；nil = 置灰）
-    /// - overwritePreset：「恢复预设 ▸」内「用当前布局覆盖 ▸」流程（display-presets 票 07，与主窗口同一实例；nil = 不显示）
+    /// - overwritePreset：「保存预设 ▸」内「覆盖预设 ▸」流程（与主窗口同一实例；nil = 置灰）
     public init(presetStore: PresetStore,
                 restorer: SnapshotRestoring,
                 spaces: SpaceListProviding?,
@@ -154,6 +157,7 @@ public final class MenuRestoreCoordinator {
                 capabilityLayers: @escaping () -> [CapabilityLayerStatus],
                 savePreset: SavePresetFlow,
                 openPresetManager: (() -> Void)? = nil,
+                openSettings: (() -> Void)? = nil,
                 overwritePreset: OverwritePresetFlow? = nil,
                 presetsFolder: URL,
                 logsFolder: URL,
@@ -161,10 +165,12 @@ public final class MenuRestoreCoordinator {
                 refreshMenu: @escaping () -> Void,
                 currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
                 popover: RestorePopoverRendering? = nil) {
+        self.readiness = readiness
         self.presetStore = presetStore
         self.topologyProvider = topologyProvider
         self.savePreset = savePreset
         self.openPresetManager = openPresetManager
+        self.openSettings = openSettings
         self.overwritePreset = overwritePreset
         self.restoreEnqueue = restoreEnqueue
         self.undo = undo
@@ -270,13 +276,13 @@ public final class MenuRestoreCoordinator {
         }
     }
 
-    /// 「保存当前布局为预设…」：菜单项与主窗口拓扑页「保存当前布局…」（ui-refactor 票 04）同一流程
+    /// 「保存新预设」：菜单项与主窗口拓扑页「保存当前布局…」（ui-refactor 票 04）同一流程
     public func saveCurrentLayout() {
         savePresetTapped()
     }
 
     /// 手动恢复当前拓扑下的指定预设（菜单「恢复预设 ▸」、主窗口「恢复」、恢复提示「恢复」同入口）：
-    /// 与自动恢复同一管线，离主线程执行；拓扑已变 / 镜像中 / 预设已删 / 恢复进行中则不恢复，
+    /// 与自动恢复同一管线，离主线程执行；未就绪 / 拓扑已变 / 镜像中 / 预设已删 / 恢复进行中则不恢复，
     /// 经通知告知用户并返回原因（nil = 已受理）
     @discardableResult
     public func restorePreset(id: String, topologyKey: String) -> ManualRestoreRejection? {
@@ -289,6 +295,7 @@ public final class MenuRestoreCoordinator {
     /// 手动恢复被拒的用户文案
     static func message(for rejection: ManualRestoreRejection) -> String {
         switch rejection {
+        case .notReady: return "权限未齐备，不能恢复预设"
         case .topologyChanged: return "屏幕排列已变化，只能恢复当前屏幕排列下的预设"
         case .mirrored: return "镜像中，不能恢复预设"
         case .presetMissing: return "预设不存在（可能已被删除）"
@@ -311,7 +318,7 @@ public final class MenuRestoreCoordinator {
                                                    autoPresetName: record?.autoPreset?.name),
             canSavePreset: savePreset.availability() == .available,
             restorePresets: presets.map { RestorePresetMenuEntry(id: $0.id, name: $0.name, isAuto: $0.isAuto) },
-            canUndo: undo.canUndo(),
+            canUndo: readiness() && undo.canUndo(),
             loginLaunchChecked: loginItem.isEnabled,
             capabilityTitle: CapabilityStatusLine.title(for: capabilityLayers()),
             onSavePreset: { [weak self] in self?.savePresetTapped() },
@@ -326,7 +333,8 @@ public final class MenuRestoreCoordinator {
             // 同恢复：绑定构建时刻的拓扑键，覆盖流程拍快照后再核对拓扑
             onOverwritePreset: overwritePreset.map { flow in
                 { [weak self] id in flow.runAsync(presetID: id, topologyKey: key) { _ in self?.refreshMenuOnMain() } }
-            })
+            },
+            onOpenSettings: openSettings)
     }
 
     // MARK: 菜单动作（经 WiredMenuBuilder 载体路由；与真实点击同路径）
@@ -339,6 +347,7 @@ public final class MenuRestoreCoordinator {
     }
 
     private func undoLastTapped() {
+        guard readiness() else { return }
         // undo 跑全量回滚管线（分钟级）：经执行器离主线程；
         // 通知投递线程安全（UNUserNotificationCenter），菜单刷新自带主线程汇编
         restoreEnqueue { [weak self] in
@@ -347,6 +356,7 @@ public final class MenuRestoreCoordinator {
     }
 
     private func performUndoAndNotify() {
+        guard readiness() else { return }
         do {
             let report = try undo.undo()
             if report.isTwoStageFirstPass {

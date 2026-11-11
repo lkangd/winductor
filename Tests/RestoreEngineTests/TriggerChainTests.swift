@@ -671,6 +671,27 @@ final class TriggerChainTests: XCTestCase {
         XCTAssertTrue(rig.spy.all.contains { $0.contains("result=topology-mismatch") })
     }
 
+    /// 未就绪在同步/异步手动入口均拒绝，且不占相位或排队；恢复权限后仍可受理。
+    func testManualRestoreRejectsNotReadyBeforeEnqueueAndRecovers() throws {
+        let rig = try rig(start: [screenA, screenB])
+        let work = try rig.addPreset("工作", on: [screenA, screenB])
+        let key = rig.key([screenA, screenB])
+        let enqueued = FlagBox(false)
+        rig.makeChain(restoreEnqueue: { work in enqueued.value = true; work() })
+        rig.ready.value = false
+        XCTAssertEqual(rig.chain.restorePresetAsync(id: work.id, topologyKey: key), .notReady)
+        XCTAssertNil(rig.chain.restorePreset(id: work.id, topologyKey: key))
+        XCTAssertFalse(enqueued.value)
+        XCTAssertTrue(rig.restorer.snapshots.isEmpty)
+        XCTAssertTrue(rig.notices.items.isEmpty)
+        XCTAssertNil(rig.store.topology(key: key)?.lastRestoredPresetID)
+        rig.ready.value = true
+        XCTAssertNil(rig.chain.restorePresetAsync(id: work.id, topologyKey: key))
+        XCTAssertTrue(enqueued.value)
+        XCTAssertEqual(rig.restorer.snapshots, [work.snapshot])
+        XCTAssertEqual(rig.store.topology(key: key)?.lastRestoredPresetID, work.id)
+    }
+
     /// 菜单路径（恢复预设子菜单）：选择在调用线程，管线经注入执行器
     func testRestorePresetAsyncRunsViaEnqueue() throws {
         let rig = try rig(start: [screenA, screenB])

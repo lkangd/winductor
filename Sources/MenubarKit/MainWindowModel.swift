@@ -6,7 +6,7 @@ import Foundation
 // 视图（MainWindowView）只读 state / general、只调本类方法：
 //   侧栏与选中 → MainWindowState（纯推导）；拓扑页内容仍归 PresetManagerModel（选中拓扑同步给它，回落口径一致）；
 //   通用页 → 权限现状（PermissionMonitor 推送）+ 菜单同源 WiredMenuContent（勾选态 / 撤销可用性 / 动作闭包，
-//     MenuRestoreCoordinator.menuContent()），菜单项保留不删；授权引导… → 注入的打开入口（NotReadyGateCoordinator）。
+//     MenuRestoreCoordinator.menuContent()），共享动作保留；登录与 Finder 入口仅在通用页呈现；授权引导… → 注入的打开入口（NotReadyGateCoordinator）。
 // 刷新：reload（打开/激活/屏幕变化/外部事件，经 MainWindowController）重读存储、当前拓扑与菜单现状。
 
 public final class MainWindowModel: ObservableObject {
@@ -29,7 +29,7 @@ public final class MainWindowModel: ObservableObject {
     ///   - permissionStatus: 初始权限现状（此后经 updatePermissionStatus 推送）
     ///   - menuContent: 菜单同源内容（生产 = MenuRestoreCoordinator.menuContent()；nil = 未装配，通用页动作无效）
     ///   - openPermissionGuide: 打开授权窗（生产 = NotReadyGateCoordinator.showPermissionGuide）
-    ///   - presetsFolder / logsFolder: 数据分区路径说明（与菜单 Finder 入口同一目录）
+    ///   - presetsFolder / logsFolder: 数据分区路径说明（共享 Finder 动作的目标目录）
     public init(presets: PresetManagerModel,
                 permissionStatus: PermissionMonitor.Status,
                 menuContent: @escaping () -> WiredMenuContent?,
@@ -79,6 +79,8 @@ public final class MainWindowModel: ObservableObject {
     public func updatePermissionStatus(_ status: PermissionMonitor.Status) {
         guard status != permissionStatus else { return }
         permissionStatus = status
+        // 权限改变时同步保存/恢复/覆盖按钮；保留原选中页与排列。
+        presets.reload()
         refreshGeneral()
         recomputeSidebar(entries: presets.state.entries)
     }

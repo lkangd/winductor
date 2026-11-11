@@ -49,13 +49,11 @@ final class ScreenCaptureReconfirmGuideTests: XCTestCase {
         XCTAssertEqual(titles, [
             "屏幕录制权限需重新确认",
             "macOS 会定期要求重新确认屏幕录制权限。请在系统设置中重新打开开关，然后重启应用。",
-            "保存当前布局为预设…",
+            "保存预设",
             "恢复预设",
             "撤销上次恢复",
             "管理预设…",
-            "登录时启动",
-            "打开预设文件夹",
-            "打开日志文件夹",
+            "设置",
             "能力状态（占位）",
             "退出 Winductor",
         ])

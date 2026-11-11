@@ -41,16 +41,19 @@ public final class NotReadyGateCoordinator {
     private let menuActionCarrier: ActionCarrier
     /// 就绪态菜单构建闭包（票 19 全量菜单注入；缺省 = 票 18 占位骨架，未就绪恒占位骨架）
     private let makeReadyMenu: () -> NSMenu
+    private let onOpenSettings: (() -> Void)?
 
     public init(monitor: PermissionMonitor,
                 statusItem: StatusPresenting,
                 makeGuideWindow: @escaping () -> GuideWindowPresenting = { PermissionGuideWindow() },
                 openScreenCaptureSettings: @escaping () -> Void = { SystemSettingsOpener.open(.screenCapture) },
-                makeReadyMenu: @escaping () -> NSMenu = { PlaceholderMenu.build() }) {
+                makeReadyMenu: @escaping () -> NSMenu = { PlaceholderMenu.build() },
+                onOpenSettings: (() -> Void)? = nil) {
         self.monitor = monitor
         self.statusItem = statusItem
         self.makeGuideWindow = makeGuideWindow
         self.makeReadyMenu = makeReadyMenu
+        self.onOpenSettings = onOpenSettings
         self.menuActionCarrier = ActionCarrier(openScreenCaptureSettings)
     }
 
@@ -104,7 +107,7 @@ public final class NotReadyGateCoordinator {
 
     /// 重建菜单：就绪 → 注入的全量菜单（票 19）；未就绪 → 占位骨架，重确认态顶部换 §8.4 引导块
     private func refreshMenu(_ status: PermissionMonitor.Status) {
-        let menu = status.isReady ? makeReadyMenu() : PlaceholderMenu.build()
+        let menu = status.isReady ? makeReadyMenu() : PlaceholderMenu.build(onOpenSettings: onOpenSettings)
         if status.screenCaptureNeedsReconfirm {
             ScreenCaptureReconfirmGuide.install(
                 into: menu,

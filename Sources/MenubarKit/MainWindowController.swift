@@ -63,6 +63,12 @@ public final class MainWindowController: NSObject, NSWindowDelegate {
         show()
     }
 
+    /// 菜单「设置」始终选中「应用 > 通用」，复用同一主窗口。
+    public func showGeneral() {
+        model.select(.general)
+        show()
+    }
+
     /// 窗口可见时重读（外部事件后调用；主线程）
     public func reloadIfVisible() {
         guard window?.isVisible == true else { return }

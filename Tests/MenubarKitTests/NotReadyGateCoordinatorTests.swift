@@ -58,10 +58,61 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
         statusSpy.lastMenu?.items.filter { !$0.isSeparatorItem }.map(\.title) ?? []
     }
 
+    func testSettingsSurvivesNotReadyRefreshAndRuntimePermissionTransitions() throws {
+        accessibilityGranted.value = true
+        screenCaptureGranted.value = true
+        titles.value = ["邮件"]
+        var opened = 0
+        var readyBuilds = 0
+        var restored: [String] = []
+        coordinator = NotReadyGateCoordinator(monitor: coordinator.monitor, statusItem: statusSpy,
+            makeGuideWindow: { [guideSpy] in guideSpy! },
+            makeReadyMenu: {
+                readyBuilds += 1
+                let menu = WiredMenuBuilder.build(WiredMenuContent(
+                    statusLineTitle: "就绪", canSavePreset: true,
+                    restorePresets: [.init(id: "work", name: "工作", isAuto: true)], canUndo: false,
+                    loginLaunchChecked: false, capabilityTitle: "能力", onSavePreset: {},
+                    onRestorePreset: { restored.append($0) }, onUndo: {}, onManagePresets: nil,
+                    onToggleLoginLaunch: {}, onOpenPresetsFolder: {}, onOpenLogsFolder: {},
+                    onOpenSettings: { opened += 1 }))
+                menu.addItem(withTitle: "ready-menu", action: nil, keyEquivalent: "")
+                return menu
+            }, onOpenSettings: { opened += 1 })
+        coordinator.start()
+        XCTAssertTrue(lastMenuTitles.contains("ready-menu"))
+        titles.value = [nil]
+        checkNow()
+        coordinator.refreshMenuNow()
+        XCTAssertFalse(lastMenuTitles.contains("ready-menu"))
+        XCTAssertTrue(lastMenuTitles.contains("屏幕录制权限需重新确认"))
+        let readyBefore = readyBuilds
+        let menu = try XCTUnwrap(statusSpy.lastMenu)
+        let settings = try XCTUnwrap(menu.item(withTitle: "设置"))
+        XCTAssertTrue(settings.isEnabled)
+        _ = settings.target?.perform(try XCTUnwrap(settings.action), with: settings)
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(readyBuilds, readyBefore, "设置不构建就绪菜单、不绕过门控")
+        XCTAssertEqual(menu.item(withTitle: "恢复预设")?.isEnabled, false)
+        XCTAssertTrue(menu.item(withTitle: "保存预设")!.submenu!.items.allSatisfy { !$0.isEnabled })
+        titles.value = ["邮件"]
+        checkNow()
+        XCTAssertTrue(lastMenuTitles.contains("ready-menu"))
+        XCTAssertFalse(lastMenuTitles.contains("屏幕录制权限需重新确认"))
+        XCTAssertFalse(statusSpy.notReadyBadgeVisible)
+        let restoredMenu = try XCTUnwrap(statusSpy.lastMenu?.item(withTitle: "恢复预设")?.submenu)
+        let work = try XCTUnwrap(restoredMenu.item(withTitle: "工作（自动）"))
+        _ = work.target?.perform(try XCTUnwrap(work.action), with: work)
+        XCTAssertEqual(restored, ["work"], "权限恢复后重新接好恢复菜单回调")
+    }
+
     // MARK: 首启决策（§8.3：启动时 notReady→先弹引导窗；ready→直接常态运行，重启后不再弹）
 
     /// 启动未就绪：未就绪徽记 + 弹引导窗一次 + 引导窗跟随状态
-    func testStartNotReadyShowsGuideAndNotReadyBadge() {
+    func testStartNotReadyShowsGuideAndNotReadyBadge() throws {
+        var settingsOpened = 0
+        coordinator = NotReadyGateCoordinator(monitor: coordinator.monitor, statusItem: statusSpy,
+            makeGuideWindow: { [guideSpy] in guideSpy! }, onOpenSettings: { settingsOpened += 1 })
         accessibilityGranted.value = false
         screenCaptureGranted.value = false
         titles.value = []
@@ -70,6 +121,11 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
         XCTAssertTrue(statusSpy.notReadyBadgeVisible)
         XCTAssertEqual(guideSpy.showCount, 1, "首启未就绪必须弹一次引导窗")
         XCTAssertEqual(guideSpy.updates.last?.isReady, false)
+        let settings = try XCTUnwrap(statusSpy.lastMenu?.item(withTitle: "设置"))
+        XCTAssertTrue(settings.isEnabled)
+        _ = settings.target?.perform(try XCTUnwrap(settings.action), with: settings)
+        XCTAssertEqual(settingsOpened, 1)
+        XCTAssertEqual(statusSpy.lastMenu?.item(withTitle: "恢复预设")?.isEnabled, false)
     }
 
     /// 启动已就绪：不弹窗、无未就绪徽记（重启后授权生效的常态路径）

@@ -605,7 +605,7 @@ public final class TriggerChain: @unchecked Sendable {
     // MARK: - 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 主窗口；与自动恢复同一管线）
 
     /// 恢复当前拓扑下的指定预设（spec §5.2：仅当前拓扑）。topologyKey 与当前拓扑不符、
-    /// 镜像中、预设不存在、恢复进行中 → 不恢复返回 nil。成功后记录最近恢复；完成通知经 onNotice 投递。
+    /// 未就绪、镜像中、预设不存在、恢复进行中 → 不恢复返回 nil。成功后记录最近恢复；完成通知经 onNotice 投递。
     @discardableResult
     public func restorePreset(id: String, topologyKey: String) -> RestoreNotice? {
         guard case .success(let claim) = claimManual(presetID: id, topologyKey: topologyKey) else { return nil }
@@ -631,8 +631,12 @@ public final class TriggerChain: @unchecked Sendable {
         let cancellation: RestoreCancellation
     }
 
-    /// 手动形态共用：校验当前拓扑 + 取预设 + 忙守卫（含 [trigger] 日志行）；成功即占住恢复相位
+    /// 手动形态共用：就绪门 + 校验当前拓扑 + 取预设 + 忙守卫（含 [trigger] 日志行）；成功即占住恢复相位
     private func claimManual(presetID: String, topologyKey expected: String) -> Result<ManualClaim, ManualRestoreRejection> {
+        guard readiness() else {
+            log?.write(chainLine(step: "topology-match", result: "not-ready", detail: "trigger=manual"))
+            return .failure(.notReady)
+        }
         let current = TopologyState(topologyProvider())
         stateLock.lock()
         defer { stateLock.unlock() }

@@ -1,13 +1,7 @@
 import AppKit
 
-// WiredMenuBuilder.swift — 全量菜单构建（display-presets 票 06，spec §6.1；取代票 19 的 §8.2 七项结构）。
-// 结构：状态行（纯文本四态）──── 保存当前布局为预设…／恢复预设 ▸／撤销上次恢复 ──── 管理预设… ────
-// 登录时启动 ✓／打开预设文件夹／打开日志文件夹 ──── 能力状态行 ──── 退出 Winductor。
-// 「恢复预设 ▸」子菜单 = 当前拓扑预设（调用方给定顺序），自动预设标「（自动）」；无预设整项置灰。
-// 装配了覆盖动作时子菜单末尾另有「用当前布局覆盖 ▸」（display-presets 票 07，spec §4.3），同序列出预设。
-// 动作经 NSObject 载体路由到注入闭包（NSMenuItem.target 为 unsafe unretained——每个动作项一个载体，
-// 同时挂在该项 representedObject（强引用）上保活，测试直接 perform 捕获）。
-// 状态/可用性由调用方在构建时刻判定传入，构建器不做 IO。
+// 菜单构建器只呈现当前屏幕排列的内容；动作闭包由协调器注入。
+// 每个动作载体挂在 representedObject 上保活（NSMenuItem.target 不强持有）。
 
 /// 「恢复预设 ▸」子菜单的一项（当前拓扑下的一个预设）
 public struct RestorePresetMenuEntry: Equatable {
@@ -26,7 +20,7 @@ public struct RestorePresetMenuEntry: Equatable {
 public struct WiredMenuContent {
     /// 状态行标题（StatusLineState 判定产物，纯文本）
     public let statusLineTitle: String
-    /// 「保存当前布局为预设…」可用性（SavePresetFlow.availability() == .available）
+    /// 「保存新预设」可用性（SavePresetFlow.availability() == .available）
     public let canSavePreset: Bool
     /// 「恢复预设 ▸」子菜单项（当前拓扑预设；空 = 整项置灰）
     public let restorePresets: [RestorePresetMenuEntry]
@@ -36,18 +30,19 @@ public struct WiredMenuContent {
     public let loginLaunchChecked: Bool
     /// 能力状态行标题（CapabilityStatusLine 产物，纯文本）
     public let capabilityTitle: String
-    public let onSavePreset: () -> Void
+    public let onSavePreset: (() -> Void)?
     /// 参数 = 预设 id
-    public let onRestorePreset: (String) -> Void
+    public let onRestorePreset: ((String) -> Void)?
     public let onUndo: () -> Void
     /// 打开主窗口（nil = 未装配，项置灰）
     public let onManagePresets: (() -> Void)?
+    public let onOpenSettings: (() -> Void)?
     public let onToggleLoginLaunch: () -> Void
     public let onOpenPresetsFolder: () -> Void
     public let onOpenLogsFolder: () -> Void
-    /// 「恢复预设 ▸」内「用当前布局覆盖 ▸」可用性（display-presets 票 07：与保存同口径）
+    /// 「覆盖预设 ▸」可用性（与保存同口径）
     public let canOverwritePreset: Bool
-    /// 覆盖当前拓扑下的指定预设，参数 = 预设 id（nil = 未装配，不显示覆盖组）
+    /// 覆盖当前拓扑下的指定预设，参数 = 预设 id（nil = 未装配，置灰）
     public let onOverwritePreset: ((String) -> Void)?
 
     public init(statusLineTitle: String,
@@ -56,15 +51,16 @@ public struct WiredMenuContent {
                 canUndo: Bool,
                 loginLaunchChecked: Bool,
                 capabilityTitle: String,
-                onSavePreset: @escaping () -> Void,
-                onRestorePreset: @escaping (String) -> Void,
+                onSavePreset: (() -> Void)?,
+                onRestorePreset: ((String) -> Void)?,
                 onUndo: @escaping () -> Void,
                 onManagePresets: (() -> Void)?,
                 onToggleLoginLaunch: @escaping () -> Void,
                 onOpenPresetsFolder: @escaping () -> Void,
                 onOpenLogsFolder: @escaping () -> Void,
                 canOverwritePreset: Bool = false,
-                onOverwritePreset: ((String) -> Void)? = nil) {
+                onOverwritePreset: ((String) -> Void)? = nil,
+                onOpenSettings: (() -> Void)? = nil) {
         self.statusLineTitle = statusLineTitle
         self.canSavePreset = canSavePreset
         self.restorePresets = restorePresets
@@ -75,6 +71,7 @@ public struct WiredMenuContent {
         self.onRestorePreset = onRestorePreset
         self.onUndo = onUndo
         self.onManagePresets = onManagePresets
+        self.onOpenSettings = onOpenSettings
         self.onToggleLoginLaunch = onToggleLoginLaunch
         self.onOpenPresetsFolder = onOpenPresetsFolder
         self.onOpenLogsFolder = onOpenLogsFolder
@@ -87,7 +84,7 @@ public enum WiredMenuBuilder {
     /// 菜单标题（NSStatusItem 不显示，仅作标识；沿票 10 占位菜单同款）
     static let menuTitle = "Winductor"
 
-    /// 构建 spec §6.1 定稿菜单
+    /// 构建定稿菜单（docs/handoffs/menubar-menu-refresh.md）
     public static func build(_ content: WiredMenuContent) -> NSMenu {
         let menu = NSMenu(title: menuTitle)
         menu.autoenablesItems = false  // 可用性全部显式声明（照占位菜单口径）
@@ -97,21 +94,14 @@ public enum WiredMenuBuilder {
         menu.addItem(.separator())
 
         // 预设动作：保存（未就绪/镜像中/恢复中置灰）、恢复（子菜单）、撤销（仅回滚快照存在时可用）
-        menu.addItem(item("保存当前布局为预设…", content.canSavePreset ? content.onSavePreset : nil))
+        menu.addItem(savePresetItem(content))
         menu.addItem(restorePresetItem(content))
         menu.addItem(item("撤销上次恢复", content.canUndo ? content.onUndo : nil))
         menu.addItem(.separator())
 
         // 主窗口入口（ui-refactor 票 03）
         menu.addItem(item("管理预设…", content.onManagePresets))
-        menu.addItem(.separator())
-
-        // 设置（唯一勾选项）与 Finder 入口
-        let login = item("登录时启动", content.onToggleLoginLaunch)
-        login.state = content.loginLaunchChecked ? .on : .off
-        menu.addItem(login)
-        menu.addItem(item("打开预设文件夹", content.onOpenPresetsFolder))
-        menu.addItem(item("打开日志文件夹", content.onOpenLogsFolder))
+        menu.addItem(item("设置", content.onOpenSettings))
         menu.addItem(.separator())
 
         // 能力状态行（纯文本）
@@ -132,40 +122,41 @@ public enum WiredMenuBuilder {
     /// 「恢复预设 ▸」：子菜单逐项路由预设 id；无预设整项置灰（不挂子菜单）
     private static func restorePresetItem(_ content: WiredMenuContent) -> NSMenuItem {
         let parent = NSMenuItem(title: "恢复预设", action: nil, keyEquivalent: "")
-        guard !content.restorePresets.isEmpty else {
+        guard !content.restorePresets.isEmpty, let onRestore = content.onRestorePreset else {
             parent.isEnabled = false
             return parent
         }
         let submenu = NSMenu(title: "恢复预设")
         submenu.autoenablesItems = false
-        let onRestore = content.onRestorePreset
         for entry in content.restorePresets {
             let title = entry.isAuto ? "\(entry.name)（自动）" : entry.name
             submenu.addItem(item(title, { onRestore(entry.id) }))
-        }
-        if let onOverwrite = content.onOverwritePreset {
-            submenu.addItem(.separator())
-            submenu.addItem(overwriteItem(content.restorePresets, enabled: content.canOverwritePreset, onOverwrite))
         }
         parent.submenu = submenu
         parent.isEnabled = true
         return parent
     }
 
-    /// 「用当前布局覆盖 ▸」（spec §4.3，display-presets 票 07）：同序列出当前拓扑预设，逐项路由预设 id；不可用置灰不挂子菜单
-    private static func overwriteItem(_ entries: [RestorePresetMenuEntry], enabled: Bool,
-                                      _ onOverwrite: @escaping (String) -> Void) -> NSMenuItem {
-        let parent = NSMenuItem(title: "用当前布局覆盖", action: nil, keyEquivalent: "")
-        guard enabled else {
-            parent.isEnabled = false
-            return parent
-        }
-        let submenu = NSMenu(title: "用当前布局覆盖")
+    /// 保存父菜单始终可展开，使不可用的两个子项仍可发现。
+    private static func savePresetItem(_ content: WiredMenuContent) -> NSMenuItem {
+        let parent = NSMenuItem(title: "保存预设", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: parent.title)
         submenu.autoenablesItems = false
-        for entry in entries {
-            let title = entry.isAuto ? "\(entry.name)（自动）" : entry.name
-            submenu.addItem(item(title, { onOverwrite(entry.id) }))
+        submenu.addItem(item("保存新预设", content.canSavePreset ? content.onSavePreset : nil))
+        let overwrite = NSMenuItem(title: "覆盖预设", action: nil, keyEquivalent: "")
+        if content.canOverwritePreset, !content.restorePresets.isEmpty, let onOverwrite = content.onOverwritePreset {
+            let targets = NSMenu(title: overwrite.title)
+            targets.autoenablesItems = false
+            for entry in content.restorePresets {
+                let title = entry.isAuto ? "\(entry.name)（自动）" : entry.name
+                targets.addItem(item(title, { onOverwrite(entry.id) }))
+            }
+            overwrite.submenu = targets
+            overwrite.isEnabled = true
+        } else {
+            overwrite.isEnabled = false
         }
+        submenu.addItem(overwrite)
         parent.submenu = submenu
         parent.isEnabled = true
         return parent

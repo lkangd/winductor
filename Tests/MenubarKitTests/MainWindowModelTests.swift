@@ -25,6 +25,7 @@ final class MainWindowModelTests: XCTestCase {
     private var topologyReads = 0
     private var canUndo = false
     private var loginChecked = false
+    private var captureAvailability: LayoutCaptureAvailability = .available
     private var actions: [String] = []
     private var controllers: [MainWindowController] = []
 
@@ -37,6 +38,7 @@ final class MainWindowModelTests: XCTestCase {
         topologyReads = 0
         canUndo = false
         loginChecked = false
+        captureAvailability = .available
         actions = []
     }
 
@@ -128,6 +130,33 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(actions, ["undo", "login", "presets", "logs", "guide"])
     }
 
+    func testPermissionUpdatesRefreshPresetButtonsWithoutChangingSelection() throws {
+        let work = try save("工作", on: office)
+        let model = makeModel()
+        model.select(.general)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.canRestore, true)
+        captureAvailability = .notReady
+        model.updatePermissionStatus(status(ready: false))
+        XCTAssertEqual(model.state.selection, .general)
+        XCTAssertEqual(model.presets.state.selected?.canSavePreset, false)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.id, work.id)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.canRestore, false)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.canOverwrite, false)
+        model.presets.savePreset()
+        model.presets.restore(presetID: work.id)
+        model.presets.overwrite(presetID: work.id)
+        XCTAssertTrue(actions.isEmpty)
+        XCTAssertEqual(store.topology(key: office.identity.key)?.presets, [work])
+        captureAvailability = .available
+        model.updatePermissionStatus(status(ready: true))
+        XCTAssertEqual(model.state.selection, .general)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.canRestore, true)
+        XCTAssertEqual(model.presets.state.selected?.rows.first?.canOverwrite, true)
+        XCTAssertEqual(model.presets.state.selected?.canSavePreset, true)
+        model.presets.restore(presetID: work.id)
+        XCTAssertEqual(actions, ["restore"])
+    }
+
     // MARK: 窗口宿主
 
     /// 单实例：再次打开复用同一窗口；关闭即隐藏（不释放），再开仍是它
@@ -147,6 +176,29 @@ final class MainWindowModelTests: XCTestCase {
         controller.show()
         XCTAssertTrue(controller.window === window)
         XCTAssertTrue(window.isVisible)
+    }
+
+    func testSettingsAlwaysSelectsGeneralAndReusesMainWindowAcrossCloseAndPermissionChanges() throws {
+        let controller = makeController()
+        controller.showCurrentTopology()
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertEqual(controller.model.state.selection, .topology(office.identity.key))
+        controller.showGeneral()
+        XCTAssertEqual(controller.model.state.selection, .general)
+        XCTAssertTrue(controller.window === window)
+        controller.model.select(.about)
+        controller.showGeneral()
+        XCTAssertEqual(controller.model.state.selection, .general)
+        controller.model.select(.about)
+        window.performClose(nil)
+        controller.model.updatePermissionStatus(status(ready: false))
+        controller.showGeneral()
+        XCTAssertEqual(controller.model.state.selection, .general)
+        XCTAssertTrue(controller.window === window)
+        XCTAssertFalse(controller.model.general.screenCaptureGranted)
+        controller.showCurrentTopology()
+        XCTAssertEqual(controller.model.state.selection, .topology(office.identity.key))
+        XCTAssertTrue(controller.window === window)
     }
 
     /// Swish 式外观：全尺寸内容、透明隐藏标题栏、可缩放、最小约 720×520
@@ -309,14 +361,15 @@ final class MainWindowModelTests: XCTestCase {
         let overwrite = OverwritePresetFlow(
             store: store,
             capture: { [unowned self] in LayoutCapture(snapshot: snapshot(), topology: current) },
-            availability: { .available },
+            availability: { [unowned self] in captureAvailability },
             confirm: dialogs,
             captureExecutor: { $0() },
             mainExecutor: { $0() })
         let presets = PresetManagerModel(store: store,
                                          topologyProvider: { [unowned self] in topologyReads += 1; return current },
                                          overwrite: overwrite,
-                                         restore: { _, _ in },
+                                         restore: { [unowned self] _, _ in actions.append("restore") },
+                                         save: { [unowned self] in actions.append("save") },
                                          dialogs: dialogs)
         return MainWindowModel(presets: presets,
                                permissionStatus: status ?? self.status(ready: true),

@@ -51,10 +51,10 @@ public enum RuntimeAssembly {
                                           log: collector)
         deferredGeometry.start()
         let capabilityProbe = SpaceAdapterCapabilityProbe(adapter: adapter)
-        // 「保存当前布局为预设…」：一次性拍快照（与恢复管线共用 session 独占、共用延迟几何覆盖）
+        // 「保存新预设」：一次性拍快照（与恢复管线共用 session 独占、共用延迟几何覆盖）
         let savePreset = makeSavePresetFlow(gatedBy: monitor, store: presetStore, spaces: adapter, session: session,
                                             deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
-        // 「用当前布局覆盖」（display-presets 票 07）：主窗口与「恢复预设 ▸」共用一个实例，可用性与保存同口径
+        // 「覆盖预设」：主窗口与「保存预设 ▸」共用一个实例，可用性与保存同口径
         let overwritePreset = makeOverwritePresetFlow(availability: { savePreset.availability() }, store: presetStore,
                                                       spaces: adapter, session: session,
                                                       deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
@@ -98,6 +98,7 @@ public enum RuntimeAssembly {
             capabilityLayers: { capabilityProbe.probe() },
             savePreset: savePreset,
             openPresetManager: { mainWindow.showCurrentTopology() },
+            openSettings: { mainWindow.showGeneral() },
             overwritePreset: overwritePreset,
             presetsFolder: storeDirectory,
             logsFolder: SnapshotStore.defaultLogDirectory,
@@ -110,7 +111,8 @@ public enum RuntimeAssembly {
         let gateCoordinator = NotReadyGateCoordinator(
             monitor: monitor,
             statusItem: statusItem,
-            makeReadyMenu: { menuCoordinator.makeReadyMenu() })
+            makeReadyMenu: { menuCoordinator.makeReadyMenu() },
+            onOpenSettings: { mainWindow.showGeneral() })
         refreshBox.targetProvider = gateCoordinator
         coordinatorBox.gate = gateCoordinator
         return (gateCoordinator, menuCoordinator)

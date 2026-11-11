@@ -133,6 +133,8 @@ public enum TriggerOutcome: Equatable, Sendable {
 /// 手动恢复（恢复提示「恢复」/ 恢复预设子菜单 / 主窗口）被触发链拒绝的原因（display-presets 票 04 评审修复：
 /// 被拒不再静默，调用方据此告知用户）
 public enum ManualRestoreRejection: Error, Equatable, Sendable {
+    /// 辅助功能与屏幕录制权限尚未齐备
+    case notReady
     /// 所选预设不属于当前拓扑（入口打开后屏幕排列变了；spec §5.2 仅当前拓扑）
     case topologyChanged
     /// 镜像中整体禁用（spec §3.3）
