@@ -8,7 +8,7 @@ import Foundation
 //   selection —— 请求页有效则用之（通用/关于总有效；拓扑页仅当该拓扑仍在列表中），否则当前拓扑 → 第一项拓扑 → 通用。
 //     拓扑页内容的选中拓扑仍由 PresetManagerModel 管（同一回落口径），本层只决定侧栏高亮与内容区显示哪一页。
 //   aboutStatsText —— 关于页「N 个屏幕排列 · M 个预设」（与侧栏同源）。
-// GeneralPageState：通用页的权限状态点 / 说明 / 菜单同源快照态（登录时启动勾选、撤销可用性）与数据目录说明。
+// GeneralPageState：通用页的权限状态点 / 说明 / 登录项现状 / 共享撤销可用性与数据目录说明。
 
 /// 主窗口的页
 public enum MainWindowPage: Hashable {
@@ -101,9 +101,9 @@ public struct GeneralPageState: Equatable {
     public let screenCaptureName: String
     /// 系统分区权限行的说明（随就绪态切换）
     public let permissionCaption: String
-    /// 「登录时启动」勾选态（菜单同源）
+    /// 「登录时启动」勾选态（登录项 adapter 的现状）
     public let loginLaunchChecked: Bool
-    /// 「撤销」可用（菜单同源；不可撤销时置灰）
+    /// 「撤销」可用（LastRestoreUndo 的即时读数；不可撤销时置灰）
     public let canUndo: Bool
     /// 数据分区说明（目录路径，家目录缩写为 ~）
     public let dataCaption: String

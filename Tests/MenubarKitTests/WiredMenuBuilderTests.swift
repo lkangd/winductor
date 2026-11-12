@@ -7,12 +7,11 @@ final class WiredMenuBuilderTests: XCTestCase {
     private func content(available: Bool = true, entries: Bool = true, wired: Bool = true) -> WiredMenuContent {
         WiredMenuContent(statusLineTitle: "状态", canSavePreset: available,
             restorePresets: entries ? [.init(id: "a", name: "工作", isAuto: true), .init(id: "b", name: "家", isAuto: false)] : [],
-            canUndo: available, loginLaunchChecked: true, capabilityTitle: "能力",
+            canUndo: available, capabilityTitle: "能力",
             onSavePreset: wired ? { self.calls.append("save") } : nil,
             onRestorePreset: wired ? { self.calls.append("restore:\($0)") } : nil,
             onUndo: { self.calls.append("undo") },
             onManagePresets: wired ? { self.calls.append("manage") } : nil,
-            onToggleLoginLaunch: {}, onOpenPresetsFolder: {}, onOpenLogsFolder: {},
             canOverwritePreset: available,
             onOverwritePreset: wired ? { self.calls.append("overwrite:\($0)") } : nil,
             onOpenSettings: wired ? { self.calls.append("settings") } : nil)

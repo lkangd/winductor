@@ -72,9 +72,8 @@ final class NotReadyGateCoordinatorTests: XCTestCase {
                 let menu = WiredMenuBuilder.build(WiredMenuContent(
                     statusLineTitle: "就绪", canSavePreset: true,
                     restorePresets: [.init(id: "work", name: "工作", isAuto: true)], canUndo: false,
-                    loginLaunchChecked: false, capabilityTitle: "能力", onSavePreset: {},
+                    capabilityTitle: "能力", onSavePreset: {},
                     onRestorePreset: { restored.append($0) }, onUndo: {}, onManagePresets: nil,
-                    onToggleLoginLaunch: {}, onOpenPresetsFolder: {}, onOpenLogsFolder: {},
                     onOpenSettings: { opened += 1 }))
                 menu.addItem(withTitle: "ready-menu", action: nil, keyEquivalent: "")
                 return menu

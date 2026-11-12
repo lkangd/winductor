@@ -374,17 +374,18 @@ final class MainWindowRenderHarness: XCTestCase {
             captureExecutor: { $0() }, mainExecutor: { $0() })
         let presets = PresetManagerModel(store: store, topologyProvider: { office }, overwrite: overwrite,
                                          restore: { _, _ in }, dialogs: dialogs)
-        let content = WiredMenuContent(statusLineTitle: "", canSavePreset: true, restorePresets: [], canUndo: true,
-                                       loginLaunchChecked: true, capabilityTitle: "",
-                                       onSavePreset: {}, onRestorePreset: { _ in }, onUndo: {}, onManagePresets: nil,
-                                       onToggleLoginLaunch: {}, onOpenPresetsFolder: {}, onOpenLogsFolder: {})
+        let undo = LastRestoreUndo(performer: TestUndoPerformer(canUndo: true), readiness: { true },
+                                   enqueue: { $0() }, notifier: TestNotificationRecorder(), refresh: {})
+        let login = TestLoginItem()
+        login.enabled = true
         // 通用页按「缺屏幕录制」渲染（与原型 main-general.png 同态：侧栏通用项带黄点）
         let notReady = PermissionMonitor.Status(accessibilityGranted: true, screenCaptureGranted: false,
                                                 screenCaptureNeedsReconfirm: false)
-        return MainWindowModel(presets: presets, permissionStatus: notReady, menuContent: { content },
+        return MainWindowModel(presets: presets, permissionStatus: notReady, undo: undo, loginItem: login,
                                openPermissionGuide: {},
                                presetsFolder: PresetStore.defaultDirectory,
-                               logsFolder: SnapshotStore.defaultLogDirectory)
+                               logsFolder: SnapshotStore.defaultLogDirectory,
+                               refreshPresentations: {})
     }
 
     // MARK: 拓扑页数据：仿原型 MockData（办公室 DELL ×2 + 内置在下 / 家里 LG + 内置 / 单内置）
@@ -484,10 +485,13 @@ final class MainWindowRenderHarness: XCTestCase {
                                          currentSpaces: { live }, appName: { names[$0] })
         let ready = PermissionMonitor.Status(accessibilityGranted: true, screenCaptureGranted: true,
                                              screenCaptureNeedsReconfirm: false)
-        let model = MainWindowModel(presets: presets, permissionStatus: ready, menuContent: { nil },
+        let undo = LastRestoreUndo(performer: TestUndoPerformer(), readiness: { true }, enqueue: { $0() },
+                                   notifier: TestNotificationRecorder(), refresh: {})
+        let model = MainWindowModel(presets: presets, permissionStatus: ready, undo: undo, loginItem: TestLoginItem(),
                                     openPermissionGuide: {},
                                     presetsFolder: PresetStore.defaultDirectory,
-                                    logsFolder: SnapshotStore.defaultLogDirectory)
+                                    logsFolder: SnapshotStore.defaultLogDirectory,
+                                    refreshPresentations: {})
         return TopologyFixture(model: model, workID: work.id, homeKey: home.identity.key)
     }
 

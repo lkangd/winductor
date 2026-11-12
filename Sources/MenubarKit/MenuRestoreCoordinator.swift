@@ -9,10 +9,9 @@ import SnapshotEngine
 //   保存新预设 → SavePresetFlow.runAsync（拍快照离主线程，输入框回主线程；保存后刷新菜单）；
 //   恢复预设 ▸ → chain.restorePresetAsync（与自动恢复同一管线，成功后链记录最近恢复）；恢复经图标装饰器切
 //   「恢复中」交替图（ui-refactor §4.2，结束即回）；完成通知（计数 + [degrade] 附注 §8.5）经 SystemNotifying 接缝投递；
-//   撤销上次恢复 → UndoPerforming（canUndo 禁用态 §7.4；两段式第一段投 §8.6 逐字通知）；
+//   撤销上次恢复 → 共享 LastRestoreUndo（可用性 / 两段式通知 / 完成刷新由其负责）；
 //   管理预设… → 注入的打开入口（统一主窗口并选中当前拓扑，ui-refactor 票 03；未注入置灰）；
-//   设置 → 同一主窗口通用页；通用页的登录时启动 → LoginItemServicing（SMAppService.mainApp），
-//   Finder 入口 → 目录打开接缝（目录不存在先创建）；
+//   设置 → 同一主窗口通用页；登录项与 Finder 目录动作由 MainWindowModel 持有；
 //   didChangeScreenParameters 观察者 → chain.screenParametersChanged() + 菜单刷新；
 //   触发链判定结果（display-presets §5.1）→ handle(outcome:) → RestorePopoverCoordinator（恢复提示 / 自动恢复告知
 //   popover，§6.2/§6.3；提示「恢复」= restorePreset（菜单同入口，被拒告知），告知「撤销」= 菜单同款撤销管线）。
@@ -23,13 +22,6 @@ public protocol SystemNotifying: AnyObject {
     func deliver(title: String, body: String)
 }
 
-/// 登录项服务接缝（生产：SMAppServiceLoginItem 包 SMAppService.mainApp；测试：fake 记录调用）
-public protocol LoginItemServicing: AnyObject {
-    var isEnabled: Bool { get }
-    func enable() throws
-    func disable() throws
-}
-
 /// 状态项图标接缝（ui-refactor spec §4.2 三态中的常态/恢复中两态；未就绪徽记归 StatusPresenting）
 public protocol StatusIconControlling: AnyObject {
     /// 常态图
@@ -37,14 +29,6 @@ public protocol StatusIconControlling: AnyObject {
     /// 恢复中（两图交替，恢复结束由装饰器换回常态）
     func showRestoringIcon()
 }
-
-/// 撤销入口接缝（生产：RestoreEngine 本体，undo()/canUndo() 即票 16 公开 API；测试：fake）
-public protocol UndoPerforming: AnyObject {
-    func canUndo() -> Bool
-    func undo() throws -> UndoReport
-}
-
-extension RestoreEngine: UndoPerforming {}
 
 /// 恢复中图标装饰器（ui-refactor spec §4.2「恢复中：两图交替，结束即回常态」）：
 /// 包住真实恢复器，恢复开始切恢复中、结束（无论成败）即回常态。分层降级不改图标（§8.1）。
@@ -105,24 +89,17 @@ private final class NoticeSink<Payload>: @unchecked Sendable {
 public final class MenuRestoreCoordinator {
     /// 触发链（构造时装配，onNotice 桥接到 handle(notice:) 投递通知）
     private let chain: TriggerChain
-    private let undo: UndoPerforming
+    private let undo: LastRestoreUndo
     private let notifier: SystemNotifying
-    private let loginItem: LoginItemServicing
     /// 能力状态行数据源（生产：SpaceAdapterCapabilityProbe；测试：fake 层数组）
     private let capabilityLayers: () -> [CapabilityLayerStatus]
-    private let presetsFolder: URL
-    private let logsFolder: URL
-    private let openFolder: (URL) -> Void
     private let refreshMenu: () -> Void
-    private let restoreEnqueue: (@escaping @Sendable () -> Void) -> Void
-    private let readiness: () -> Bool
     private let presetStore: PresetStore
     private let topologyProvider: () -> ObservedTopology
     private let savePreset: SavePresetFlow
     private let openPresetManager: (() -> Void)?
     private let openSettings: (() -> Void)?
     private let overwritePreset: OverwritePresetFlow?
-    private let log: LogWriting?
     private var screenParamsObserver: NSObjectProtocol?
     /// 恢复提示 / 自动恢复告知（init 尾部构造：撤销闭包要引用 self）
     private var popovers: RestorePopoverCoordinator?
@@ -150,38 +127,27 @@ public final class MenuRestoreCoordinator {
                 },
                 log: LogWriting? = nil,
                 degradeCollector: DegradeCollectingLog? = nil,
-                undo: UndoPerforming,
+                undo: LastRestoreUndo,
                 icon: StatusIconControlling,
                 notifier: SystemNotifying,
-                loginItem: LoginItemServicing,
                 capabilityLayers: @escaping () -> [CapabilityLayerStatus],
                 savePreset: SavePresetFlow,
                 openPresetManager: (() -> Void)? = nil,
                 openSettings: (() -> Void)? = nil,
                 overwritePreset: OverwritePresetFlow? = nil,
-                presetsFolder: URL,
-                logsFolder: URL,
-                openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
                 refreshMenu: @escaping () -> Void,
                 currentSpaces: @escaping () -> [SpaceEntry]? = { nil },
                 popover: RestorePopoverRendering? = nil) {
-        self.readiness = readiness
         self.presetStore = presetStore
         self.topologyProvider = topologyProvider
         self.savePreset = savePreset
         self.openPresetManager = openPresetManager
         self.openSettings = openSettings
         self.overwritePreset = overwritePreset
-        self.restoreEnqueue = restoreEnqueue
         self.undo = undo
         self.notifier = notifier
-        self.loginItem = loginItem
         self.capabilityLayers = capabilityLayers
-        self.presetsFolder = presetsFolder
-        self.logsFolder = logsFolder
-        self.openFolder = openFolder
         self.refreshMenu = refreshMenu
-        self.log = log
         // 图标三态装饰（恢复开始/结束换图；§8.1），降级不换图
         let decorated = RestoringIconDecorator(inner: restorer, icon: icon)
         let noticeSink = NoticeSink<RestoreNotice>()
@@ -205,7 +171,7 @@ public final class MenuRestoreCoordinator {
             renderer: popover, presets: presetStore, currentSpaces: currentSpaces,
             // 与菜单/主窗口同一入口：被拒时同口径告知用户
             restorePreset: { [weak self] id, key in self?.restorePreset(id: id, topologyKey: key) },
-            undo: { [weak self] in self?.undoLastTapped() },
+            undo: { [weak undo] in undo?.request() },
             log: log)
     }
 
@@ -303,8 +269,7 @@ public final class MenuRestoreCoordinator {
         }
     }
 
-    /// 构建时刻的菜单内容（状态行四态、恢复预设子菜单、保存可用性、canUndo、登录勾选态、能力状态行）。
-    /// 主窗口通用页（ui-refactor 票 03）取同一份：勾选态 / 撤销可用性 / 动作闭包与菜单同源
+    /// 菜单专用的构建时刻内容；通用页不读取该值，也不触发这里的能力探测。
     public func menuContent() -> WiredMenuContent {
         let observed = topologyProvider()
         let key = observed.identity.key
@@ -318,17 +283,13 @@ public final class MenuRestoreCoordinator {
                                                    autoPresetName: record?.autoPreset?.name),
             canSavePreset: savePreset.availability() == .available,
             restorePresets: presets.map { RestorePresetMenuEntry(id: $0.id, name: $0.name, isAuto: $0.isAuto) },
-            canUndo: readiness() && undo.canUndo(),
-            loginLaunchChecked: loginItem.isEnabled,
+            canUndo: undo.isAvailable(),
             capabilityTitle: CapabilityStatusLine.title(for: capabilityLayers()),
             onSavePreset: { [weak self] in self?.savePresetTapped() },
             // 绑定构建时刻的拓扑键：点击前拓扑已变 → 链按 topology-mismatch 拒绝
             onRestorePreset: { [weak self] id in self?.restorePreset(id: id, topologyKey: key) },
-            onUndo: { [weak self] in self?.undoLastTapped() },
+            onUndo: { [weak undo] in undo?.request() },
             onManagePresets: openPresetManager,
-            onToggleLoginLaunch: { [weak self] in self?.toggleLoginLaunchTapped() },
-            onOpenPresetsFolder: { [weak self] in self?.openPresetsFolderTapped() },
-            onOpenLogsFolder: { [weak self] in self?.openLogsFolderTapped() },
             canOverwritePreset: overwritePreset?.availability() == .available,
             // 同恢复：绑定构建时刻的拓扑键，覆盖流程拍快照后再核对拓扑
             onOverwritePreset: overwritePreset.map { flow in
@@ -344,60 +305,6 @@ public final class MenuRestoreCoordinator {
         savePreset.runAsync { [weak self] outcome in
             if case .saved = outcome { self?.refreshMenuOnMain() }
         }
-    }
-
-    private func undoLastTapped() {
-        guard readiness() else { return }
-        // undo 跑全量回滚管线（分钟级）：经执行器离主线程；
-        // 通知投递线程安全（UNUserNotificationCenter），菜单刷新自带主线程汇编
-        restoreEnqueue { [weak self] in
-            self?.performUndoAndNotify()
-        }
-    }
-
-    private func performUndoAndNotify() {
-        guard readiness() else { return }
-        do {
-            let report = try undo.undo()
-            if report.isTwoStageFirstPass {
-                // §8.6 第一段：逐字通知（N = fullscreenPendingCount）
-                notifier.deliver(title: "撤销完成", body: report.twoStageNotificationText ?? "")
-            } else {
-                // 单层完成：计数通知（命令级 undo 输出的菜单栏形态，§8.5 同构措辞）
-                notifier.deliver(title: "撤销完成",
-                                 body: "撤销完成：\(report.okCount) 窗口归位、\(report.skipCount) 跳过、\(report.failCount) 失败")
-            }
-        } catch RestoreEngineError.undoSnapshotMissing {
-            notifier.deliver(title: "撤销失败", body: "撤销失败：无可用回滚快照")
-        } catch RestoreEngineError.undoSnapshotCorrupt {
-            notifier.deliver(title: "撤销失败", body: "撤销失败：回滚快照不可用（已按 §7.4 隔离，下次恢复重写）")
-        } catch RestoreEngineError.noActiveDisplay {
-            notifier.deliver(title: "撤销失败", body: "撤销失败：无活动显示器")
-        } catch {
-            notifier.deliver(title: "撤销失败", body: "撤销失败：\(String(describing: error))")
-        }
-        refreshMenuOnMain()
-    }
-
-    private func toggleLoginLaunchTapped() {
-        do {
-            if loginItem.isEnabled {
-                try loginItem.disable()
-            } else {
-                try loginItem.enable()
-            }
-        } catch {
-            log?.write("[login-item] toggle failed error=\(String(describing: error))")
-        }
-        refreshMenuOnMain()
-    }
-
-    private func openPresetsFolderTapped() {
-        openFolder(presetsFolder)
-    }
-
-    private func openLogsFolderTapped() {
-        openFolder(logsFolder)
     }
 
     /// 菜单刷新主线程归一（触发链回调可能在调度队列线程）

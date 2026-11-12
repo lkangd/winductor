@@ -10,9 +10,8 @@ public enum PlaceholderMenu {
     public static func build(onOpenSettings: (() -> Void)? = nil) -> NSMenu {
         WiredMenuBuilder.build(WiredMenuContent(
             statusLineTitle: "状态行（占位）", canSavePreset: false, restorePresets: [], canUndo: false,
-            loginLaunchChecked: false, capabilityTitle: "能力状态（占位）",
+            capabilityTitle: "能力状态（占位）",
             onSavePreset: nil, onRestorePreset: nil, onUndo: {}, onManagePresets: nil,
-            onToggleLoginLaunch: {}, onOpenPresetsFolder: {}, onOpenLogsFolder: {},
             onOpenSettings: onOpenSettings))
     }
 }

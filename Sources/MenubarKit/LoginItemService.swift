@@ -5,6 +5,13 @@ import ServiceManagement
 // 生产实现：SMAppService.mainApp（macOS 13+；非沙盒直接可用，票面已注明）。
 // 勾选态 = status == .enabled；切换 = register/unregister，失败抛错由协调器记日志并保持现状。
 
+/// 登录项接缝：生产用 SMAppService，通用页测试替换为本地假件。
+public protocol LoginItemServicing: AnyObject {
+    var isEnabled: Bool { get }
+    func enable() throws
+    func disable() throws
+}
+
 public final class SMAppServiceLoginItem: LoginItemServicing {
     public init() {}
 

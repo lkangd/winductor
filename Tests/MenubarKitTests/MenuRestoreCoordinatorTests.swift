@@ -10,7 +10,7 @@ import XCTest
 // 票 19 → display-presets 票 06：菜单接线协调器（display-presets spec §6.1 菜单 + 状态行四态；§8.5 通知 + §8.1 图标三态沿用）。
 // 接缝：MenuRestoreCoordinator 的全量菜单（makeReadyMenu，经菜单项 target/action 点击）对注入接缝的输出——
 //   SnapshotRestoring fake（断言恢复调用、所恢复的快照与图标装饰顺序）、UndoPerforming fake（撤销调用与 §8.6 通知）、
-//   SystemNotifying fake（通知投递）、LoginItemServicing fake、StatusIconControlling fake、文件夹打开/菜单刷新闭包。
+//   SystemNotifying fake（通知投递）、StatusIconControlling fake、菜单刷新闭包；共享撤销使用真实 LastRestoreUndo。
 //   PresetStore 用真实存储（临时目录）；TriggerChain 用真机（fake 调度器驱动）；保存流程用真实 SavePresetFlow
 //   （拍快照与输入框经注入假件，两段执行器同步执行）。
 final class MenuRestoreCoordinatorTests: XCTestCase {
@@ -32,21 +32,6 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         }
     }
 
-    private final class FakeUndo: UndoPerforming {
-        var canUndoValue = false
-        var outcome: Result<UndoReport, Error> = .success(UndoReport(
-            okCount: 5, skipCount: 0, failCount: 0, matchedCount: 5,
-            untouchedLiveCount: 0,
-            undoSnapshotURL: URL(fileURLWithPath: "/tmp/undo.json"),
-            fullscreenPendingCount: 0))
-        private(set) var undoCalls = 0
-        func canUndo() -> Bool { canUndoValue }
-        func undo() throws -> UndoReport {
-            undoCalls += 1
-            return try outcome.get()
-        }
-    }
-
     private final class FakeNotifier: SystemNotifying {
         private(set) var deliveries: [(title: String, body: String)] = []
         func deliver(title: String, body: String) { deliveries.append((title, body)) }
@@ -56,15 +41,6 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         private(set) var sequence: [String] = []
         func showNormalIcon() { sequence.append("normal") }
         func showRestoringIcon() { sequence.append("restoring") }
-    }
-
-    private final class FakeLogin: LoginItemServicing {
-        var enabled = false
-        private(set) var enableCalls = 0
-        private(set) var disableCalls = 0
-        var isEnabled: Bool { enabled }
-        func enable() throws { enableCalls += 1; enabled = true }
-        func disable() throws { disableCalls += 1; enabled = false }
     }
 
     private final class TickingClock: @unchecked Sendable {
@@ -126,15 +102,14 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
     private var displays: [Displays.Info] = []
     private var mirrored = false
     private var capabilityLayers: [CapabilityLayerStatus] = []
-    private var openedFolders: [URL] = []
     private var refreshCalls = 0
+    private var capabilityReads = 0
     private var presetStore: PresetStore!
     private var restorer: FakeRestorer!
-    private var undo: FakeUndo!
+    private var undo: TestUndoPerformer!
     private var enqueueUsed = false
     private var notifier: FakeNotifier!
     private var icon: FakeIcon!
-    private var login: FakeLogin!
     private var scheduler: FakeScheduler!
     private var popover: FakePopover!
     private var prompt: ScriptedPrompt!
@@ -148,17 +123,16 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             CapabilityLayerStatus(layerNumber: 3, displayName: "全屏状态", available: true),
             CapabilityLayerStatus(layerNumber: 4, displayName: "最小化窗口归位", available: true),
         ]
-        openedFolders = []
         refreshCalls = 0
+        capabilityReads = 0
         // 每次写入时钟前进 1 分钟：预设按保存时间排序可预期（同秒才按名称）
         let clock = TickingClock()
         presetStore = PresetStore(directory: FileManager.default.temporaryDirectory
             .appendingPathComponent("winductor-menutests-\(UUID().uuidString)"), now: { clock.tick() })
         restorer = FakeRestorer()
-        undo = FakeUndo()
+        undo = TestUndoPerformer()
         notifier = FakeNotifier()
         icon = FakeIcon()
-        login = FakeLogin()
         scheduler = FakeScheduler()
         popover = FakePopover()
         prompt = ScriptedPrompt([])
@@ -211,6 +185,8 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
                                  openSettings: (() -> Void)? = nil,
                                  readiness: @escaping () -> Bool = { true },
                                  enqueue: ((@escaping @Sendable () -> Void) -> Void)? = nil,
+                                 sharedUndo: LastRestoreUndo? = nil,
+                                 refresh: (() -> Void)? = nil,
                                  overwriteConfirm: [Bool] = []) -> MenuRestoreCoordinator {
         let savePreset = SavePresetFlow(
             store: presetStore,
@@ -228,6 +204,10 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             confirm: ScriptedConfirm(overwriteConfirm),
             captureExecutor: { $0() },
             mainExecutor: { $0() })
+        let execute = enqueue ?? { [weak self] work in self?.enqueueUsed = true; work() }
+        let refresh = refresh ?? { [weak self] in self?.refreshCalls += 1 }
+        let undoFlow = sharedUndo ?? LastRestoreUndo(performer: undo, readiness: readiness,
+                                                     enqueue: execute, notifier: notifier, refresh: refresh)
         return MenuRestoreCoordinator(
             presetStore: presetStore,
             restorer: restorer,
@@ -235,21 +215,20 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
             topologyProvider: { [weak self] in self?.observedTopology ?? ObservedTopology(screens: []) },
             readiness: readiness,
             scheduler: scheduler,
-            restoreEnqueue: enqueue ?? { [weak self] work in self?.enqueueUsed = true; work() },
+            restoreEnqueue: execute,
             degradeCollector: degradeCollector,
-            undo: undo,
+            undo: undoFlow,
             icon: icon,
             notifier: notifier,
-            loginItem: login,
-            capabilityLayers: { [weak self] in self?.capabilityLayers ?? [] },
+            capabilityLayers: { [weak self] in
+                self?.capabilityReads += 1
+                return self?.capabilityLayers ?? []
+            },
             savePreset: savePreset,
             openPresetManager: openPresetManager,
             openSettings: openSettings,
             overwritePreset: overwrite,
-            presetsFolder: URL(fileURLWithPath: "/tmp/winductor-presets"),
-            logsFolder: URL(fileURLWithPath: "/tmp/winductor-logs"),
-            openFolder: { [weak self] in self?.openedFolders.append($0) },
-            refreshMenu: { [weak self] in self?.refreshCalls += 1 },
+            refreshMenu: refresh,
             popover: popover)
     }
 
@@ -571,52 +550,6 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(undo.undoCalls, 1)
     }
 
-    func testQueuedUndoDoesNotRunIfPermissionsAreLostBeforeExecution() throws {
-        undo.canUndoValue = true
-        var ready = true
-        var queued: [@Sendable () -> Void] = []
-        let coordinator = makeCoordinator(readiness: { ready }, enqueue: { queued.append($0) })
-        coordinator.menuContent().onUndo()
-        XCTAssertEqual(queued.count, 1)
-        ready = false
-        queued.removeFirst()()
-        XCTAssertEqual(undo.undoCalls, 0)
-        XCTAssertTrue(notifier.deliveries.isEmpty)
-        ready = true
-        coordinator.menuContent().onUndo()
-        queued.removeFirst()()
-        XCTAssertEqual(undo.undoCalls, 1)
-    }
-
-    /// 两段式第一段：§8.6 逐字通知（N = fullscreenPendingCount）
-    func testTwoStageUndoDeliversVerbatimNotice() throws {
-        undo.canUndoValue = true
-        undo.outcome = .success(UndoReport(
-            okCount: 4, skipCount: 2, failCount: 0, matchedCount: 4, untouchedLiveCount: 0,
-            undoSnapshotURL: URL(fileURLWithPath: "/tmp/undo.json"),
-            fullscreenPendingCount: 2))
-        let coordinator = makeCoordinator()
-
-        try perform(coordinator, title: "撤销上次恢复")
-
-        XCTAssertEqual(undo.undoCalls, 1)
-        XCTAssertEqual(notifier.deliveries.count, 1)
-        XCTAssertEqual(notifier.deliveries.first?.body,
-                       "撤销完成。2 个全屏应用无法在后台退出全屏：请在对应屏幕按 Esc 退出全屏，然后再次点击「撤销上次恢复」完成剩余归位。")
-    }
-
-    /// 单层撤销：完成通知带计数（命令级 undo 输出的菜单栏形态）
-    func testSingleStageUndoDeliversCountsNotice() throws {
-        undo.canUndoValue = true
-        let coordinator = makeCoordinator()
-
-        try perform(coordinator, title: "撤销上次恢复")
-
-        XCTAssertEqual(notifier.deliveries.first?.title, "撤销完成")
-        XCTAssertEqual(notifier.deliveries.first?.body, "撤销完成：5 窗口归位、0 跳过、0 失败")
-        XCTAssertEqual(refreshCalls >= 1, true, "撤销后必须刷新菜单（canUndo 态）")
-    }
-
     /// canUndo == false：撤销菜单项置灰且不触发引擎（spec §7.4 入口禁用）
     func testUndoItemDisabledWhenCanUndoFalse() throws {
         undo.canUndoValue = false
@@ -626,36 +559,123 @@ final class MenuRestoreCoordinatorTests: XCTestCase {
         XCTAssertEqual(undo.undoCalls, 0)
     }
 
-    // MARK: 登录时启动（唯一设置项）与 Finder 入口
+    // MARK: 真实呈现链与生产弱刷新路由（不替代 assembleAppRoot 的设备验收）
 
-    func testLoginLaunchToggleCallsServiceAndRefreshes() throws {
-        let coordinator = makeCoordinator()
-
-        coordinator.menuContent().onToggleLoginLaunch()
-        XCTAssertEqual(login.enableCalls, 1)
-        XCTAssertEqual(login.isEnabled, true, "勾选切换后菜单勾选态取自服务现状")
-
-        coordinator.menuContent().onToggleLoginLaunch()
-        XCTAssertEqual(login.disableCalls, 1)
-        XCTAssertEqual(refreshCalls, 2)
+    private final class NoManagerDialogs: PresetManagerDialogs, PresetOverwriteConfirming {
+        func promptRename(currentName: String, message: String?) -> String? { nil }
+        func promptAlias(currentAlias: String?, placeholder: String) -> String? { nil }
+        func confirmDelete(presetName: String) -> Bool { false }
+        func showError(_ message: String) { XCTFail(message) }
+        func confirmOverwrite(presetName: String) -> Bool { false }
     }
 
-    /// 登录勾选态取自服务（SMAppService 注入接缝）
-    func testLoginCheckboxReflectsServiceState() throws {
-        login.enabled = true
-        XCTAssertTrue(makeCoordinator().menuContent().loginLaunchChecked)
+    private final class StatusSpy: StatusPresenting {
+        var menu: NSMenu?
+        func setShowsNotReadyBadge(_ visible: Bool) {}
+        func set(menu: NSMenu) { self.menu = menu }
     }
 
-    func testFinderEntriesOpenConfiguredFolders() throws {
-        let coordinator = makeCoordinator()
+    private struct PresentationFixture {
+        let menu: MenuRestoreCoordinator
+        let window: MainWindowController
+        let gate: NotReadyGateCoordinator
+        let links: WeakCoordinatorBox
+        let undo: LastRestoreUndo
+        let status: StatusSpy
+    }
 
-        coordinator.menuContent().onOpenPresetsFolder()
-        coordinator.menuContent().onOpenLogsFolder()
+    private func makePresentationFixture() -> PresentationFixture {
+        let links = WeakCoordinatorBox()
+        let monitor = PermissionMonitor(accessibilityProbe: { true }, screenCaptureProbe: { true }, titleSampler: { [] })
+        monitor.checkNow()
+        let shared = LastRestoreUndo(performer: undo, readiness: { monitor.status.isReady }, enqueue: { $0() },
+                                     notifier: notifier, refresh: { links.refreshPresentations() })
+        let dialogs = NoManagerDialogs()
+        let overwrite = OverwritePresetFlow(
+            store: presetStore,
+            capture: { [unowned self] in LayoutCapture(snapshot: currentSnapshot(), topology: observedTopology) },
+            availability: { .available }, confirm: dialogs, captureExecutor: { $0() }, mainExecutor: { $0() })
+        let presets = PresetManagerModel(store: presetStore, topologyProvider: { [unowned self] in observedTopology },
+                                         overwrite: overwrite, restore: { _, _ in }, dialogs: dialogs)
+        let model = MainWindowModel(presets: presets, permissionStatus: monitor.status, undo: shared,
+                                    loginItem: TestLoginItem(), openPermissionGuide: {},
+                                    presetsFolder: presetStore.directory, logsFolder: presetStore.directory,
+                                    openFolder: { _ in }, refreshPresentations: { links.refreshPresentations() })
+        let window = MainWindowController(model: model, settleDelay: 0) { window in
+            window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+            window.orderFront(nil)
+        }
+        let menu = makeCoordinator(openSettings: { window.showGeneral() }, sharedUndo: shared,
+                                   refresh: { links.refreshPresentations() })
+        let status = StatusSpy()
+        let gate = NotReadyGateCoordinator(monitor: monitor, statusItem: status, makeReadyMenu: { menu.makeReadyMenu() })
+        links.coordinator = menu
+        links.mainWindow = window
+        links.gate = gate
+        return PresentationFixture(menu: menu, window: window, gate: gate, links: links, undo: shared, status: status)
+    }
 
-        XCTAssertEqual(openedFolders, [
-            URL(fileURLWithPath: "/tmp/winductor-presets"),
-            URL(fileURLWithPath: "/tmp/winductor-logs"),
-        ])
+    func testThreeUndoEntrypointsRefreshMenuAndVisibleMainWindowThroughProductionRoute() throws {
+        let preset = try addPreset("工作")
+        undo.canUndoValue = true
+        let fixture = makePresentationFixture()
+        fixture.window.show()
+        defer { fixture.window.window?.close() }
+        fixture.links.refreshPresentations()
+        XCTAssertTrue(fixture.window.model.general.canUndo)
+        let probes = capabilityReads
+        fixture.window.model.reload()
+        fixture.window.model.openPresetsFolder()
+        fixture.window.model.openLogsFolder()
+        XCTAssertEqual(capabilityReads, probes, "通用页重读与目录动作不构建菜单")
+
+        undo.onUndo = { [unowned self] in undo.canUndoValue = false }
+        try click(try XCTUnwrap(fixture.status.menu?.item(withTitle: "撤销上次恢复")))
+        XCTAssertFalse(fixture.window.model.general.canUndo)
+        XCTAssertEqual(fixture.status.menu?.item(withTitle: "撤销上次恢复")?.isEnabled, false)
+        XCTAssertEqual(undo.undoCalls, 1)
+
+        undo.canUndoValue = true
+        fixture.links.refreshPresentations()
+        fixture.window.model.undoLastRestore()
+        XCTAssertFalse(fixture.window.model.general.canUndo)
+        XCTAssertEqual(fixture.status.menu?.item(withTitle: "撤销上次恢复")?.isEnabled, false)
+        XCTAssertEqual(undo.undoCalls, 2)
+
+        undo.canUndoValue = true
+        fixture.menu.handle(outcome: .autoRestored(AutoRestoredOutcome(
+            topologyKey: currentKey, presetID: preset.id, presetName: preset.name,
+            notice: RestoreCompletionNotice(trigger: .auto, okCount: 3, skipCount: 0, failCount: 0,
+                                            degradedLayerNames: [], failureDetail: nil), hasOtherPresets: false)))
+        popover.onEvent?(.undoTapped)
+        XCTAssertEqual(undo.undoCalls, 3)
+        XCTAssertEqual(popover.rendered.last, .hidden)
+        XCTAssertFalse(fixture.window.model.general.canUndo)
+        XCTAssertEqual(fixture.status.menu?.item(withTitle: "撤销上次恢复")?.isEnabled, false)
+        XCTAssertEqual(notifier.deliveries.count, 3)
+    }
+
+    func testOldMenuCallbackAndWeakRefreshRouteDoNotRetainPresentationsOrUndo() {
+        undo.canUndoValue = true
+        weak var weakWindow: MainWindowController?
+        weak var weakMenu: MenuRestoreCoordinator?
+        weak var weakUndo: LastRestoreUndo?
+        weak var weakGate: NotReadyGateCoordinator?
+        var oldCallback: (() -> Void)?
+        autoreleasepool {
+            let fixture = makePresentationFixture()
+            weakWindow = fixture.window
+            weakMenu = fixture.menu
+            weakUndo = fixture.undo
+            weakGate = fixture.gate
+            oldCallback = fixture.menu.menuContent().onUndo
+        }
+        XCTAssertNil(weakWindow)
+        XCTAssertNil(weakMenu)
+        XCTAssertNil(weakUndo)
+        XCTAssertNil(weakGate)
+        oldCallback?()
+        XCTAssertEqual(undo.undoCalls, 0)
     }
 
     // MARK: 通知桥接与能力状态行

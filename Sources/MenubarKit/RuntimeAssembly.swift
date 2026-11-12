@@ -58,9 +58,13 @@ public enum RuntimeAssembly {
         let overwritePreset = makeOverwritePresetFlow(availability: { savePreset.availability() }, store: presetStore,
                                                       spaces: adapter, session: session,
                                                       deferredGeometry: deferredGeometry, notifier: notifier, log: collector)
-        // 统一主窗口（ui-refactor 票 03；拓扑页 = 预设管理，display-presets 票 07）：「恢复」与通用页动作走菜单协调器同一入口，
-        // 「授权引导…」走门控协调器；两者后构造，经弱引用箱回填
+        // 撤销先于三个呈现入口构造；完成刷新只经过弱目标，不反向持有主窗口或菜单。
         let coordinatorBox = WeakCoordinatorBox()
+        let undo = LastRestoreUndo(performer: restoreEngine,
+                                   readiness: { monitor.status.isReady },
+                                   notifier: notifier,
+                                   refresh: { coordinatorBox.refreshPresentations() })
+        // 统一主窗口：预设恢复 / 保存仍走菜单协调器；通用页直接使用共享撤销与专属动作。
         let presetManager = PresetManagerModel(
             store: presetStore,
             overwrite: overwritePreset,
@@ -74,15 +78,17 @@ public enum RuntimeAssembly {
         let mainWindow = MainWindowController(model: MainWindowModel(
             presets: presetManager,
             permissionStatus: monitor.status,
-            menuContent: { coordinatorBox.coordinator?.menuContent() },
+            undo: undo,
+            loginItem: loginItem,
             openPermissionGuide: { coordinatorBox.gate?.showPermissionGuide() },
             presetsFolder: storeDirectory,
-            logsFolder: SnapshotStore.defaultLogDirectory))
+            logsFolder: SnapshotStore.defaultLogDirectory,
+            refreshPresentations: { coordinatorBox.refreshPresentations() },
+            log: collector))
+        coordinatorBox.mainWindow = mainWindow
         // 通用页权限状态点实时跟随（观察者回调在主线程）
         monitor.addStatusObserver { [weak mainWindow] status in mainWindow?.model.updatePermissionStatus(status) }
 
-        // 菜单刷新箱：coordinator 先行构造（refreshMenu 回调指向箱），门控协调器后构造后回填
-        let refreshBox = MenuRefreshBox()
         let menuCoordinator = MenuRestoreCoordinator(
             presetStore: presetStore,
             restorer: restoreEngine,
@@ -91,19 +97,16 @@ public enum RuntimeAssembly {
             scheduler: DispatchTriggerScheduler(),
             log: collector,
             degradeCollector: collector,
-            undo: restoreEngine,
+            undo: undo,
             icon: statusItem,
             notifier: notifier,
-            loginItem: loginItem,
             capabilityLayers: { capabilityProbe.probe() },
             savePreset: savePreset,
             openPresetManager: { mainWindow.showCurrentTopology() },
             openSettings: { mainWindow.showGeneral() },
             overwritePreset: overwritePreset,
-            presetsFolder: storeDirectory,
-            logsFolder: SnapshotStore.defaultLogDirectory,
             // 后台事件（恢复/保存/撤销完成、登录项切换）同时刷新开着的主窗口
-            refreshMenu: { refreshBox.refresh(); mainWindow.reloadIfVisible() },
+            refreshMenu: { coordinatorBox.refreshPresentations() },
             // 恢复提示的 Space 不足对比：恢复/撤销管线独占 SkyLight 时让出（读不到 = 不提示）
             currentSpaces: { session.shared { session.slsRead { try? adapter.managedSpaces() } } ?? nil },
             popover: popoverAnchor.map { StatusItemPopoverPresenter(anchor: $0) })
@@ -113,36 +116,20 @@ public enum RuntimeAssembly {
             statusItem: statusItem,
             makeReadyMenu: { menuCoordinator.makeReadyMenu() },
             onOpenSettings: { mainWindow.showGeneral() })
-        refreshBox.targetProvider = gateCoordinator
         coordinatorBox.gate = gateCoordinator
         return (gateCoordinator, menuCoordinator)
     }
 }
 
-/// 主窗口动作的协调器回填箱（弱引用：协调器持有窗口入口闭包，避免环）
-private final class WeakCoordinatorBox {
+/// 组装期回填、运行期只读（均在主线程）。所有目标均为弱引用，刷新回调可由撤销与主窗口安全持有。
+/// 菜单的打开窗口闭包仍负责保活主窗口；不依赖刷新回调形成隐式所有权。
+final class WeakCoordinatorBox {
     weak var coordinator: MenuRestoreCoordinator?
     weak var gate: NotReadyGateCoordinator?
-}
+    weak var mainWindow: MainWindowController?
 
-/// 菜单刷新目标接缝（NotReadyGateCoordinator.refreshMenuNow 的窄接口）
-protocol MenuRefreshTarget: AnyObject {
-    func refreshMenuNow()
-}
-
-extension NotReadyGateCoordinator: MenuRefreshTarget {}
-
-/// 组装期的刷新回填箱（coordinator 先于门控协调器构造，闭包先指箱、后回填目标）
-private final class MenuRefreshBox {
-    private let lock = NSLock()
-    private var target: MenuRefreshTarget?  // 经 targetProvider 存取
-
-    var targetProvider: MenuRefreshTarget? {
-        get { lock.lock(); defer { lock.unlock() }; return target }
-        set { lock.lock(); self.target = newValue; lock.unlock() }
-    }
-
-    func refresh() {
-        targetProvider?.refreshMenuNow()
+    func refreshPresentations() {
+        gate?.refreshMenuNow()
+        mainWindow?.reloadIfVisible()
     }
 }

@@ -1,13 +1,14 @@
 import AppKit
 import Combine
+import Core
 import Foundation
 
 // MainWindowModel.swift — 统一主窗口的状态源与动作编排（ui-refactor 票 03，spec §5.1/§5.2/§5.5/§5.6）。
 // 视图（MainWindowView）只读 state / general、只调本类方法：
 //   侧栏与选中 → MainWindowState（纯推导）；拓扑页内容仍归 PresetManagerModel（选中拓扑同步给它，回落口径一致）；
-//   通用页 → 权限现状（PermissionMonitor 推送）+ 菜单同源 WiredMenuContent（勾选态 / 撤销可用性 / 动作闭包，
-//     MenuRestoreCoordinator.menuContent()），共享动作保留；登录与 Finder 入口仅在通用页呈现；授权引导… → 注入的打开入口（NotReadyGateCoordinator）。
-// 刷新：reload（打开/激活/屏幕变化/外部事件，经 MainWindowController）重读存储、当前拓扑与菜单现状。
+//   通用页 → 权限现状（PermissionMonitor 推送）+ 共享 LastRestoreUndo；登录项与目录动作由本 module 持有，
+//     不再读取整份菜单内容；授权引导… → 注入的打开入口（NotReadyGateCoordinator）。
+// 刷新：reload（打开/激活/屏幕变化/外部事件，经 MainWindowController）重读存储、当前拓扑与通用页现状。
 
 public final class MainWindowModel: ObservableObject {
     /// 拓扑页内容（预设管理）的状态源
@@ -19,7 +20,11 @@ public final class MainWindowModel: ObservableObject {
 
     private var requested: MainWindowPage?
     private var permissionStatus: PermissionMonitor.Status
-    private let menuContent: () -> WiredMenuContent?
+    private let undo: LastRestoreUndo
+    private let loginItem: LoginItemServicing
+    private let openFolder: (URL) -> Void
+    private let refreshPresentations: () -> Void
+    private let log: LogWriting?
     private let openPermissionGuideAction: () -> Void
     private let presetsFolder: URL
     private let logsFolder: URL
@@ -27,19 +32,28 @@ public final class MainWindowModel: ObservableObject {
 
     /// - Parameters:
     ///   - permissionStatus: 初始权限现状（此后经 updatePermissionStatus 推送）
-    ///   - menuContent: 菜单同源内容（生产 = MenuRestoreCoordinator.menuContent()；nil = 未装配，通用页动作无效）
+    ///   - undo: 菜单 / 通用页 / 恢复告知共用的撤销 module
+    ///   - refreshPresentations: 登录项切换后刷新菜单与可见主窗口（无论成功或失败）
     ///   - openPermissionGuide: 打开授权窗（生产 = NotReadyGateCoordinator.showPermissionGuide）
     ///   - presetsFolder / logsFolder: 数据分区路径说明（共享 Finder 动作的目标目录）
     public init(presets: PresetManagerModel,
                 permissionStatus: PermissionMonitor.Status,
-                menuContent: @escaping () -> WiredMenuContent?,
+                undo: LastRestoreUndo,
+                loginItem: LoginItemServicing,
                 openPermissionGuide: @escaping () -> Void,
                 presetsFolder: URL,
                 logsFolder: URL,
+                openFolder: @escaping (URL) -> Void = { FinderFolderOpener.open($0) },
+                refreshPresentations: @escaping () -> Void,
+                log: LogWriting? = nil,
                 version: String = AppVersion.current()) {
         self.presets = presets
         self.permissionStatus = permissionStatus
-        self.menuContent = menuContent
+        self.undo = undo
+        self.loginItem = loginItem
+        self.openFolder = openFolder
+        self.refreshPresentations = refreshPresentations
+        self.log = log
         self.openPermissionGuideAction = openPermissionGuide
         self.presetsFolder = presetsFolder
         self.logsFolder = logsFolder
@@ -53,7 +67,7 @@ public final class MainWindowModel: ObservableObject {
 
     // MARK: 刷新与选择
 
-    /// 重读存储、当前拓扑与菜单现状（主线程）
+    /// 重读存储、当前拓扑与通用页现状（主线程）
     public func reload() {
         presets.reload()
         refreshGeneral()
@@ -85,29 +99,33 @@ public final class MainWindowModel: ObservableObject {
         recomputeSidebar(entries: presets.state.entries)
     }
 
-    // MARK: 通用页动作（菜单同源）
+    // MARK: 通用页动作
 
     public func openPermissionGuide() {
         openPermissionGuideAction()
     }
 
     public func toggleLoginLaunch() {
-        menuContent()?.onToggleLoginLaunch()
+        do {
+            if loginItem.isEnabled { try loginItem.disable() } else { try loginItem.enable() }
+        } catch {
+            log?.write("[login-item] toggle failed error=\(String(describing: error))")
+        }
+        refreshPresentations()
         refreshGeneral()
     }
 
     /// 撤销上次恢复（不可撤销时无动作；撤销完成后由外部事件刷新）
     public func undoLastRestore() {
-        guard let content = menuContent(), content.canUndo else { return }
-        content.onUndo()
+        undo.requestIfAvailable()
     }
 
     public func openPresetsFolder() {
-        menuContent()?.onOpenPresetsFolder()
+        openFolder(presetsFolder)
     }
 
     public func openLogsFolder() {
-        menuContent()?.onOpenLogsFolder()
+        openFolder(logsFolder)
     }
 
     // MARK: 内部
@@ -118,10 +136,9 @@ public final class MainWindowModel: ObservableObject {
     }
 
     private func refreshGeneral() {
-        let content = menuContent()
         let fresh = GeneralPageState.make(status: permissionStatus,
-                                          loginLaunchChecked: content?.loginLaunchChecked ?? false,
-                                          canUndo: content?.canUndo ?? false,
+                                          loginLaunchChecked: loginItem.isEnabled,
+                                          canUndo: undo.isAvailable(),
                                           presetsFolder: presetsFolder, logsFolder: logsFolder)
         if fresh != general { general = fresh }
     }

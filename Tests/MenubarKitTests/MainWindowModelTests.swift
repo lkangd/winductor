@@ -8,7 +8,7 @@ import XCTest
 // ui-refactor 票 03：统一主窗口的编排（MainWindowModel）与窗口宿主生命周期（MainWindowController）。
 // 接缝：MainWindowModel 公共接口（reload / select / selectCurrentTopology / updatePermissionStatus / 通用页动作）
 // 与其 state、general；MainWindowController（show / showCurrentTopology / reloadIfVisible / 屏幕参数变化刷新）。
-// 存储用真实 PresetStore（临时目录）；当前拓扑经注入闭包（调用计数 = 重读次数）；通用页动作经菜单同源 WiredMenuContent 假件。
+// 存储用真实 PresetStore（临时目录）；当前拓扑经注入闭包（调用计数 = 重读次数）；通用页使用真实撤销 module 与外部 adapter。
 final class MainWindowModelTests: XCTestCase {
     private final class NoDialogs: PresetManagerDialogs, PresetOverwriteConfirming {
         func promptRename(currentName: String, message: String?) -> String? { nil }
@@ -24,7 +24,8 @@ final class MainWindowModelTests: XCTestCase {
     private var current: ObservedTopology!
     private var topologyReads = 0
     private var canUndo = false
-    private var loginChecked = false
+    private var login: TestLoginItem!
+    private var generalRefreshes = 0
     private var captureAvailability: LayoutCaptureAvailability = .available
     private var actions: [String] = []
     private var controllers: [MainWindowController] = []
@@ -37,7 +38,8 @@ final class MainWindowModelTests: XCTestCase {
         current = office
         topologyReads = 0
         canUndo = false
-        loginChecked = false
+        login = TestLoginItem()
+        generalRefreshes = 0
         captureAvailability = .available
         actions = []
     }
@@ -108,8 +110,8 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(model.state.sections.flatMap(\.rows).filter(\.showsStatusDot).map(\.page), [.general])
     }
 
-    /// 通用页动作与菜单同源（WiredMenuContent 闭包）；勾选态 / 撤销可用性在 reload 时取菜单现状
-    func testGeneralActionsRouteToMenuContent() {
+    /// 通用页不构建菜单；共享撤销与登录项、目录动作均经真实 module 执行。
+    func testGeneralActionsUseUndoAndPageOwnedDependencies() {
         let model = makeModel()
         XCTAssertFalse(model.general.canUndo)
 
@@ -117,7 +119,7 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(actions, [], "不可撤销时不调用")
 
         canUndo = true
-        loginChecked = true
+        login.enabled = true
         model.reload()
         XCTAssertTrue(model.general.canUndo)
         XCTAssertTrue(model.general.loginLaunchChecked)
@@ -155,6 +157,46 @@ final class MainWindowModelTests: XCTestCase {
         XCTAssertEqual(model.presets.state.selected?.canSavePreset, true)
         model.presets.restore(presetID: work.id)
         XCTAssertEqual(actions, ["restore"])
+    }
+
+    func testUndoClickRechecksAvailabilityInsteadOfPublishedState() {
+        canUndo = true
+        let model = makeModel()
+        XCTAssertTrue(model.general.canUndo)
+        canUndo = false
+        model.undoLastRestore()
+        XCTAssertTrue(actions.isEmpty, "显示可用后失效：点击应静默拒绝")
+        canUndo = true
+        model.undoLastRestore()
+        XCTAssertEqual(actions, ["undo"])
+    }
+
+    private final class LogSpy: LogWriting, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [String] = []
+        var lines: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+        func write(_ line: String) { lock.lock(); recorded.append(line); lock.unlock() }
+    }
+
+    private struct LoginFailure: Error, CustomStringConvertible {
+        var description: String { "login-failure" }
+    }
+
+    func testLoginToggleAndFailureRefreshPageOwnedState() {
+        let log = LogSpy()
+        let model = makeModel(log: log)
+        XCTAssertFalse(model.general.loginLaunchChecked)
+        model.toggleLoginLaunch()
+        XCTAssertTrue(login.enabled)
+        XCTAssertTrue(model.general.loginLaunchChecked)
+        model.toggleLoginLaunch()
+        XCTAssertFalse(login.enabled)
+        XCTAssertFalse(model.general.loginLaunchChecked)
+        login.failure = LoginFailure()
+        model.toggleLoginLaunch()
+        XCTAssertFalse(model.general.loginLaunchChecked, "失败保持真实登录项状态")
+        XCTAssertEqual(generalRefreshes, 3, "成功与失败都要刷新")
+        XCTAssertEqual(log.lines, ["[login-item] toggle failed error=login-failure"])
     }
 
     // MARK: 窗口宿主
@@ -345,18 +387,7 @@ final class MainWindowModelTests: XCTestCase {
                                  screenCaptureNeedsReconfirm: false)
     }
 
-    private func menuContent() -> WiredMenuContent {
-        WiredMenuContent(statusLineTitle: "", canSavePreset: true, restorePresets: [], canUndo: canUndo,
-                         loginLaunchChecked: loginChecked, capabilityTitle: "",
-                         onSavePreset: {}, onRestorePreset: { _ in },
-                         onUndo: { [unowned self] in actions.append("undo") },
-                         onManagePresets: nil,
-                         onToggleLoginLaunch: { [unowned self] in actions.append("login") },
-                         onOpenPresetsFolder: { [unowned self] in actions.append("presets") },
-                         onOpenLogsFolder: { [unowned self] in actions.append("logs") })
-    }
-
-    private func makeModel(status: PermissionMonitor.Status? = nil) -> MainWindowModel {
+    private func makeModel(status: PermissionMonitor.Status? = nil, log: LogWriting? = nil) -> MainWindowModel {
         let dialogs = NoDialogs()
         let overwrite = OverwritePresetFlow(
             store: store,
@@ -371,12 +402,27 @@ final class MainWindowModelTests: XCTestCase {
                                          restore: { [unowned self] _, _ in actions.append("restore") },
                                          save: { [unowned self] in actions.append("save") },
                                          dialogs: dialogs)
+        let performer = TestUndoPerformer()
+        performer.availability = { [unowned self] in canUndo }
+        performer.onUndo = { [unowned self] in actions.append("undo") }
+        let undo = LastRestoreUndo(performer: performer, readiness: { true }, enqueue: { $0() },
+                                   notifier: TestNotificationRecorder(), refresh: {})
+        login.onToggle = { [unowned self] in actions.append("login") }
         return MainWindowModel(presets: presets,
                                permissionStatus: status ?? self.status(ready: true),
-                               menuContent: { [unowned self] in menuContent() },
+                               undo: undo, loginItem: login,
                                openPermissionGuide: { [unowned self] in actions.append("guide") },
                                presetsFolder: directory,
                                logsFolder: directory.appendingPathComponent("logs"),
+                               openFolder: { [unowned self] folder in
+                                   if folder == directory { actions.append("presets") }
+                                   else {
+                                       XCTAssertEqual(folder, directory.appendingPathComponent("logs"))
+                                       actions.append("logs")
+                                   }
+                               },
+                               refreshPresentations: { [unowned self] in generalRefreshes += 1 },
+                               log: log,
                                version: "9.9.9")
     }
 

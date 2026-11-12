@@ -26,8 +26,6 @@ public struct WiredMenuContent {
     public let restorePresets: [RestorePresetMenuEntry]
     /// 「撤销上次恢复」可用性（RestoreEngine.canUndo()；false = 置灰禁用）
     public let canUndo: Bool
-    /// 「登录时启动」勾选态（SMAppService.mainApp.status == .enabled）
-    public let loginLaunchChecked: Bool
     /// 能力状态行标题（CapabilityStatusLine 产物，纯文本）
     public let capabilityTitle: String
     public let onSavePreset: (() -> Void)?
@@ -37,9 +35,6 @@ public struct WiredMenuContent {
     /// 打开主窗口（nil = 未装配，项置灰）
     public let onManagePresets: (() -> Void)?
     public let onOpenSettings: (() -> Void)?
-    public let onToggleLoginLaunch: () -> Void
-    public let onOpenPresetsFolder: () -> Void
-    public let onOpenLogsFolder: () -> Void
     /// 「覆盖预设 ▸」可用性（与保存同口径）
     public let canOverwritePreset: Bool
     /// 覆盖当前拓扑下的指定预设，参数 = 预设 id（nil = 未装配，置灰）
@@ -49,15 +44,11 @@ public struct WiredMenuContent {
                 canSavePreset: Bool,
                 restorePresets: [RestorePresetMenuEntry],
                 canUndo: Bool,
-                loginLaunchChecked: Bool,
                 capabilityTitle: String,
                 onSavePreset: (() -> Void)?,
                 onRestorePreset: ((String) -> Void)?,
                 onUndo: @escaping () -> Void,
                 onManagePresets: (() -> Void)?,
-                onToggleLoginLaunch: @escaping () -> Void,
-                onOpenPresetsFolder: @escaping () -> Void,
-                onOpenLogsFolder: @escaping () -> Void,
                 canOverwritePreset: Bool = false,
                 onOverwritePreset: ((String) -> Void)? = nil,
                 onOpenSettings: (() -> Void)? = nil) {
@@ -65,16 +56,12 @@ public struct WiredMenuContent {
         self.canSavePreset = canSavePreset
         self.restorePresets = restorePresets
         self.canUndo = canUndo
-        self.loginLaunchChecked = loginLaunchChecked
         self.capabilityTitle = capabilityTitle
         self.onSavePreset = onSavePreset
         self.onRestorePreset = onRestorePreset
         self.onUndo = onUndo
         self.onManagePresets = onManagePresets
         self.onOpenSettings = onOpenSettings
-        self.onToggleLoginLaunch = onToggleLoginLaunch
-        self.onOpenPresetsFolder = onOpenPresetsFolder
-        self.onOpenLogsFolder = onOpenLogsFolder
         self.canOverwritePreset = canOverwritePreset
         self.onOverwritePreset = onOverwritePreset
     }
