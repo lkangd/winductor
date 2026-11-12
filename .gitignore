@@ -30,3 +30,6 @@ docs/todos/
 
 # Local assets
 .assets/
+
+# temporary files
+.context/
